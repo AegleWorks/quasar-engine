@@ -1,0 +1,1 @@
+export { SymbolTable } from './SymbolTable'

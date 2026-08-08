@@ -1,0 +1,118 @@
+MILIASTRY SOURCE LICENSE
+Version 1.0 (MSL-1.0)
+
+Copyright (c) 2026 hxovc / Miliastry Team
+
+This license governs use of the software accompanying this license.
+By using the software, you agree to the terms of this license.
+
+1. DEFINITIONS
+
+"Software" means the source code and other materials distributed under
+this license.
+
+"Miliastry Nova" means the Miliastry Nova product, including its
+integrated visual editing environment, user interface, workspace
+architecture, and associated visual authoring capabilities, as
+distributed by the copyright holder.
+
+"Competing Product" means a software product or service whose primary
+purpose is to compete directly with Miliastry Nova as an integrated
+visual BBCode authoring environment or IDE.
+
+A product is not a Competing Product merely because it:
+
+(a) uses, depends upon, or incorporates the Software;
+
+(b) provides BBCode editing capabilities;
+
+(c) provides visual BBCode editing capabilities;
+
+(d) provides tools for osu! profile creation or customization; or
+
+(e) provides functionality that is technically similar to an individual
+feature of Miliastry Nova.
+
+The determination of whether a product is a Competing Product shall be
+based on the product as a whole, including its primary purpose,
+positioning, and intended use, rather than on the presence of individual
+features.
+
+2. COPYRIGHT GRANT
+
+Subject to the terms and limitations of this license, each contributor
+grants you a perpetual, worldwide, non-exclusive, royalty-free license
+to reproduce, modify, create derivative works from, and distribute the
+Software and such derivative works.
+
+3. PATENT GRANT
+
+Each contributor grants you a worldwide, non-exclusive, royalty-free
+license under patent claims owned or controlled by that contributor
+that necessarily read on their contribution to make, use, sell, offer
+for sale, import, and otherwise distribute the Software.
+
+4. COMPETITION RESTRICTION
+
+During the Restricted Period, you may not use the Software, or a
+derivative work of the Software, as a substantial part of a Competing
+Product.
+
+This restriction applies only where the Software is used with the
+purpose of creating, operating, or providing a product that directly
+competes with Miliastry Nova.
+
+This restriction does not prohibit the creation, distribution, or use of
+general-purpose BBCode editors, osu! profile tools, BBCode libraries,
+renderers, parsers, visual editors, authoring tools, or other software
+that does not directly compete with Miliastry Nova as a product.
+
+5. NO TRADEMARK RIGHTS
+
+This license does not grant permission to use the names, logos,
+trademarks, or other branding of Miliastry, Miliastry Nova, or any
+contributor.
+
+6. RESTRICTED PERIOD
+
+The restrictions in Section 4 apply for two (2) years beginning on the
+date on which the applicable version of the Software is first publicly
+released under this license.
+
+After the Restricted Period expires, the Software is automatically
+relicensed under the MIT License.
+
+7. CONTRIBUTIONS
+
+Each contributor grants its contribution under this license unless the
+contributor explicitly states otherwise.
+
+Contributors do not receive any rights to use the trademarks or branding
+of Miliastry.
+
+8. DISCLAIMER
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT.
+
+9. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, NO CONTRIBUTOR SHALL BE LIABLE
+FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THE
+SOFTWARE.
+
+10. TERMINATION
+
+If you violate the restrictions of this license, the rights granted to
+you under this license terminate automatically.
+
+Rights that have already permanently converted to the MIT License are
+not affected.
+
+11. GOVERNING INTERPRETATION
+
+This license shall be interpreted to preserve the broad permission to
+use the Software for purposes that do not directly compete with
+Miliastry Nova.

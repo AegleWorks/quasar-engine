@@ -1,0 +1,253 @@
+/**
+ * DocumentEngine — Visuals / osu.css
+ *
+ * osu!-inspired BBCode preview theme.
+ * Extracted from the de-tester page to be a reusable platform visual.
+ *
+ * Reproduce el estilo visual del foro de osu! para la vista previa de BBCode.
+ * Todas las reglas están scoped bajo `.bbcode-preview` para no contaminar
+ * estilos globales.
+ *
+ * Uso:
+ *   import 'MiliastryPlatform/DocumentEngine/Visuals/osu.css'
+ *   // o vía JS: import { osuCSS } from './Visuals'
+ *   // y luego injectarlo como <style>{osuCSS}</style>
+ */
+
+/* ─── Base ───────────────────────────────────────────── */
+
+.bbcode-preview {
+  font-family: "Inter", "Segoe UI", Tahoma, Geneva, Verdana, "Cambria Math", "STIX Two Math", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #ffffff;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.bbcode-preview a {
+  color: #7EB8E0;
+  text-decoration: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+.bbcode-preview a:hover {
+  color: #94C8EA;
+  border-bottom: 1px solid rgba(126,184,224,0.7);
+}
+
+/* ─── Headings ───────────────────────────────────────── */
+
+.bbcode-preview h2 {
+  font-size: 23.1px;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 10px 0 0 0;
+  padding: 0;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+/* ─── Blockquotes ────────────────────────────────────── */
+
+.bbcode-preview blockquote {
+  padding: 0 0 0 20px;
+  margin: 0 0 20px 0;
+  border-left: 2px solid #D194B3;
+  color: #ffffff;
+  font-style: normal;
+  background: none;
+}
+/* ─── Code ───────────────────────────────────────────── */
+
+.bbcode-preview pre {
+  padding: 10px;
+  margin-bottom: 10px;
+  background: #1C1719;
+  border: 1px solid #43383A;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.bbcode-preview pre code {
+  font-family: 'PT Mono', 'Geist Mono', 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #ffffff;
+  font-weight: 300;
+  background: none;
+  padding: 0;
+  border: none;
+}
+.bbcode-preview code.inline {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  padding: 1px 5px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  color: #E8E0E4;
+}
+
+/* ─── Notice ─────────────────────────────────────────── */
+
+.bbcode-preview .notice {
+  padding: 19px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 2px solid rgba(255, 231, 250, 0.202);
+  border-radius: 4px;
+  color: #ffffff;
+}
+
+/* ─── Spoiler ────────────────────────────────────────── */
+
+.bbcode-preview .spoiler {
+  background: #000;
+  color: #000;
+  cursor: text;
+}
+.bbcode-preview .spoiler::selection {
+  color: #fff;
+  background: #555;
+}
+
+/* ─── Box / Spoilerbox ───────────────────────────────── */
+
+.bbcode-preview details {
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+}
+.bbcode-preview details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #D194B3;
+  font-size: 13px;
+  user-select: none;
+}
+.bbcode-preview details[open] {
+  padding-bottom: 0;
+}
+
+/* ─── Lists ──────────────────────────────────────────── */
+
+.bbcode-preview ul {
+  margin: 0;
+  padding-left: 24px;
+  list-style: disc outside;
+}
+.bbcode-preview ol {
+  margin: 0;
+  padding-left: 24px;
+  list-style: decimal outside;
+}
+.bbcode-preview li {
+  margin: 0;
+  line-height: 1.5;
+  display: list-item;
+}
+.bbcode-preview li::marker {
+  color: #D194B3;
+}
+
+/* ─── Media ──────────────────────────────────────────── */
+
+.bbcode-preview img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+.bbcode-preview iframe {
+  max-width: 100%;
+  border-radius: 8px;
+}
+.bbcode-preview audio {
+  width: 100%;
+}
+
+/* ─── Image Map ──────────────────────────────────────── */
+
+.bbcode-preview .bbcode-imagemap,
+.bbcode-preview .imagemap-container {
+  display: inline-block;
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.bbcode-preview .bbcode-imap-area,
+.bbcode-preview .imagemap-area {
+  position: absolute;
+  display: block;
+  border-radius: 6px;
+  border: 1.5px dashed rgba(255, 173, 210, 0.7);
+  background: rgba(255, 173, 210, 0.18);
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  text-decoration: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.bbcode-preview .bbcode-imap-area:hover,
+.bbcode-preview .imagemap-area:hover {
+  border-style: solid;
+  border-color: rgba(255, 173, 210, 1);
+  background: rgba(255, 173, 210, 0.38);
+  transform: scale(1.02);
+  z-index: 10;
+}
+
+/* ─── Decorative / Fun Styles ────────────────────────── */
+
+.bbcode-preview .media-error {
+  padding: 8px 12px;
+  background: rgba(229,90,107,0.1);
+  border: 1px solid rgba(229,90,107,0.25);
+  border-radius: 6px;
+  color: #e55a6b;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.bbcode-preview .zalgo {
+  letter-spacing: 0.5em;
+  opacity: 0.8;
+}
+.bbcode-preview .aesthetic {
+  letter-spacing: 0.3em;
+  font-weight: 300;
+  opacity: 0.85;
+}
+.bbcode-preview .sparkle {
+  background: linear-gradient(45deg, #FFD700, #FF69B4, #00CED1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.bbcode-preview .bubble {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+}
+.bbcode-preview .flower {
+  display: inline-block;
+  transform: rotate(-5deg) scale(0.95);
+  font-style: italic;
+  color: #F0A0C0;
+}
+
+/* ─── Semantic Spacing ───────────────────────────────── */
+
+.bbcode-preview .bbcode-sp {
+  display: block;
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+.bbcode-preview .bbcode-para {
+  display: block;
+  height: 1em;
+  min-height: 12px;
+  padding: 0;
+}

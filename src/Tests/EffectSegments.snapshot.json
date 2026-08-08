@@ -1,0 +1,616 @@
+[
+ {
+  "kind": "gradient",
+  "text": "Hola Mundo",
+  "bb": "[color=#FF0000]H[/color][color=#C63900]o[/color][color=#8E7100]l[/color][color=#55AA00]a[/color][color=#1CE300] [/color][color=#00E31C]M[/color][color=#00AA55]u[/color][color=#00718E]n[/color][color=#0039C6]d[/color][color=#0000FF]o[/color]",
+  "rn": {
+   "kind": "gradient",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "H",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF0000"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "o",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#C63900"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "l",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#8E7100"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "a",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#55AA00"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#1CE300"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "M",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#00E31C"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "u",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#00AA55"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "n",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#00718E"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "d",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#0039C6"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "o",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#0000FF"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "gradient",
+  "text": "uno dos tres",
+  "bb": "[color=#112233]uno[/color][color=#1E2F40] [/color][color=#2B3C4D]dos[/color][color=#374859] [/color][color=#445566]tres[/color]",
+  "rn": {
+   "kind": "gradient",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "uno",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#112233"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#1E2F40"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "dos",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#2B3C4D"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#374859"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "tres",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#445566"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "gradient",
+  "text": "abcdef",
+  "bb": "[color=#FF66AB]a[/color][color=#FF66AB]b[/color][color=#FF66AB]c[/color][color=#FF66AB]d[/color][color=#FF66AB]e[/color][color=#FF66AB]f[/color]",
+  "rn": {
+   "kind": "gradient",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "a",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF66AB"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "b",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF66AB"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "c",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF66AB"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "d",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF66AB"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "e",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF66AB"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "f",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#FF66AB"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "sinewave",
+  "text": "ola marina",
+  "bb": "[size=60]o[/size][size=74]l[/size][size=85]a[/size][size=90] [/size][size=87]m[/size][size=78]a[/size][size=64]r[/size][size=49]i[/size][size=37]n[/size][size=31]a[/size]",
+  "rn": {
+   "kind": "sinewave",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "o",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "60%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "l",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "74%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "a",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "85%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "90%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "m",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "87%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "a",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "78%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "r",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "64%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "i",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "49%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "n",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "37%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "a",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "31%"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "sinewave",
+  "text": "una frase con olas",
+  "bb": "[size=80]una[/size] [size=109]frase[/size] [size=120]con[/size] [size=107]olas[/size]",
+  "rn": {
+   "kind": "sinewave",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "una",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "80%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {}
+    },
+    {
+     "kind": "text",
+     "text": "frase",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "109%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {}
+    },
+    {
+     "kind": "text",
+     "text": "con",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "120%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": " ",
+     "children": [],
+     "props": {},
+     "style": {}
+    },
+    {
+     "kind": "text",
+     "text": "olas",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "107%"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "grow",
+  "text": "creciendo",
+  "bb": "[size=125]c[/size][size=200]r[/size][size=125]e[/size][size=50]c[/size][size=125]i[/size][size=200]e[/size][size=125]n[/size][size=50]d[/size][size=125]o[/size]",
+  "rn": {
+   "kind": "grow",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "c",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "125%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "r",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "200%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "e",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "125%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "c",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "50%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "i",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "125%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "e",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "200%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "n",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "125%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "d",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "50%"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "o",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "125%"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "grow",
+  "text": "x",
+  "bb": "[size=114]x[/size]",
+  "rn": {
+   "kind": "grow",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "x",
+     "children": [],
+     "props": {},
+     "style": {
+      "fontSize": "114%"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "rainbow",
+  "text": "arcoiris!",
+  "bb": "[color=#F45925]a[/color][color=#F4E225]r[/color][color=#7BF425]c[/color][color=#25F459]o[/color][color=#25F4E2]i[/color][color=#257BF4]r[/color][color=#5925F4]i[/color][color=#E225F4]s[/color][color=#F4257B]![/color]",
+  "rn": {
+   "kind": "rainbow",
+   "text": "",
+   "children": [
+    {
+     "kind": "text",
+     "text": "a",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#F45925"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "r",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#F4E225"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "c",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#7BF425"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "o",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#25F459"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "i",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#25F4E2"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "r",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#257BF4"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "i",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#5925F4"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "s",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#E225F4"
+     }
+    },
+    {
+     "kind": "text",
+     "text": "!",
+     "children": [],
+     "props": {},
+     "style": {
+      "color": "#F4257B"
+     }
+    }
+   ],
+   "props": {}
+  }
+ },
+ {
+  "kind": "gradient",
+  "text": "",
+  "bb": "FALLBACK",
+  "rn": {
+   "kind": "gradient",
+   "text": "",
+   "children": [],
+   "props": {}
+  }
+ }
+]

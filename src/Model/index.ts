@@ -1,0 +1,5 @@
+export { DocumentModel } from './DocumentModel'
+export type { DocumentModelOptions } from './DocumentModel'
+export { TagRegistry } from './TagRegistry'
+export type { TagDefinition, TagHandler, PropertyDefinition, TagHandlerContext } from './TagRegistry'
+export { NodeFactory } from './NodeFactory'
