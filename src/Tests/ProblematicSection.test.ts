@@ -2,30 +2,45 @@ import { describe, it, expect } from 'vitest'
 import { TagRegistry } from '../Model/TagRegistry'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { processStudioAST } from '@miliastry/quasar-studio'
-import fs from 'fs'
-import path from 'path'
+import { REFERENCE_DOCUMENT, REFERENCE_GRADIENT_LAYER } from './referenceDocument'
 
+/**
+ * Round-tripping a document through the Studio must not invent or drop layout.
+ *
+ * The name of this suite always promised that, but the body only rendered the
+ * document and `console.log`ged the result — `expect` was imported and never
+ * called, so it could not fail. It also read an untracked `.milia` fixture,
+ * which is what finally broke it. Both are fixed here: the invariant its name
+ * describes is now actually asserted, against `referenceDocument.ts`.
+ *
+ * Braille blanks (`⠀`, U+2800) are load-bearing in these posts — authors use
+ * them as padding because osu! collapses ordinary whitespace. Gaining or losing
+ * one silently reflows somebody's profile.
+ */
 describe('Problematic Section Export', () => {
-  it('should not add an extra blank line or braille blank', () => {
-    const text = fs.readFileSync(path.join(__dirname, '../problematic_section.milia'), 'utf-8')
-
-    const layers = [
-      { id: 'grad', type: 'gradient', enabled: true, value: 100, properties: { color1: '#ff0000', color2: '#0000ff' }, colors: '#e8b04b,#e8ae4b,#e7ad4b,#e7aa4b,#e7a84b,#e6a64b,#e6a14c,#e59f4c,#e4994c,#e3914c,#e28b4d,#e1854d,#e07c4d,#df754d,#de6f4e,#dd684e,#dc614e,#db5b4f,#da564f', opacity: 1.0, easing: 'linear' }
-    ]
-
+  const exportWithLayers = (source: string, layers: unknown[]) => {
     const registry = new TagRegistry()
-    const { redRoot } = processStudioAST(text, layers as any, {})
-    
-    const exporter = new BBCodeExporter(registry)
-    const exportedBBCode = exporter.export(redRoot)
+    const { redRoot } = processStudioAST(source, layers as never, {})
+    return new BBCodeExporter(registry).export(redRoot)
+  }
 
-    const origBrailleCount = (text.match(/⠀/g) || []).length
-    const expBrailleCount = (exportedBBCode.match(/⠀/g) || []).length
+  const brailleCount = (s: string) => (s.match(/⠀/g) || []).length
 
-    console.log('Original Braille Blanks:', origBrailleCount)
-    console.log('Exported Braille Blanks:', expBrailleCount)
+  it('preserves every braille blank through a plain round trip', () => {
+    const exported = exportWithLayers(REFERENCE_DOCUMENT, [])
+    expect(brailleCount(exported)).toBe(brailleCount(REFERENCE_DOCUMENT))
+  })
 
-    const expLines = exportedBBCode.split('\n')
-    console.log('Last lines:', JSON.stringify(expLines.slice(-5), null, 2))
+  it('preserves every braille blank through a gradient layer', () => {
+    // A gradient splits text into one node per character; the padding must come
+    // out the far side with the same count it went in with.
+    const exported = exportWithLayers(REFERENCE_DOCUMENT, [REFERENCE_GRADIENT_LAYER])
+    expect(brailleCount(exported)).toBe(brailleCount(REFERENCE_DOCUMENT))
+  })
+
+  it('does not add a trailing blank line', () => {
+    const exported = exportWithLayers(REFERENCE_DOCUMENT, [])
+    const trailing = (s: string) => s.length - s.replace(/\n+$/, '').length
+    expect(trailing(exported)).toBe(trailing(REFERENCE_DOCUMENT))
   })
 })

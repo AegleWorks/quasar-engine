@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { REFERENCE_DOCUMENT_WITH_GRADIENT } from './referenceDocument'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 
 /**
@@ -119,11 +118,7 @@ describe('SemanticAnalyzer — built-in validators', () => {
   })
 
   it('produces no noise on the real reference document', () => {
-    const source = readFileSync(
-      join(__dirname, '..', 'problematic_sectionwgradient.milia'),
-      'utf8',
-    )
-    const found = diagnose(source)
+    const found = diagnose(REFERENCE_DOCUMENT_WITH_GRADIENT)
     // This is a real, valid document: anything reported here is a false
     // positive that would bury genuine problems in the checker window.
     expect(found.filter(d => d.severity === 'error')).toEqual([])

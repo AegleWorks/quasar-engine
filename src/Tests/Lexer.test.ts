@@ -17,8 +17,7 @@
  *    stay indistinguishable to everything downstream.
  */
 import { describe, it, expect } from 'vitest'
-import fs from 'node:fs'
-import path from 'node:path'
+import { REFERENCE_DOCUMENT, REFERENCE_DOCUMENT_WITH_GRADIENT } from './referenceDocument'
 import { scanBBCode, type BBCodeToken } from '../Lexer/BBCodeLexer'
 
 /** Compact form of a token stream, for readable expectations. */
@@ -175,10 +174,14 @@ describe('BBCodeLexer', () => {
   })
 
   describe('los tokens cubren la fuente exactamente', () => {
-    const fixtures = ['../problematic_section.milia', '../problematic_sectionwgradient.milia']
-    for (const f of fixtures) {
-      it(`fixture ${path.basename(f)}`, () => {
-        const source = fs.readFileSync(path.join(__dirname, f), 'utf-8')
+    // Was two untracked `.milia` files read from disk; they vanished and took
+    // seven tests with them. See `referenceDocument.ts`.
+    const fixtures = {
+      'reference document': REFERENCE_DOCUMENT,
+      'reference document with gradient': REFERENCE_DOCUMENT_WITH_GRADIENT,
+    }
+    for (const [name, source] of Object.entries(fixtures)) {
+      it(`fixture ${name}`, () => {
         expect(coverageGap(source)).toBeNull()
         expect(textMismatch(source)).toBeNull()
       })

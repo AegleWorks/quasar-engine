@@ -2,12 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { TagRegistry } from '../Model/TagRegistry'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import { processStudioAST } from '@miliastry/quasar-studio'
-import fs from 'fs'
-import path from 'path'
+import { REFERENCE_DOCUMENT, REFERENCE_GRADIENT_LAYER } from './referenceDocument'
 
 /**
- * A real 12 KB post from the wild, rendered with and without a Studio
- * gradient layer.
+ * A substantial document rendered with and without a Studio gradient layer.
  *
  * This used to assert nothing at all: it rendered both variants and wrote
  * them to `orig.html` and `grad.html` in the repo root — tracked files, so
@@ -15,11 +13,9 @@ import path from 'path'
  * it should have been checking is below.
  */
 describe('Problematic Section HTML Output', () => {
-  const text = fs.readFileSync(path.join(__dirname, '../problematic_section.milia'), 'utf-8')
-
-  const layers = [
-    { id: 'grad', type: 'gradient', enabled: true, value: 100, properties: { color1: '#ff0000', color2: '#0000ff' }, colors: '#e8b04b,#e8ae4b,#e7ad4b,#e7aa4b,#e7a84b,#e6a64b,#e6a14c,#e59f4c,#e4994c,#e3914c,#e28b4d,#e1854d,#e07c4d,#df754d,#de6f4e,#dd684e,#dc614e,#db5b4f,#da564f', opacity: 1.0, easing: 'linear' }
-  ]
+  // Was an untracked `.milia` read from disk; see `referenceDocument.ts`.
+  const text = REFERENCE_DOCUMENT
+  const layers = [REFERENCE_GRADIENT_LAYER]
 
   const render = (studioLayers: unknown[]) => {
     const registry = new TagRegistry()

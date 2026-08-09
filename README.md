@@ -42,4 +42,4 @@ Quasar's internal architecture is highly advanced. If you want to understand how
 
 [**Miliastry Source License (MSL-1.0)**](LICENSE) — Copyright (c) 2026 hxovc / Miliastry Team.
 
-Quasar is Source-Available under a custom license designed to protect the Miliastry ecosystem. You can use, modify, and distribute the engine for any project—including standard visual BBCode editors or osu! profile tools—**except** for creating a Competing Product (i.e., a direct clone of Miliastry Nova as an integrated IDE). The license automatically converts to a standard MIT License 2 years after each commit.
+Quasar is Source-Available under a custom license designed to protect the Miliastry ecosystem. You can use, modify, and distribute the engine for any project—including standard visual BBCode editors or osu! profile tools—**except** for creating a Competing Product (i.e., a direct clone of Miliastry Nova as an integrated IDE, or a competing standalone engine based on this code). The license automatically converts to a standard MIT License 2 years after each commit.

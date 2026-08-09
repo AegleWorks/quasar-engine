@@ -14,8 +14,7 @@
  * from them — which is where a mistake would now actually show up.
  */
 import { describe, it, expect } from 'vitest'
-import fs from 'node:fs'
-import path from 'node:path'
+import { REFERENCE_DOCUMENT, REFERENCE_DOCUMENT_WITH_GRADIENT } from './referenceDocument'
 import { parseBBCode } from '../BBCode/Parser'
 import { greenToRedNode } from '../BBCode/BBCodeToGreenNode'
 import { checkPartition } from '../Syntax/partition'
@@ -122,10 +121,14 @@ describe('partition invariant', () => {
   })
 
   describe('holds on real and hostile input', () => {
-    const fixtures = ['../problematic_section.milia', '../problematic_sectionwgradient.milia']
-    for (const f of fixtures) {
-      it(`fixture ${path.basename(f)}`, () => {
-        expectPartitions(fs.readFileSync(path.join(__dirname, f), 'utf-8'))
+    // Was two untracked `.milia` files read from disk; see `referenceDocument.ts`.
+    const fixtures = {
+      'reference document': REFERENCE_DOCUMENT,
+      'reference document with gradient': REFERENCE_DOCUMENT_WITH_GRADIENT,
+    }
+    for (const [name, source] of Object.entries(fixtures)) {
+      it(`fixture ${name}`, () => {
+        expectPartitions(source)
       })
     }
 
@@ -159,10 +162,7 @@ describe('partition invariant', () => {
   it('red offsets agree with the source text they claim', () => {
     // The check that only exists once positions are DERIVED: every leaf must
     // still be able to find itself in the source at the offset it reports.
-    const source = fs.readFileSync(
-      path.join(__dirname, '../problematic_sectionwgradient.milia'),
-      'utf-8',
-    )
+    const source = REFERENCE_DOCUMENT_WITH_GRADIENT
     const mismatches: string[] = []
     const visit = (n: RedNode): void => {
       if (n.kind === 'text' && mismatches.length < 5) {
