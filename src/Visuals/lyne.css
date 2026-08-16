@@ -123,35 +123,35 @@
 .bbcode-preview.theme-lyne .notice,
 .bb-notice {
   display: block !important;
-  background: rgba(255, 195, 77, 0.08) !important;
-  border: 1px solid rgba(255, 195, 77, 0.4) !important;
+  background: rgba(46, 230, 226, 0.08);
+  border: 1px solid rgba(46, 230, 226, 0.4);
+  border-left: 3px solid #2EE6E2;
   border-radius: 0 !important;
   padding: 13px 16px !important;
   margin: 0 !important;
   font-size: 0.8125rem !important;
   line-height: 1.55 !important;
-  color: rgb(255, 224, 163) !important;
+  color: rgba(46, 230, 226, 0.95);
   white-space: normal !important;
   clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
   width: 100% !important;
   box-sizing: border-box !important;
 }
 
-/* Especificidad 0,2,0 (igual a `.bbcode-preview-lyne .notice`) para que el
-   `display:flex` gane sobre el `display:block` de la regla base del notice;
-   con un selector de clase simple (0,1,0) el símbolo quedaba ARRIBA del texto. */
 .bbcode-preview-lyne .bb-wnotice,
 .bbcode-preview.theme-lyne .bb-wnotice,
 .bb-notice.bb-wnotice {
   display: flex !important;
   gap: 12px !important;
   align-items: flex-start !important;
-  border-color: rgba(255, 195, 77, 0.6) !important;
-  background: rgba(255, 195, 77, 0.12) !important;
+  background: rgba(255, 195, 77, 0.08);
+  border: 1px solid rgba(255, 195, 77, 0.4);
+  border-left: 3px solid #FFC34D;
+  color: rgb(255, 224, 163);
 }
 
 .bb-notice-mark {
-  color: var(--color-warning, #FFC34D) !important;
+  color: var(--color-warning, #FFC34D);
   font-size: 0.9375rem !important;
   flex: 0 0 auto !important;
   margin-top: 1px !important;
@@ -610,7 +610,7 @@
   border: 0 !important;
   height: 1px !important;
   background: linear-gradient(90deg, transparent, var(--color-accent, #2EE6E2), transparent) !important;
-  margin: 0 !important;
+  margin: 12px 0 !important;
   text-align: center !important;
   color: var(--color-accent, #2EE6E2) !important;
   font-family: var(--font-numeric, monospace) !important;
@@ -766,12 +766,19 @@
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  aspect-ratio: 1 !important;
+  aspect-ratio: 1 / 1 !important;
+  min-width: 1.85em !important;
+  min-height: 1.85em !important;
+  padding: 0.2em 0.35em !important;
+  box-sizing: border-box !important;
   border-radius: 50% !important;
   overflow: hidden !important;
   background: rgb(11 16 36 / 0.5) !important;
   border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
   clip-path: none !important;
+  text-align: center !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
 }
 
 /* Stack: replica el .bbStack original de Lyne (columna flex con gap).
