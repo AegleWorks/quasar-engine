@@ -11,6 +11,12 @@
     "outDir": "./dist",
     "baseUrl": ".",
     "paths": {
+      // En typecheck local, el exports map del package.json (que apunta a
+      // dist/ para consumidores publicados) NO debe aplicar: si `@miliastry/quasar`
+      // resolviera a dist/index.d.ts mientras los deep imports `src/*` usan las
+      // declaraciones de src/, TypeScript ve dos tipos RedNode/GreenNode distintos
+      // (private '_hashCache') y los tests fallan. Forzamos TODO a src/ aquí.
+      "@miliastry/quasar": ["src/index.ts"],
       "@miliastry/quasar/*": ["src/*"]
     }
   },
