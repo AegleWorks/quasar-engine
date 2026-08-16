@@ -74,6 +74,38 @@ export class RedNode {
    */
   private declare _range: Range
 
+  /**
+   * Pending offset shift for this subtree, applied on first read.
+   *
+   * `setStart` defers the walk: it records how far the subtree moved instead of
+   * adding the delta to every node's `_range` on the spot. The shift is a single
+   * integer here, on the adopted subtree ROOT — the node `setStart` was called
+   * on. Any offset read (`range`, `innerStart`, `innerEnd`, `findNodeAtOffset`)
+   * materializes the nearest pending ancestor's subtree via {@link materialize}.
+   *
+   * Why this is sound: a mid-document edit displaces every adopted block after
+   * it by the same delta, so adoption alone (thousands of `setStart` calls) was
+   * walking thousands of nodes per keystroke — measured as the dominant phase
+   * of `buildRed` (3.5-5.8 ms on the 547 KB fixture). The BlockPatcher locates
+   * the edited window by reference identity and only ever reads the few changed
+   * blocks' ranges, so the displaced-but-unchanged subtrees stay pending
+   * indefinitely — the walk never happens.
+   *
+   * Contract for future readers: app-layer interaction code (hover, links,
+   * selection ranges) DOES read `range` on user interaction. The first such
+   * read after a mid-document edit fires the deferred walk for the displaced
+   * tail — a one-time cost off the keystroke path, which is exactly the trade
+   * the laziness makes. Do not "optimize" by reading ranges back into the
+   * per-keystroke pipeline; the patcher stays churn-based by design.
+   *
+   * Composition across reparses: a node re-adopted while its ancestor is still
+   * pending must end up at the SUM of both deltas. `setStart` recomputes the
+   * delta from the untouched base `_range`, which is exactly the pending
+   * ancestor's base too, so composing during `materialize` (add the ancestor's
+   * delta into a child's pending delta) stays consistent.
+   */
+  private declare _lazyShift: number
+
   constructor(
     green: GreenNode,
     options?: {
@@ -95,6 +127,7 @@ export class RedNode {
     this.metadata = options?.metadata ?? {}
     this.kind = options?.kind ?? (green.kind as NodeKind)
     this._idxCache = -1
+    this._lazyShift = 0
     const start = options?.start ?? 0
     this._range = { start, end: start + green.width }
   }
@@ -105,16 +138,94 @@ export class RedNode {
    * Only for the tree-building paths, which create a node before they know
    * where its parent will put it. Callers that mutate a live tree should
    * rebuild instead — a red node's offset must always agree with its place.
+   *
+   * The move is deferred, not walked: the delta is recorded as a pending
+   * shift and applied by any offset read the first time the subtree is
+   * actually touched. Adoption calls this once per displaced block (thousands
+   * on a mid-document edit), and almost none of those subtrees are read on the
+   * same keystroke's hot path — the BlockPatcher locates the edit window by
+   * reference identity and only reads the few changed blocks.
+   *
+   * Re-adoption composes: a node whose subtree was shifted in a previous
+   * reparse and never read still carries a pending `_lazyShift`. The new
+   * target is absolute, so the delta is measured from the CURRENT effective
+   * start (`_range.start + _lazyShift`) and accumulated, not overwritten —
+   * otherwise the earlier shift would be applied twice.
    */
   setStart(start: number): void {
-    const delta = start - this._range.start
+    const delta = start - (this._range.start + this._lazyShift)
     if (delta === 0) return
-    const stack: RedNode[] = [this]
-    while (stack.length > 0) {
-      const node = stack.pop()!
-      node._range.start += delta
-      node._range.end += delta
-      for (const child of node.children) stack.push(child)
+    this._lazyShift += delta
+  }
+
+  /**
+   * Apply `delta` to `node`'s subtree, composing with any nested pending shift.
+   *
+   * A node with its own pending shift has a base `_range` the parent's delta is
+   * relative to as well (both were computed from the same pre-shift tree), so
+   * the parent's delta can be folded into the child's pending delta instead of
+   * into its `_range` — the child's later materialization applies the sum. This
+   * is what makes nested shifts across reparses compose without double counting.
+   */
+  private static applyShift(node: RedNode, delta: number): void {
+    if (delta === 0) return
+    if (node._lazyShift !== 0) {
+      node._lazyShift += delta
+      return
+    }
+    node._range.start += delta
+    node._range.end += delta
+    const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
+    if (titleNodes) {
+      for (let i = 0; i < titleNodes.length; i++) {
+        RedNode.applyShift(titleNodes[i], delta)
+      }
+    }
+    for (let i = 0; i < node.children.length; i++) {
+      RedNode.applyShift(node.children[i], delta)
+    }
+  }
+
+  /**
+   * Materialize every pending shift on the path from here to the root.
+   *
+   * Walks ancestors top-down (root-most first), applying each pending delta to
+   * its subtree. Top-down order matters: an ancestor's delta must land in a
+   * child's pending delta BEFORE the child's own materialization runs, or the
+   * two shifts would be applied to different bases. After the ancestors are
+   * settled, this node itself is materialized if it still carries a shift.
+   *
+   * The common case — nothing pending anywhere on the path — is one upward
+   * pointer walk that allocates nothing: `_range` is read from 148 call sites,
+   * and a per-read allocation there would show up in every phase. The chain
+   * array is only built after a pending shift is actually found.
+   */
+  private materialize(): void {
+    // Fast path: no pending shift on this node or any ancestor.
+    let node: RedNode | null = this
+    while (node !== null && node._lazyShift === 0) {
+      node = node.parent
+    }
+    if (node === null) return
+
+    // Slow path: collect the ancestor chain, root-most last (so we pop
+    // root-first), and materialize each pending shift top-down.
+    const chain: RedNode[] = []
+    let n: RedNode | null = this
+    while (n !== null) {
+      chain.push(n)
+      n = n.parent
+    }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const ancestor = chain[i]
+      const delta = ancestor._lazyShift
+      if (delta === 0) continue
+      ancestor._lazyShift = 0
+      ancestor._range.start += delta
+      ancestor._range.end += delta
+      for (let c = 0; c < ancestor.children.length; c++) {
+        RedNode.applyShift(ancestor.children[c], delta)
+      }
     }
   }
 
@@ -172,16 +283,19 @@ export class RedNode {
 
   /** Absolute span in the source. */
   get range(): Range {
+    this.materialize()
     return this._range
   }
 
   /** Absolute offset of this node's first child, past its opening delimiter. */
   get innerStart(): number {
+    this.materialize()
     return this._range.start + this.green.leadingWidth
   }
 
   /** Absolute offset where this node's closing delimiter begins. */
   get innerEnd(): number {
+    this.materialize()
     return this._range.end - this.green.trailingWidth
   }
 
@@ -296,9 +410,18 @@ export class RedNode {
    * para que quien pregunte reciba algo con sentido.
    */
   findNodeAtOffset(offset: number): RedNode | null {
+    this.materialize()
     const { start, end } = this._range
     const isEndOfDocument = offset === end && this.parent === null
     if ((offset < start || offset >= end) && !isEndOfDocument) return null
+
+    const titleNodes = this.metadata?.titleNodes as RedNode[] | undefined
+    if (titleNodes) {
+      for (const titleChild of titleNodes) {
+        const found = titleChild.findNodeAtOffset(offset)
+        if (found) return found
+      }
+    }
 
     for (const child of this.children) {
       const found = child.findNodeAtOffset(offset)

@@ -43,6 +43,7 @@ export class RedNodeStore {
   private canonicals = new Map<string, RedNode>()
   private _hits = 0
   private _misses = 0
+  private _collisions = 0
   private readonly extractMetadata: MetadataExtractor
 
   /**
@@ -57,10 +58,23 @@ export class RedNodeStore {
   /**
    * Get or create a canonical RedNode for the given GreenNode.
    *
-   * If a RedNode with the same structural hash already exists,
-   * returns the existing instance (structural sharing).
-   * If not, creates a new RedNode, recursively stores its children,
-   * and caches it.
+   * The store is keyed by `green._hash` — a 32-bit FNV structural hash — so a
+   * matching key is necessary but NOT sufficient proof of identity. The
+   * canonical pipeline (GreenNodePool interning) guarantees that structurally
+   * identical greens ARE the same object, which is what makes reference
+   * equality a sound discriminator:
+   *
+   * - same hash + same green reference  → HIT, reuse the canonical
+   * - same hash + different green       → COLLISION: a distinct subtree shares
+   *   the 32-bit hash. It is never reused as the registered canonical and never
+   *   overwrites it (that would corrupt every future hit for the registered
+   *   node). The colliding subtree simply loses canonicalization — rebuilt on
+   *   each call. Guarding correctness costs a rare dedup miss; the alternative
+   *   costs a wrong AST.
+   * - no hash entry                     → MISS, create and register
+   *
+   * Invariant preserved: a hash collision can never make one structure be
+   * represented by another structure's RedNode.
    *
    * @param green  The GreenNode to wrap
    * @param metadata  Optional metadata to set (overrides intrinsic metadata)
@@ -75,12 +89,35 @@ export class RedNodeStore {
     const hash = green._hash.toString()
     const existing = this.canonicals.get(hash)
     if (existing) {
-      this._hits++
-      return existing
+      if (existing.green === green) {
+        this._hits++
+        return existing
+      }
+      // Hash collision: different green, same 32-bit hash. Never reuse the
+      // registered canonical and never overwrite it — build a fresh node and
+      // leave the registered entry untouched.
+      this._collisions++
+      return this.buildCanonical(green, metadata, kind)
     }
 
     this._misses++
+    const red = this.buildCanonical(green, metadata, kind)
+    this.canonicals.set(hash, red)
+    return red
+  }
 
+  /**
+   * Build a canonical RedNode for `green` WITHOUT registering it.
+   *
+   * Shared by the miss path (which registers the result) and the collision
+   * path (which must not). Both need the same bottom-up construction:
+   * children are canonicalized first, then the parent references them.
+   */
+  private buildCanonical(
+    green: GreenNode,
+    metadata?: NodeMetadata,
+    kind?: NodeKind,
+  ): RedNode {
     // First, recursively store children (bottom-up construction)
     const childRedNodes: RedNode[] = []
     for (const childGreen of green.children as GreenNode[]) {
@@ -96,8 +133,6 @@ export class RedNodeStore {
 
     // Populate children (construction-time, outside the mutation lock)
     red.initChildren(childRedNodes)
-
-    this.canonicals.set(hash, red)
     return red
   }
 
@@ -130,6 +165,7 @@ export class RedNodeStore {
       size: this.canonicals.size,
       hits: this._hits,
       misses: this._misses,
+      collisions: this._collisions,
       deduplicationRatio: this._hits > 0
         ? (this._hits / (this._hits + this._misses) * 100).toFixed(1) + '%'
         : '0%',
@@ -143,5 +179,6 @@ export class RedNodeStore {
     this.canonicals.clear()
     this._hits = 0
     this._misses = 0
+    this._collisions = 0
   }
 }

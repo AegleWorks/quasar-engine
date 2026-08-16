@@ -150,7 +150,7 @@ const DEPRECATED_KINDS = new Set<NodeKind>(
 )
 
 /** Matches anything shaped like a BBCode tag. */
-const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*]+(?:=[^\]]*)?\]/
+const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*-]+(?:=[^\]]*)?\]/
 
 /**
  * Reads the tag name at the start of a node's range: `[quote="x"]` → `quote`.
@@ -159,7 +159,7 @@ const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*]+(?:=[^\]]*)?\]/
  * The obvious `source.slice(start, start + 32)` allocates a string for every
  * tag node of every parse; this matches in place.
  */
-const OPENING_TAG_RE = /\[\/?([a-zA-Z0-9_*]+)/y
+const OPENING_TAG_RE = /\[\/?([a-zA-Z0-9_*-]+)/y
 
 /**
  * Kinds that are not written tags, so no closing-tag rule applies to them.
@@ -453,7 +453,7 @@ export class SemanticAnalyzer {
         // Instead of underlining the entire [code] block, we find the exact
         // positions of the tags inside the text and yield a diagnostic for each.
         const diagnostics: Diagnostic[] = []
-        const regex = /\[\/?[a-zA-Z0-9_*]+(?:=[^\]]*)?\]/g
+        const regex = /\[\/?[a-zA-Z0-9_*-]+(?:=[^\]]*)?\]/g
 
         for (let i = 0; i < node.children.length; i++) {
           const child = node.children[i]

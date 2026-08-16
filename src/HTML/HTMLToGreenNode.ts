@@ -98,6 +98,7 @@ function domToGreenTree(root: HTMLElement): GreenNode {
           }
           else if (el.style.textAlign === 'center') kind = 'center';
           else if (el.style.textAlign === 'right') kind = 'right';
+          else if (el.style.textAlign === 'left') kind = 'left';
           else kind = 'group';
           break;
         case 'span':

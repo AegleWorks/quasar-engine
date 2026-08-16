@@ -1,0 +1,1027 @@
+/**
+ * DocumentEngine — Visuals / lyne.css
+ *
+ * Lyne-inspired BBCode preview theme.
+ * Reusable visual platform style for the Lyne cyberpunk rhythm game aesthetic.
+ *
+ * Scoped under `.bbcode-preview-lyne` and `.theme-lyne`.
+ * All rules strictly override default/osu.css styles to ensure 0% pink bleed.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Saira+Condensed:wght@600;700&family=Saira:wght@400;600&display=swap');
+
+:root {
+  --color-accent: #2EE6E2;
+  --color-accent-bright: #68FFF8;
+  --color-warning: #FFC34D;
+  --color-text-primary: #FFFFFF;
+  --color-text-mid: #9EACD4;
+  --color-text-dim: #606C8F;
+  --color-hairline: rgba(255, 255, 255, 0.12);
+  --font-display: "Saira Condensed", sans-serif;
+  --font-body: "Saira", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-numeric: "IBM Plex Mono", monospace;
+  --lyne-cut: 8px;
+}
+
+.bbcode-preview-lyne,
+.bbcode-preview.theme-lyne {
+  font-family: var(--font-body) !important;
+  font-size: 0.875rem !important;
+  /* 1.5 igual que osu.css: 1.6 estiraba las líneas y exageraba los huecos
+   * verticales (los <br> del renderer miden un line-height cada uno). */
+  line-height: 1.5 !important;
+  color: var(--color-text-mid, #9EACD4) !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* ─── Links ─────────────────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne a,
+.bbcode-preview.theme-lyne a {
+  color: var(--color-accent, #2EE6E2) !important;
+  text-decoration: none !important;
+  border-bottom: 1px dashed rgba(46, 230, 226, 0.35) !important;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.bbcode-preview-lyne a:hover,
+.bbcode-preview.theme-lyne a:hover {
+  color: var(--color-accent-bright, #68FFF8) !important;
+  border-bottom-color: var(--color-accent, #2EE6E2) !important;
+}
+
+/* ─── 45° Cut Panels ────────────────────────────────────────────────────── */
+
+.bb-cut-panel {
+  border-radius: 0 !important;
+  outline: none !important;
+  clip-path: polygon(
+    var(--lyne-cut, 8px) 0,
+    100% 0,
+    100% calc(100% - var(--lyne-cut, 8px)),
+    calc(100% - var(--lyne-cut, 8px)) 100%,
+    0 100%,
+    0 var(--lyne-cut, 8px)
+  ) !important;
+}
+
+.bb-cut-panel:focus-visible {
+  outline: none !important;
+  filter: drop-shadow(0 0 3px var(--color-accent, #2EE6E2)) !important;
+}
+
+/* ─── Headings ──────────────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne h2,
+.bbcode-preview.theme-lyne h2 {
+  font-family: var(--font-display, "Saira Condensed", sans-serif) !important;
+  font-weight: 700 !important;
+  font-size: 1.35rem !important;
+  letter-spacing: 1px !important;
+  color: var(--color-text-primary, #FFFFFF) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  text-transform: uppercase !important;
+  line-height: 1.1 !important;
+}
+
+/* ─── Notice & Warning Notice ───────────────────────────────────────────── */
+
+.bbcode-preview-lyne .notice,
+.bbcode-preview.theme-lyne .notice,
+.bb-notice {
+  display: block !important;
+  background: rgba(255, 195, 77, 0.08) !important;
+  border: 1px solid rgba(255, 195, 77, 0.4) !important;
+  border-radius: 0 !important;
+  padding: 13px 16px !important;
+  margin: 0 !important;
+  font-size: 0.8125rem !important;
+  line-height: 1.55 !important;
+  color: rgb(255, 224, 163) !important;
+  white-space: normal !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* Especificidad 0,2,0 (igual a `.bbcode-preview-lyne .notice`) para que el
+   `display:flex` gane sobre el `display:block` de la regla base del notice;
+   con un selector de clase simple (0,1,0) el símbolo quedaba ARRIBA del texto. */
+.bbcode-preview-lyne .bb-wnotice,
+.bbcode-preview.theme-lyne .bb-wnotice,
+.bb-notice.bb-wnotice {
+  display: flex !important;
+  gap: 12px !important;
+  align-items: flex-start !important;
+  border-color: rgba(255, 195, 77, 0.6) !important;
+  background: rgba(255, 195, 77, 0.12) !important;
+}
+
+.bb-notice-mark {
+  color: var(--color-warning, #FFC34D) !important;
+  font-size: 0.9375rem !important;
+  flex: 0 0 auto !important;
+  margin-top: 1px !important;
+}
+
+.bb-notice-body {
+  min-width: 0 !important;
+  flex: 1 1 100% !important;
+  width: 100% !important;
+  display: block !important;
+}
+
+/* ─── Quotes ────────────────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne blockquote,
+.bbcode-preview.theme-lyne blockquote {
+  margin: 0 !important;
+  padding: 10px 16px !important;
+  border: 1px solid rgba(46, 230, 226, 0.3) !important;
+  border-left: 1px solid rgba(46, 230, 226, 0.3) !important;
+  background: rgba(46, 230, 226, 0.06) !important;
+  color: var(--color-text-mid, #9EACD4) !important;
+  white-space: normal !important;
+  border-radius: 0 !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+}
+
+.bbcode-preview-lyne blockquote div strong,
+.bbcode-preview.theme-lyne blockquote div strong {
+  display: block;
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.6875rem !important;
+  letter-spacing: 1px !important;
+  text-transform: uppercase !important;
+  color: var(--color-accent, #2EE6E2) !important;
+  margin-bottom: 6px !important;
+  font-style: normal !important;
+}
+
+/* ─── Code ──────────────────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne pre,
+.bbcode-preview.theme-lyne pre {
+  margin: 0 !important;
+  padding: 12px 14px !important;
+  background: rgba(5, 6, 15, 0.85) !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.8125rem !important;
+  color: var(--color-text-primary, #FFFFFF) !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  border-radius: 0 !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+}
+
+.bbcode-preview-lyne pre code,
+.bbcode-preview.theme-lyne pre code {
+  color: var(--color-text-primary, #FFFFFF) !important;
+  font-family: inherit !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.bbcode-preview-lyne code.inline,
+.bbcode-preview.theme-lyne code.inline {
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.8125em !important;
+  padding: 1px 5px !important;
+  background: rgba(5, 6, 15, 0.85) !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  border-radius: 0 !important;
+  clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px) !important;
+  color: var(--color-text-primary, #FFFFFF) !important;
+}
+
+/* ─── Boxes & Disclosures (with rotating chevron) ─────────────────────────── */
+
+/* [box]/[spoilerbox] normales: limpios por defecto — sin fondo, sin líneas,
+ * sin recorte de esquinas. El look de caja (fondo + líneas + cut-corner)
+ * solo lo lleva [boxw] (ver `details.boxw` abajo). */
+.bbcode-preview-lyne details,
+.bbcode-preview.theme-lyne details {
+  margin: 0 !important;
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* [boxw]: el box con líneas y fondo (estilo Lyne). El borde sigue el acento
+ * del autor ([boxw=Title:#hex]) si lo hay; si no, el hairline del tema. */
+.bbcode-preview-lyne details.boxw,
+.bbcode-preview.theme-lyne details.boxw {
+  background: rgba(11, 16, 36, 0.5) !important;
+  border: 1px solid var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-hairline, rgba(255, 255, 255, 0.12))))) !important;
+  border-radius: 0 !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+  padding: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.bbcode-preview-lyne details > summary::-webkit-details-marker,
+.bbcode-preview.theme-lyne details > summary::-webkit-details-marker {
+  display: none !important;
+}
+
+.bbcode-preview-lyne details summary,
+.bbcode-preview.theme-lyne details summary,
+.bbcode-preview-lyne details > summary,
+.bbcode-preview.theme-lyne details > summary {
+  cursor: pointer !important;
+  padding: 9px 14px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  list-style: none !important;
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.6875rem !important;
+  letter-spacing: 1px !important;
+  /* --box-accent: color del autor via [box=Title:#hex]; si no, el acento de
+   * la card/glass que lo contiene (--card-accent/--glass-accent se heredan);
+   * si no, el acento del tema */
+  color: var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-accent, #2EE6E2)))) !important;
+  user-select: none !important;
+  transition: color 0.15s ease !important;
+  text-align: inherit;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.bbcode-preview-lyne details > summary > div,
+.bbcode-preview.theme-lyne details > summary > div {
+  flex: 1;
+}
+
+/* Centered box titles (direct or nested inside any [centre] or centered ancestor) */
+.bbcode-preview-lyne [style*="text-align:center"] details summary,
+.bbcode-preview.theme-lyne [style*="text-align:center"] details summary,
+.bbcode-preview-lyne [style*="text-align: center"] details summary,
+.bbcode-preview.theme-lyne [style*="text-align: center"] details summary,
+.bbcode-preview-lyne [align="center"] details summary,
+.bbcode-preview.theme-lyne [align="center"] details summary,
+.bbcode-preview-lyne .center details summary,
+.bbcode-preview.theme-lyne .center details summary,
+.bbcode-preview-lyne details[style*="text-align:center"] summary,
+.bbcode-preview.theme-lyne details[style*="text-align:center"] summary,
+.bbcode-preview-lyne details[style*="text-align: center"] summary,
+.bbcode-preview.theme-lyne details[style*="text-align: center"] summary,
+.bbcode-preview-lyne details > summary:has([style*="text-align:center"]),
+.bbcode-preview-lyne details > summary:has([style*="text-align: center"]),
+.bbcode-preview-lyne details > summary:has(.center) {
+  justify-content: center !important;
+  text-align: center !important;
+}
+
+/* Right-aligned box titles */
+.bbcode-preview-lyne [style*="text-align:right"] details summary,
+.bbcode-preview.theme-lyne [style*="text-align:right"] details summary,
+.bbcode-preview-lyne [style*="text-align: right"] details summary,
+.bbcode-preview.theme-lyne [style*="text-align: right"] details summary,
+.bbcode-preview-lyne details[style*="text-align:right"] summary,
+.bbcode-preview.theme-lyne details[style*="text-align:right"] summary,
+.bbcode-preview-lyne details > summary:has([style*="text-align:right"]) {
+  justify-content: flex-end !important;
+  text-align: right !important;
+}
+
+.bbcode-preview-lyne details > summary::before,
+.bbcode-preview.theme-lyne details > summary::before {
+  content: "" !important;
+  width: 7px !important;
+  height: 7px !important;
+  flex: 0 0 7px !important;
+  border-right: 1.5px solid currentColor !important;
+  border-bottom: 1.5px solid currentColor !important;
+  transform: rotate(-45deg) !important;
+  transition: transform 0.15s ease !important;
+}
+
+.bbcode-preview-lyne details:not([open]),
+.bbcode-preview.theme-lyne details:not([open]) {
+  font-size: 0 !important;
+  line-height: 0 !important;
+  padding: 0 !important;
+}
+
+.bbcode-preview-lyne details:not([open]) > summary,
+.bbcode-preview.theme-lyne details:not([open]) > summary {
+  font-size: 0.6875rem !important;
+  line-height: 1.5 !important;
+}
+
+.bbcode-preview-lyne .bb-box-body,
+.bbcode-preview.theme-lyne .bb-box-body {
+  padding: 4px 14px 12px !important;
+  font-size: 0.875rem !important;
+  line-height: 1.5 !important;
+  white-space: normal !important;
+}
+
+.bbcode-preview-lyne details.boxw[open] > summary,
+.bbcode-preview.theme-lyne details.boxw[open] > summary {
+  border-bottom: 1px solid var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-hairline, rgba(255, 255, 255, 0.12))))) !important;
+}
+
+.bbcode-preview-lyne details[open] > summary::before,
+.bbcode-preview.theme-lyne details[open] > summary::before {
+  transform: rotate(45deg) !important;
+}
+
+.bbcode-preview-lyne details > summary:hover,
+.bbcode-preview.theme-lyne details > summary:hover {
+  color: var(--color-accent-bright, #68FFF8) !important;
+}
+
+/* ─── Lists & Markers ───────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne ul,
+.bbcode-preview.theme-lyne ul {
+  margin: 0 !important;
+  padding-left: 20px !important;
+  list-style: disc outside !important;
+}
+
+.bbcode-preview-lyne ol,
+.bbcode-preview.theme-lyne ol {
+  margin: 0 !important;
+  padding-left: 20px !important;
+  list-style: decimal outside !important;
+}
+
+.bbcode-preview-lyne li,
+.bbcode-preview.theme-lyne li {
+  margin: 0 !important;
+  line-height: 1.5 !important;
+  display: list-item !important;
+}
+
+.bbcode-preview-lyne li::marker,
+.bbcode-preview.theme-lyne li::marker {
+  color: var(--color-accent, #2EE6E2) !important;
+}
+
+/* ─── Spoilers ──────────────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne .spoiler,
+.bbcode-preview.theme-lyne .spoiler {
+  background: rgba(142, 155, 196, 0.3) !important;
+  color: transparent !important;
+  cursor: pointer !important;
+  padding: 1px 4px !important;
+  border-radius: 0 !important;
+  clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px) !important;
+  user-select: none !important;
+  transition: all 0.2s ease !important;
+}
+
+.bbcode-preview-lyne .spoiler:hover,
+.bbcode-preview.theme-lyne .spoiler:hover {
+  color: #FFFFFF !important;
+  background: rgba(142, 155, 196, 0.15) !important;
+}
+
+/* ─── Media ─────────────────────────────────────────────────────────────── */
+
+.bbcode-preview-lyne img,
+.bbcode-preview.theme-lyne img {
+  /* Igual que osu.css: NO se declara display. El renderer ya emite
+   * `display:inline-block` inline para [img] sin modificadores, y eso es lo
+   * que centra la imagen bajo [center]/[centre] (text-align:center). Si el
+   * CSS forzara display (p. ej. block por el preflight de Tailwind) rompería
+   * ese centrado — por eso aquí no se toca, como en osu.css. */
+  border-radius: 0 !important;
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.bbcode-preview-lyne iframe,
+.bbcode-preview.theme-lyne iframe {
+  /* inline-block (no block): el preflight de Tailwind fuerza `iframe{display:block}`
+   * y eso rompe el centrado por `text-align:center` de [centre]. Igual que las
+   * imágenes: inline-level para que text-align lo centre. */
+  display: inline-block !important;
+  border-radius: 0 !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+}
+
+/* ─── Tables ────────────────────────────────────────────────────────────── */
+
+.bb-table-frame {
+  position: relative !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  overflow-x: auto !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  background:
+    linear-gradient(125deg, color-mix(in srgb, var(--table-accent, var(--color-accent, #2EE6E2)) 7%, transparent), transparent 34%),
+    repeating-linear-gradient(-45deg, transparent 0 10px, rgba(142, 155, 196, 0.018) 10px 12px),
+    rgba(7, 10, 23, 0.82) !important;
+  box-shadow:
+    inset 0 1px rgba(127, 245, 240, 0.08),
+    inset 0 -1px rgba(142, 155, 196, 0.08) !important;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px)) !important;
+  scrollbar-width: thin;
+}
+
+.bb-table {
+  width: 100% !important;
+  min-width: 380px !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  margin: 0 !important;
+  font-size: 0.8125rem !important;
+  white-space: normal !important;
+}
+
+.bb-table td,
+.bb-table .bb-th {
+  min-width: 0 !important;
+  padding: 11px 14px !important;
+  border-bottom: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  border-right: 1px solid rgba(142, 155, 196, 0.08) !important;
+  color: var(--color-text-mid, #9EACD4) !important;
+  text-align: left !important;
+  vertical-align: middle !important;
+  overflow-wrap: anywhere !important;
+  transition: background 0.15s ease, color 0.15s ease !important;
+}
+
+.bb-table tr > :last-child {
+  border-right: 0 !important;
+}
+
+.bb-table tr:last-child > * {
+  border-bottom: 0 !important;
+}
+
+.bb-table tr:hover td {
+  color: var(--color-text-primary, #FFFFFF) !important;
+  background: color-mix(in srgb, var(--table-accent, var(--color-accent, #2EE6E2)) 4.5%, transparent) !important;
+}
+
+.bb-table tr:hover td:first-child {
+  box-shadow: inset 2px 0 var(--table-accent, var(--color-accent, #2EE6E2)) !important;
+}
+
+.bb-table .bb-th {
+  position: relative !important;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--table-accent, var(--color-accent, #2EE6E2)) 10%, transparent), rgba(142, 155, 196, 0.035)) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--table-accent, var(--color-accent, #2EE6E2)) 28%, transparent) !important;
+  color: var(--color-text-primary, #FFFFFF) !important;
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.625rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 1.8px !important;
+  line-height: 1.3 !important;
+  text-transform: uppercase !important;
+  padding: 8px 10px !important;
+}
+
+.bb-table-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  max-width: 100% !important;
+  min-height: 22px !important;
+  padding: 4px 13px 4px 10px !important;
+  overflow: hidden !important;
+  /* Los títulos ([th]) siguen el acento de la tabla ([tables=:#hex]) */
+  color: var(--table-accent, var(--color-accent-bright, #68FFF8)) !important;
+  background: color-mix(in srgb, var(--table-accent, var(--color-accent, #2EE6E2)) 9%, transparent) !important;
+  border-left: 2px solid var(--table-accent, var(--color-accent, #2EE6E2)) !important;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 7px) 100%, 0 100%) !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.bb-table-striped tr:nth-child(even) td {
+  background: rgba(142, 155, 196, 0.04) !important;
+}
+
+.bb-table-borders td,
+.bb-table-borders .bb-th {
+  border-right: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18) !important;
+}
+
+/* ─── Gallery & Columns ─────────────────────────────────────────────────── */
+
+.bb-gallery {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  margin: 0 !important;
+}
+
+.bb-gallery img {
+  max-height: 180px !important;
+  object-fit: cover !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px) !important;
+}
+
+.bb-columns {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 16px !important;
+  margin: 0 !important;
+  white-space: normal !important;
+  align-items: start !important;
+}
+
+.bb-columns[style*="column-count: 2"],
+.bb-columns[style*="column-count:2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.bb-columns[style*="column-count: 3"],
+.bb-columns[style*="column-count:3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+.bb-columns[style*="column-count: 4"],
+.bb-columns[style*="column-count:4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+
+.bb-columns > * {
+  min-width: 0 !important;
+  width: 100% !important;
+  margin-top: 0 !important;
+  box-sizing: border-box !important;
+}
+
+/* [columns=2:#hex]: superficie opcional derivada del acento — solo aparece
+ * cuando el autor puso color; sin color, .bb-columns queda grid limpio. */
+.bb-columns-surface {
+  border: 1px solid color-mix(in srgb, var(--columns-accent, var(--color-accent, #2EE6E2)) 45%, transparent) !important;
+  background:
+    linear-gradient(125deg, color-mix(in srgb, var(--columns-accent, var(--color-accent, #2EE6E2)) 6%, transparent), transparent 45%) !important;
+  border-radius: 0 !important;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)) !important;
+  padding: 12px !important;
+}
+
+/* ─── Separators ────────────────────────────────────────────────────────── */
+
+.bb-separator {
+  border: 0 !important;
+  height: 1px !important;
+  background: linear-gradient(90deg, transparent, var(--color-accent, #2EE6E2), transparent) !important;
+  margin: 0 !important;
+  text-align: center !important;
+  color: var(--color-accent, #2EE6E2) !important;
+  font-family: var(--font-numeric, monospace) !important;
+  letter-spacing: 2px !important;
+}
+
+/* ─── Scroll Container ──────────────────────────────────────────────────── */
+
+.bb-scroll {
+  overflow-y: auto !important;
+  overscroll-behavior: auto !important;
+  margin: 0 !important;
+  padding: 8px 12px !important;
+  background: rgba(5, 6, 15, 0.5) !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  border-radius: 0 !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+  scrollbar-width: thin;
+}
+
+/* ─── Inline Typography & Badges ────────────────────────────────────────── */
+
+.bb-mark {
+  background: rgba(255, 220, 77, 0.3) !important;
+  color: inherit !important;
+  padding: 1px 4px !important;
+  border-radius: 0 !important;
+  clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px) !important;
+}
+
+.bb-kbd {
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.85em !important;
+  padding: 2px 6px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  border-bottom-width: 2px !important;
+  border-radius: 0 !important;
+  clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px) !important;
+  color: var(--color-text-primary, #FFFFFF) !important;
+}
+
+.bb-tooltip {
+  border-bottom: 1px dotted var(--color-text-dim, #606C8F) !important;
+  cursor: help !important;
+}
+
+.bb-raw {
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace) !important;
+  font-size: 0.85em !important;
+  color: var(--color-text-mid, #9EACD4) !important;
+}
+
+/* ─── Containers (card, glass, neon-box, flex, grid, middle, circle) ────── */
+
+/* card/glass aceptan color `[card=#hex]` / `[container=glass:#hex]`: el borde
+ * y el tinte de fondo derivan de `--card-accent` / `--glass-accent`. Sin
+ * color, los fallbacks reproducen exactamente los valores por defecto. */
+.bb-card {
+  padding: 14px 18px !important;
+  background: color-mix(in srgb, var(--card-accent, rgb(14 16 28 / 0.85)) 6%, rgb(14 16 28 / 0.85)) !important;
+  border: 1px solid var(--card-accent, var(--color-hairline, rgba(255, 255, 255, 0.12))) !important;
+  margin: 0 !important;
+  contain: layout style;
+}
+
+.bb-glass {
+  padding: 14px 18px !important;
+  /* Glass sin backdrop-filter: el blur re-rasteriza todo lo que hay detrás en
+     cada scroll (costo dominante con varios glass en el documento) y sabotea
+     el `contain` de abajo. Sobre fondos oscuros el blur era casi invisible
+     (el tint ya es 4% blanco), así que se sustituye por un fondo ligeramente
+     más opaco que conserva el look de vidrio. */
+  background: color-mix(in srgb, var(--glass-accent, #ffffff) 7%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--glass-accent, #ffffff) 10%, transparent) !important;
+  margin: 0 !important;
+  contain: layout style;
+}
+
+/* ─── Propagación del acento al contenido sin color propio ────────────────
+ * Cuando la card/glass recibió color (clase `bb-accented`, emitida por el
+ * renderer), el contenido que NO tiene [color=...] hereda una paleta derivada
+ * del acento: texto en un tint claro (legible sobre el fondo oscuro), negritas
+ * más brillantes, links en el acento puro, y quotes/separadores en el mismo
+ * tono. Todo se resuelve por luminancia con `color-mix`, así que un acento
+ * oscuro produce tints claros y uno claro, pasteles. Los [color=...] inline
+ * ganan por especificidad (style > clase). La cadena `var(--card-accent,
+ * var(--glass-accent, …))` permite que una regla sirva para ambas clases. */
+.bb-card.bb-accented,
+.bb-glass.bb-accented {
+  color: color-mix(in srgb, var(--card-accent, var(--glass-accent, #ffffff)) 62%, #ffffff) !important;
+}
+
+.bb-card.bb-accented strong,
+.bb-card.bb-accented b,
+.bb-glass.bb-accented strong,
+.bb-glass.bb-accented b {
+  color: color-mix(in srgb, var(--card-accent, var(--glass-accent, #ffffff)) 82%, #ffffff) !important;
+}
+
+.bb-card.bb-accented a,
+.bb-glass.bb-accented a {
+  color: var(--card-accent, var(--glass-accent, #2EE6E2)) !important;
+  text-decoration-color: color-mix(in srgb, var(--card-accent, var(--glass-accent, #2EE6E2)) 45%, transparent) !important;
+}
+
+.bb-card.bb-accented blockquote,
+.bb-glass.bb-accented blockquote {
+  border-color: color-mix(in srgb, var(--card-accent, var(--glass-accent, #2EE6E2)) 30%, transparent) !important;
+  background: color-mix(in srgb, var(--card-accent, var(--glass-accent, #2EE6E2)) 6%, transparent) !important;
+  color: color-mix(in srgb, var(--card-accent, var(--glass-accent, #2EE6E2)) 55%, #9EACD4) !important;
+}
+
+.bb-card.bb-accented .bb-separator,
+.bb-glass.bb-accented .bb-separator {
+  background: linear-gradient(90deg, transparent, var(--card-accent, var(--glass-accent, #2EE6E2)), transparent) !important;
+  color: var(--card-accent, var(--glass-accent, #2EE6E2)) !important;
+}
+
+.bb-neon-box {
+  padding: 16px !important;
+  margin: 0 !important;
+  border: 2px solid var(--neon-color, var(--color-accent, #2EE6E2)) !important;
+  background: color-mix(in srgb, var(--neon-color, var(--color-accent, #2EE6E2)) 4%, rgba(7, 10, 23, 0.55)) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  contain: layout style;
+}
+
+.bb-flex {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+}
+
+.bb-grid {
+  display: grid !important;
+  gap: 8px !important;
+  margin: 0 !important;
+}
+
+.bb-middle {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+/* Circle: replica el .bbCircle original de Lyne (Main Bridge/line/web/
+ * components/bbcode.module.css). aspect-ratio:1 + centrado convierten el div
+ * en un círculo real con el contenido al centro; fondo y borde lo pintan como
+ * badge. clip-path:none evita que herede los cortes de esquina de los paneles. */
+.bb-circle {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  aspect-ratio: 1 !important;
+  border-radius: 50% !important;
+  overflow: hidden !important;
+  background: rgb(11 16 36 / 0.5) !important;
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
+  clip-path: none !important;
+}
+
+/* Stack: replica el .bbStack original de Lyne (columna flex con gap).
+ * El container por defecto ([stack] / [container=stack] / default) emite
+ * `<div class="bb-stack">` y sin estas reglas se veía como un div vacío. */
+.bb-stack {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  margin: 8px 0 !important;
+}
+
+/* Imagen inline: conserva las dimensiones máx y el margen, pero SIN borde,
+ * sombra ni redondeo — la imagen queda limpia por defecto. Los modificadores
+ * explícitos ([img round], [img shadow], [img float], [img=WxH]) siguen
+ * emitiendo su estilo inline desde el renderer. */
+.bb-img {
+  max-width: 100% !important;
+  max-height: 420px !important;
+  height: auto !important;
+  vertical-align: middle !important;
+  margin: 4px 0 !important;
+}
+
+/* Audio: replica el .bbAudio original de Lyne (bloque centrado, ancho máx). */
+.bb-audio {
+  display: block !important;
+  width: 100% !important;
+  max-width: 420px !important;
+  margin: 10px 0 !important;
+}
+
+/* ─── Imagemap (replica .bbImageMap de Lyne) ──────────────────────────── */
+
+.bbcode-preview-lyne .imagemap-container,
+.bbcode-preview.theme-lyne .imagemap-container,
+.bbcode-preview-lyne .bbcode-imagemap,
+.bbcode-preview.theme-lyne .bbcode-imagemap {
+  /* inline-block igual que osu.css: el renderer emite `display:inline-block`
+   * en el contenedor y eso es lo que hace que [centre] (text-align:center) lo
+   * centre. Forzarlo a block rompe el centrado. max-width:100% igual que
+   * osu.css: el mapa se escala al ancho disponible del preview en vez de
+   * quedarse clavado en 640px (el tope que ponía el .bbImageMap de Lyne). */
+  display: inline-block !important;
+  position: relative !important;
+  max-width: 100% !important;
+  margin: 10px 0 !important;
+  line-height: 0 !important;
+}
+
+.bbcode-preview-lyne .imagemap-container > img,
+.bbcode-preview.theme-lyne .imagemap-container > img,
+.bbcode-preview-lyne .bbcode-imagemap > img,
+.bbcode-preview.theme-lyne .bbcode-imagemap > img {
+  /* Sin borde: la imagen del mapa queda limpia, igual que osu.css. Solo las
+   * regiones (imagemap-area) llevan borde para ser interactivas. */
+  width: 100% !important;
+  height: auto !important;
+}
+
+.bbcode-preview-lyne .imagemap-container > a,
+.bbcode-preview.theme-lyne .imagemap-container > a,
+.bbcode-preview-lyne .bbcode-imagemap > a,
+.bbcode-preview.theme-lyne .bbcode-imagemap > a {
+  position: absolute;
+  border: 1px solid transparent;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.bbcode-preview-lyne .imagemap-container > a:hover,
+.bbcode-preview.theme-lyne .imagemap-container > a:hover,
+.bbcode-preview-lyne .bbcode-imagemap > a:hover,
+.bbcode-preview.theme-lyne .bbcode-imagemap > a:hover {
+  border-color: var(--color-accent, #2EE6E2) !important;
+  background: rgba(46, 230, 226, 0.14) !important;
+}
+
+/* ─── Visual Effects & Animations ───────────────────────────────────────── */
+
+/* Neon: basado en el CSS original de Lyne (Main Bridge/line/web/
+ * components/bbcode.module.css), con el parpadeo real de neón (neon-flicker)
+ * intacto. El glow se reduce de 5 a 2 capas (7px + 10px, sin halos externos):
+ * en el preview el contenido vive en un scroll container, y según
+ * css-overflow-3 §2.2/§2.3 la spec obliga a recortar todo lo que sobresale por
+ * encima del scroll origin (la "unreachable scrollable overflow region"), así
+ * que un halo amplio se cortaba en la primera línea. 7/10px caben holgados
+ * dentro del padding del preview y conservan el brillo de neón. */
+.bb-neon {
+  color: var(--neon-color, #fff);
+  text-shadow:
+    0 0 7px var(--neon-color, #fff),
+    0 0 10px var(--neon-color, #fff);
+  animation: bb-neon-flicker 1.5s ease-in-out infinite alternate;
+}
+@keyframes bb-neon-flicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% {
+    text-shadow:
+      0 0 7px var(--neon-color, #fff),
+      0 0 10px var(--neon-color, #fff);
+  }
+  20%, 24%, 55% {
+    text-shadow: none;
+  }
+}
+
+.bb-glow {
+  display: inline-block !important;
+  padding: 0 2px !important;
+  text-shadow:
+    0 0 4px var(--glow-color, var(--color-accent, #2EE6E2)),
+    0 0 8px var(--glow-color, var(--color-accent, #2EE6E2)) !important;
+}
+
+.bb-emboss {
+  text-shadow: 1px 1px 1px rgba(255,255,255,0.3), -1px -1px 1px rgba(0,0,0,0.7) !important;
+}
+
+.bb-engrave {
+  text-shadow: -1px -1px 1px rgba(255,255,255,0.3), 1px 1px 1px rgba(0,0,0,0.7) !important;
+}
+
+/* Shimmer: replica exacta del CSS original de Lyne (Main Bridge/line/web/
+ * components/bbcode.module.css). Sin `!important`, sin `inline-block` y sin
+ * picos de color fijos: el destello sigue los tokens del tema (text-mid →
+ * text-primary → text-mid) y anima con ease-in-out. */
+.bb-shimmer,
+.bbShimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-text-mid) 0%,
+    var(--color-text-primary) 50%,
+    var(--color-text-mid) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: bb-shimmer-anim 2s ease-in-out infinite;
+}
+@keyframes bb-shimmer-anim {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
+.bb-pulse {
+  display: inline-block !important;
+  transform: translateZ(0);
+  animation: bb-pulse-anim 2s ease-in-out infinite !important;
+}
+@keyframes bb-pulse-anim {
+  0%, 100% { transform: translateZ(0) scale(1); }
+  50% { transform: translateZ(0) scale(1.08); }
+}
+
+.bb-bounce {
+  display: inline-block !important;
+  transform: translateZ(0);
+  animation: bb-bounce-anim 2.4s ease-in-out infinite alternate !important;
+}
+@keyframes bb-bounce-anim {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, -4px, 0); }
+}
+
+.bb-shake {
+  display: inline-block !important;
+  animation: bb-shake-anim 0.5s ease-in-out infinite !important;
+}
+@keyframes bb-shake-anim {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+
+.bb-fade-in {
+  display: inline-block !important;
+  animation: bb-fade-in-anim 2s ease-in !important;
+}
+@keyframes bb-fade-in-anim {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.bb-fade-out {
+  display: inline-block !important;
+  animation: bb-fade-out-anim 2s ease-out forwards !important;
+}
+@keyframes bb-fade-out-anim {
+  from { opacity: 1; }
+  to { opacity: 0.3; }
+}
+
+.bb-typewriter-wrap {
+  display: inline-block !important;
+  vertical-align: text-bottom !important;
+  width: max-content !important;
+  max-width: 100% !important;
+}
+
+.bb-typewriter {
+  display: block !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  border-right: 2px solid var(--color-text-primary, #fff);
+  box-sizing: border-box !important;
+  animation:
+    bb-typewriter-anim calc(var(--bb-ch, 20) * 0.07s) steps(var(--bb-ch, 20), end) 0.3s 1 normal both,
+    bb-blink-anim 0.75s step-end infinite;
+}
+@keyframes bb-typewriter-anim {
+  from { width: 0; }
+  to { width: 100%; }
+}
+@keyframes bb-blink-anim {
+  0%, 100% { border-color: var(--color-text-primary, #fff); }
+  50% { border-color: transparent; }
+}
+
+.bb-wave {
+  display: inline-block !important;
+  animation: bb-wave-anim 1.5s ease-in-out infinite !important;
+}
+@keyframes bb-wave-anim {
+  0%, 100% { transform: translateY(0); }
+  25% { transform: translateY(-3px); }
+  75% { transform: translateY(3px); }
+}
+
+.bb-sparkle {
+  display: inline-block !important;
+  animation: bb-sparkle-anim 1.5s ease-in-out infinite !important;
+}
+/* Sparkle sin `filter: brightness()`: filter no es compositable (repinta por
+   frame). opacity + transform corren en el compositor (GPU, gratis). */
+@keyframes bb-sparkle-anim {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.05); }
+}
+
+.bb-glitch {
+  position: relative !important;
+  display: inline-block !important;
+}
+
+.bb-levitate {
+  display: inline-block !important;
+  animation: bb-levitate-anim 3s ease-in-out infinite alternate !important;
+}
+@keyframes bb-levitate-anim {
+  from { transform: translateY(0); }
+  to { transform: translateY(-6px); }
+}
+
+/* Ghost sin `filter: blur(0.5px)`: medio píxel de blur era casi invisible pero
+   creaba una capa de composición propia + repintado. Solo opacity basta. */
+.bb-ghost {
+  opacity: 0.6 !important;
+}
+
+.bb-rainbow {
+  background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #8f00ff) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+}
+
+.bb-fire {
+  background: linear-gradient(180deg, #ffe600 0%, #ff5e00 60%, #ff0000 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+}
+
+.bb-ice {
+  background: linear-gradient(180deg, #ffffff 0%, #a0e6ff 50%, #00aaff 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+}

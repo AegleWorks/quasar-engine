@@ -19,25 +19,29 @@ import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
 import { RedNode } from '../Syntax/RedNode'
 import { RedNodeStore } from '../Syntax/RedNodeStore'
 import type { NodeKind } from '../Types/core'
+import { scanBBCode } from '../Lexer/BBCodeLexer'
+import { parseTokensToGreen } from './Parser'
 
-// ─── Tag → Kind mapping (mirrors the existing BBCode parser) ──
+// ─── Dialect & Tag → Kind mapping ─────────────────────────────
 
-const TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
+export type BBCodeDialect = 'osu' | 'miliastry' | 'lyne'
+
+const OSU_TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
   'b': 'bold',
   'i': 'italic',
   'u': 'underline',
   's': 'strikethrough',
   'strike': 'strikethrough',
   'color': 'color',
+  'colour': 'color',
   'size': 'font_size',
-  'font': 'font',
-  'shadow': 'shadow',
   'c': 'inline_code',
   'code': 'code',
   'spoiler': 'spoiler',
   'centre': 'center',
   'center': 'center',
   'right': 'right',
+  'left': 'left',
   'url': 'url',
   'email': 'email',
   'profile': 'profile',
@@ -52,6 +56,14 @@ const TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
   'list': 'list',
   '*': 'list_item',
   'heading': 'heading',
+  'empty_line': 'empty_line',
+}
+
+const MILIASTRY_TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
+  ...OSU_TAG_TO_KIND_ENTRIES,
+  // Extras de Miliastry: osu! real + cositas especiales propias. `font` vive
+  // aquí (y en Lyne), NO en osu: osu! solo tiene [size], no familia tipográfica.
+  'font': 'font',
   'zalgo': 'zalgo',
   'aesthetic': 'aesthetic',
   'sparkle': 'sparkle',
@@ -59,43 +71,179 @@ const TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
   'flower': 'flower',
   'gradient': 'gradient',
   'grow': 'grow',
+  'sinewave': 'sinewave',
+  'rainbow': 'rainbow',
   'svg': 'svg',
-  'empty_line': 'empty_line',
+  'group': 'group',
 }
 
 /**
- * A `Map`, not the object literal above.
+ * Tags canónicos de Lyne — la superficie REAL del dialecto. Cada familia tiene
+ * UNA sola forma: `effect`, `anim`, `container`, `style` (el tipo va como
+ * atributo: `[effect=glow:#hex]`, `[anim=typewriter]`, `[container=glass]`).
  *
- * The literal is written as an object because that is how it reads, but it is
- * QUERIED with tag names that come from the source, so V8 sees a megamorphic
- * key and falls back to a dictionary lookup. Measured over 1608 lookups — one
- * per element in the reference document — a Map is twice as fast.
+ * Los tipos de efecto que no tienen tag propio (emboss, engrave, …) se
+ * alcanzan igualmente vía `[effect=emboss]`: no necesitan fila aquí.
  */
-const TAG_TO_KIND = new Map<string, NodeKind>(
-  Object.entries(TAG_TO_KIND_ENTRIES) as [string, NodeKind][],
-)
+const LYNE_CANONICAL_TAG_TO_KIND: Record<string, NodeKind> = {
+  // Core & standard
+  'b': 'bold',
+  'i': 'italic',
+  'u': 'underline',
+  's': 'strikethrough',
+  'strike': 'strikethrough',
+  'color': 'color',
+  'colour': 'color',
+  'size': 'font_size',
+  'font': 'font',
+  'c': 'inline_code',
+  'code': 'code',
+  'url': 'url',
+  'email': 'email',
+  'profile': 'profile',
+  'guild': 'guild',
+  'map': 'map',
+  'img': 'image',
+  'youtube': 'video',
+  'audio': 'audio',
+  'video': 'video',
+  'imagemap': 'imagemap',
+  'heading': 'heading',
+  'notice': 'notice',
+  'wnotice': 'wnotice',
+  'quote': 'quote',
+  'box': 'box',
+  'boxw': 'boxw',
+  'spoilerbox': 'spoilerbox',
+  'spoiler': 'spoiler',
+  'list': 'list',
+  '*': 'list_item',
+  'centre': 'center',
+  'center': 'center',
+  'right': 'right',
+  'align': 'align',
+  'hr': 'separator',
+  'separator': 'separator',
+  'scroll': 'scroll',
+  'empty_line': 'empty_line',
+
+  // Tables
+  'tables': 'tables',
+  'row': 'table_row',
+  'col': 'table_col',
+  'th': 'table_th',
+
+  // Layout
+  'gallery': 'gallery',
+  'columns': 'columns',
+
+  // Inline / Typography
+  'sup': 'sup',
+  'sub': 'sub',
+  'abbr': 'abbr',
+  'mark': 'mark',
+  'kbd': 'kbd',
+  'tooltip': 'tooltip',
+  'flip': 'flip',
+  'gradient': 'gradient',
+  'raw': 'raw',
+  'noparse': 'raw',
+  'plain': 'plain',
+
+  // Consolidated
+  'effect': 'effect',
+  'anim': 'anim',
+  'container': 'container',
+  'style': 'style_tag',
+}
+
+/**
+ * Grafías legacy que Lyne original aceptaba, mantenidas SOLO para que los
+ * posts antiguos sigan parseando. La forma canónica es la familia:
+ * `[effect=glow]`, `[anim=fade]`, `[container=glass]`, `[style=width:300px]`.
+ * El exporter ya normaliza a la forma canónica al re-exportar, así que el
+ * contenido legacy se auto-limpia con una edición. NO añadir más grafías
+ * aquí: un efecto o contenedor nuevo se usa con su familia (`[effect=tipo]`).
+ */
+const LYNE_LEGACY_ALIASES: Record<string, NodeKind> = {
+  // Effect legacy aliases
+  'glow': 'effect',
+  'neon': 'effect',
+  'outline': 'effect',
+  'shimmer': 'effect',
+  'ghost': 'effect',
+  'rainbow': 'effect',
+  'fire': 'effect',
+  'ice': 'effect',
+
+  // Anim legacy aliases
+  'typewriter': 'anim',
+  'wave': 'anim',
+  'sparkle': 'anim',
+  'glitch': 'anim',
+  'levitate': 'anim',
+
+  // Container legacy aliases
+  'stack': 'container',
+  'flex': 'container',
+  'grid': 'container',
+  'middle': 'container',
+  'circle': 'container',
+  'card': 'container',
+  'glass': 'container',
+  'neon-box': 'container',
+  'neonbox': 'container',
+}
+
+/**
+ * Mapa completo de Lyne = canónicos + grafías legacy de compatibilidad.
+ *
+ * NOTA — podas realizadas (el texto queda literal, que es lo honesto):
+ *  - `relief`, `gap`, `colspan`, `rowspan`: no hacían nada real (relief sin
+ *    caso en el renderer, gap sin identidad, colspan/rowspan son atributos de
+ *    `[col]`, no tags).
+ *  - Los 18 aliases de estilo (`width`, `height`, `padding`, `margin`, …):
+ *    rotos — pasaban el valor como CSS crudo (`[width=300]` → `style="300"`,
+ *    inválido, el renderer lo descartaba). Solo `[style=…]` funciona.
+ *  - `shadow`: el tipo de effect ignoraba el color y chocaba con el `shadow`
+ *    de osu (significado distinto por dialecto). Eliminado de Lyne.
+ *  - `fade`: duplicado exacto de `[anim=fade-in]`. Eliminado.
+ */
+const LYNE_TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
+  ...LYNE_CANONICAL_TAG_TO_KIND,
+  ...LYNE_LEGACY_ALIASES,
+}
+
+const DIALECT_MAPS: Record<BBCodeDialect, Map<string, NodeKind>> = {
+  osu: new Map(Object.entries(OSU_TAG_TO_KIND_ENTRIES)),
+  miliastry: new Map(Object.entries(MILIASTRY_TAG_TO_KIND_ENTRIES)),
+  lyne: new Map(Object.entries(LYNE_TAG_TO_KIND_ENTRIES)),
+}
+
+const TAG_TO_KIND = DIALECT_MAPS.miliastry
 
 const KIND_TO_TAG: Partial<Record<NodeKind, string>> = {}
 for (const [tag, kind] of TAG_TO_KIND) {
   KIND_TO_TAG[kind] = tag
 }
 
-/**
- * Todas las etiquetas BBCode que el parser reconoce.
- *
- * Cualquiera que necesite saber «qué es una etiqueta» —el resaltado del
- * editor, el plegado, la ayuda contextual— debe leer esto en vez de mantener
- * su propia lista. Cuando existían dos, divergieron: el resaltador de Monaco
- * ignoraba 12 etiquetas que el motor sí parseaba, entre ellas `[gradient]` y
- * `[grow]`, y resaltaba `[centre]` pero no `[center]`.
- */
 export const BBCODE_TAG_NAMES: readonly string[] = Object.freeze(
   [...TAG_TO_KIND.keys()].sort(),
 )
 
-export function tagToNodeKind(tag: string | null): NodeKind {
+export function getBBCodeTagNames(dialect: BBCodeDialect = 'miliastry'): readonly string[] {
+  // Para Lyne, la superficie visible es la CANÓNICA: los legacy aliases se
+  // siguen parseando (compatibilidad) pero no se listan — así un consumidor
+  // (autocomplete, docs) solo ofrece las formas canónicas.
+  if (dialect === 'lyne') return Object.freeze([...Object.keys(LYNE_CANONICAL_TAG_TO_KIND)].sort())
+  const map = DIALECT_MAPS[dialect] || DIALECT_MAPS.miliastry
+  return Object.freeze([...map.keys()].sort())
+}
+
+export function tagToNodeKind(tag: string | null, dialect: BBCodeDialect = 'miliastry'): NodeKind {
   if (tag === null) return 'text'
-  return TAG_TO_KIND.get(tag) ?? 'custom'
+  const map = DIALECT_MAPS[dialect] || DIALECT_MAPS.miliastry
+  return map.get(tag) ?? 'custom'
 }
 
 export function nodeKindToTag(kind: NodeKind): string | null {
@@ -105,9 +253,11 @@ export function nodeKindToTag(kind: NodeKind): string | null {
 // ─── Rendered kind — tags that produce inline or block HTML ──
 
 const RENDERED_AS_BLOCK = new Set<NodeKind>([
-  'notice', 'spoilerbox', 'box', 'list', 'quote', 'code', 'svg',
-  'heading', 'center', 'right', 'imagemap', 'document',
-  'list_item', 'spacing', 'empty_line', 'paragraph'
+  'notice', 'wnotice', 'spoilerbox', 'box', 'boxw', 'list', 'quote', 'code', 'svg',
+  'heading', 'center', 'right', 'left', 'align', 'imagemap', 'document',
+  'list_item', 'spacing', 'empty_line', 'paragraph',
+  'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll',
+  'container',
 ])
 
 export function isBlockKind(kind: NodeKind): boolean {
@@ -217,7 +367,7 @@ function firstChildText(green: GreenNode): string {
   return ''
 }
 
-const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*]+=?[^\]]*\]/g
+const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*-]+=?[^\]]*\]/g
 
 /** Strip BBCode tags from text for clean display (e.g. `[b]title[/b]` → `title`) */
 function stripBBCode(raw: string): string {
@@ -245,23 +395,118 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
     case 'color':    return { color: value }
     case 'font_size':return { size: value }
     case 'font':     return { font: value }
-    case 'shadow':   return { color: value }
     case 'url':      return { href: value || firstChildText(green) }
     case 'email':    return { href: `mailto:${value}` }
     case 'profile':  return { username: value }
     case 'quote':    return { source: value }
     case 'spoilerbox':
-    case 'box':      return { title: stripBBCode(value) || 'Spoiler' }
+    case 'box':
+    case 'boxw':
+      // boxw es el box con líneas y fondo (estilo Lyne): se marca `styled`
+      // para que el renderer emita la clase que dispara ese look. El box
+      // normal ([box]) queda limpio por defecto.
+      //
+      // Sufijo de color `:#hex` (como `[container=neon-box:#FF0055]`):
+      // `[box=Mi Caja:#FF0055]` separa el color del título; el color se guarda
+      // aparte para que el renderer lo aplique como `--box-accent` y el
+      // exporter lo vuelva a emitir en el round-trip.
+      const colorMatch = /:#[0-9a-fA-F]{3,8}$/.exec(value)
+      const color = colorMatch ? colorMatch[0].slice(1) : undefined
+      const titleValue = colorMatch ? value.slice(0, colorMatch.index) : value
+      return {
+        title: stripBBCode(titleValue) || (kind === 'box' || kind === 'boxw' ? 'Box' : 'Spoiler'),
+        rawTitle: titleValue,
+        ...(color ? { color } : {}),
+        ...(kind === 'boxw' ? { styled: true } : {}),
+      }
     case 'list':     return { ordered: value === '1' || value === 'a' }
-    case 'image':    return { src: value || firstChildText(green) }
+    case 'image': {
+      // En el dialecto Lyne el atributo del tag es el TAMAÑO o modificador
+      // (`[img=400x300]url[/img]`, `[img round]url[/img]`) y la URL va como
+      // contenido — igual que en el renderer original (parseImgAttr(node.attr)
+      // + textOf(node.children)). Guardar `value` como src rompía la imagen:
+      // con `[img=400x300]url[/img]` el src quedaba "400x300" y la URL se perdía.
+      // Si el atributo parece una URL, es la forma `[img=url]` (sin contenido)
+      // y entonces sí es el src.
+      const looksLikeUrl = /^https?:\/\//i.test(value)
+      const src = looksLikeUrl ? value : (firstChildText(green) || undefined)
+      // imgAttr conserva el tamaño/modificador original (`400x300`, `round`, …)
+      // para que el exporter pueda reproducir `[img=400x300]` en el round-trip.
+      const imgAttr = looksLikeUrl ? undefined : (value || undefined)
+      return { src, imgAttr }
+    }
     case 'video':    return { videoId: value || firstChildText(green) }
     case 'audio':    return { src: value || firstChildText(green) }
     case 'gradient':
       // Parse "=#ff0000,#00ff00" → { colors: ['#FF0000', '#00FF00'] }
       const gradientColors = value.split(',').map(c => c.trim()).filter(c => c.startsWith('#'))
       return gradientColors.length > 0 ? { colors: gradientColors } : {}
+    case 'notice':
+    case 'wnotice':  return value ? { color: value } : {}
+    case 'tables':
+    case 'columns': {
+      // Sufijo de color `:#hex` (como en box): `[tables=striped:#FF0055]` y
+      // `[columns=2:#FF0055]`. De ese color se deriva toda la paleta (bordes,
+      // filas, encabezado) vía `--table-accent` / `--columns-accent`.
+      if (!value) return {}
+      const colorMatch = /:#[0-9a-fA-F]{3,8}$/.exec(value)
+      const clean = colorMatch ? value.slice(0, colorMatch.index) : value
+      const color = colorMatch ? colorMatch[0].slice(1) : undefined
+      const base = kind === 'tables' ? { variant: clean } : { columns: clean }
+      return color ? { ...base, color } : base
+    }
+    case 'separator':return value ? { variant: value } : {}
+    case 'scroll':   return value ? { height: value } : {}
+    case 'abbr':     return value ? { title: value } : {}
+    case 'tooltip':  return value ? { tip: value } : {}
+    case 'guild':    return value ? { tag: value } : {}
+    case 'map':      return value ? { id: value } : {}
+    case 'align':    return value ? { align: value } : {}
+    case 'effect': {
+      if (!value) return {}
+      if (value.includes(':')) {
+        const [effectType, ...rest] = value.split(':')
+        return { effectType, color: rest.join(':') }
+      }
+      if (value.startsWith('#')) return { effectType: 'glow', color: value }
+      return { effectType: value }
+    }
+    case 'anim': {
+      if (!value) return {}
+      if (value.includes(':')) {
+        const [animType, ...rest] = value.split(':')
+        return { animType, param: rest.join(':') }
+      }
+      return { animType: value }
+    }
+    case 'container':return value ? { containerType: value } : {}
+    case 'style_tag':return value ? { style: value } : {}
     case 'list_item':return {}  // No metadata for list items
     default:         return {}
+  }
+}
+
+/**
+ * Parse rich BBCode inside a container attribute (e.g. `[box=[b]Title[/b]]`).
+ * Produces a list of RedNode children for the title slot.
+ */
+function buildTitleNodes(
+  rawTitle: string,
+  parent: RedNode,
+  store?: RedNodeStore,
+  start: number = 0,
+): RedNode[] {
+  if (!rawTitle || !rawTitle.includes('[')) return []
+  try {
+    const tokens = scanBBCode(rawTitle)
+    const greenTitle = parseTokensToGreen(tokens, rawTitle, { normalizeParagraphs: false })
+    const redTitle = greenToRedNode(greenTitle, null, store, start)
+    for (const child of redTitle.children) {
+      child.parent = parent
+    }
+    return redTitle.children
+  } catch {
+    return []
   }
 }
 
@@ -305,6 +550,18 @@ export function greenToRedNode(
       start,
     })
 
+    if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && instance.metadata.rawTitle) {
+      const rawTitle = String(instance.metadata.rawTitle)
+      const tagName = green.kind
+      const rawText = green.text || ''
+      const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
+      const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
+      const titleNodes = buildTitleNodes(rawTitle, instance, store, offsetToTitle)
+      if (titleNodes.length > 0) {
+        instance.metadata.titleNodes = titleNodes
+      }
+    }
+
     const greenChildren = green.children as GreenNode[]
     if (greenChildren.length > 0) {
       const kids: RedNode[] = new Array(greenChildren.length)
@@ -326,6 +583,18 @@ export function greenToRedNode(
     metadata: extractGreenNodeMetadata(green),
     start,
   })
+
+  if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && red.metadata.rawTitle) {
+    const rawTitle = String(red.metadata.rawTitle)
+    const tagName = green.kind
+    const rawText = green.text || ''
+    const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
+    const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
+    const titleNodes = buildTitleNodes(rawTitle, red, store, offsetToTitle)
+    if (titleNodes.length > 0) {
+      red.metadata.titleNodes = titleNodes
+    }
+  }
 
   const greenChildren = green.children as GreenNode[]
   if (greenChildren.length > 0) {
@@ -377,7 +646,10 @@ export function greenToRedNodeReusing(
   stats?: { adopted: number },
 ): RedNode {
   if (green === oldRed.green) {
-    if (oldRed.range.start !== start) oldRed.setStart(start)
+    // `setStart` records the shift lazily (no subtree walk) and no-ops when the
+    // offset did not move, so the former `oldRed.range.start !== start` guard —
+    // which READ the range, forcing a lazy materialization — is unnecessary.
+    oldRed.setStart(start)
     oldRed.parent = null
     if (stats) stats.adopted++
     return oldRed
@@ -389,6 +661,18 @@ export function greenToRedNodeReusing(
     metadata: extractGreenNodeMetadata(green),
     start,
   })
+
+  if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && red.metadata.rawTitle) {
+    const rawTitle = String(red.metadata.rawTitle)
+    const tagName = green.kind
+    const rawText = green.text || ''
+    const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
+    const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
+    const titleNodes = buildTitleNodes(rawTitle, red, undefined, offsetToTitle)
+    if (titleNodes.length > 0) {
+      red.metadata.titleNodes = titleNodes
+    }
+  }
 
   const greenKids = green.children as GreenNode[]
   const oldKids = oldRed.children
@@ -440,7 +724,10 @@ export function greenToRedNodeReusing(
 
 /** Adopt an old red subtree at (possibly) a new absolute offset. */
 function adoptShifted(oldRed: RedNode, start: number, stats?: { adopted: number }): RedNode {
-  if (oldRed.range.start !== start) oldRed.setStart(start)
+  // Lazy shift: records the delta without walking the subtree (see
+  // `RedNode.setStart`). The former range read here would force a
+  // materialization, defeating the whole point.
+  oldRed.setStart(start)
   if (stats) stats.adopted++
   return oldRed
 }

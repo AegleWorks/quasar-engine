@@ -16,6 +16,10 @@ export class MarkdownExporter extends Visitor<string> {
     return this.exportNode(node).replace(/(?:\r?\n){3,}/g, '\n\n')
   }
 
+  export(node: RedNode): string {
+    return this.visit(node)
+  }
+
   private exportNode(node: RedNode, depth: number = 0): string {
     if (node.children.length === 0 && node.kind === 'text') {
       return node.text
@@ -38,10 +42,10 @@ export class MarkdownExporter extends Visitor<string> {
       case 'color': return content
       case 'font_size': return content
       case 'font': return content
-      case 'shadow': return content
       case 'heading': return `${'#'.repeat(Math.min(depth + 1, 6))} ${content}`
       case 'center': return content
       case 'right': return content
+      case 'left': return content
       case 'url': return `[${content}](${this.extractValue(node) || content})`
       case 'email': return `[${content}](mailto:${this.extractValue(node) || content})`
       case 'profile': return `[${content}](https://osu.ppy.sh/users/${this.extractValue(node) || content})`
@@ -50,8 +54,9 @@ export class MarkdownExporter extends Visitor<string> {
       case 'audio': return `[🎵 Audio](${node.text || ''})`
       case 'quote': return `> **${this.extractValue(node) || 'Quote'}**\n> ${content.replace(/\\n/g, '\n> ')}`
       case 'notice': return `> [!NOTE]\n> ${content.replace(/\\n/g, '\n> ')}`
-      case 'spoilerbox': return `**${this.extractValue(node) || 'Spoiler'}**\n${content}`
-      case 'box': return `**${this.extractValue(node) || 'Box'}**\n${content}`
+      case 'spoilerbox': return `**${this.renderTitleMarkdown(node) || 'Spoiler'}**\n${content}`
+      case 'box':
+      case 'boxw': return `**${this.renderTitleMarkdown(node) || 'Box'}**\n${content}`
       case 'list': return content
       case 'list_item': return `${'  '.repeat(Math.max(0, depth - 1))}- ${content.trim()}`
       case 'spacing': return '\n'
@@ -59,6 +64,14 @@ export class MarkdownExporter extends Visitor<string> {
       case 'text':
       default: return content || node.text || ''
     }
+  }
+
+  private renderTitleMarkdown(node: RedNode): string {
+    const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
+    if (titleNodes && titleNodes.length > 0) {
+      return titleNodes.map(c => this.exportNode(c, 0)).join('')
+    }
+    return (node.metadata?.title as string) || this.extractValue(node) || ''
   }
 
   /**

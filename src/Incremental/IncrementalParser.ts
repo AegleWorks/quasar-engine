@@ -163,7 +163,7 @@ const MAX_REGION_FRACTION = 0.7
 const MIN_SOURCE_LENGTH = 2500
 
 /** An orphaned closing tag, as the parser preserves it: a `text` leaf of `[/tag]`. */
-const ORPHAN_CLOSE_RE = /^\[\/([a-zA-Z0-9_*]+)\]$/
+const ORPHAN_CLOSE_RE = /^\[\/([a-zA-Z0-9_*-]+)\]$/
 
 /**
  * Can this window be parsed on its own and mean the same thing it means in
@@ -452,25 +452,45 @@ export class IncrementalParser {
     const spine: SpineStep[] = []
     const ancestorKinds = new Set<string>([root.kind])
     let node = root
+    // Absolute start of `node` in the source. Accumulated from GREEN widths, not
+    // from red `range` reads: the red tree's offsets may carry a pending lazy
+    // shift from the previous reparse (see `RedNode.setStart`), and reading
+    // `range`/`innerStart`/`innerEnd` would force a materialization walk over
+    // every displaced subtree — moving the cost the lazy shift was meant to
+    // remove back into this phase. Green widths are position-free and always
+    // current, and the partition invariant guarantees they accumulate to exactly
+    // the materialized red ranges.
+    let nodeOffset = root.range.start
 
     // ── Descend ──
+    // `nodeOffset` tracks the current node's absolute start. Each child begins
+    // after the parent's leading delimiter plus the previous siblings' widths,
+    // and its inner span is the same accumulation past its own delimiters.
     for (;;) {
+      const kids = node.children
       let next = -1
-      for (let i = 0; i < node.children.length; i++) {
-        const c = node.children[i]
+      let offset = nodeOffset + node.green.leadingWidth
+      for (let i = 0; i < kids.length; i++) {
+        const c = kids[i]
+        const innerStart = offset + c.green.leadingWidth
+        const innerEnd = offset + c.green.width - c.green.trailingWidth
         if (
           !OPAQUE_KINDS.has(c.kind) &&
           c.children.length > 0 &&
-          c.innerStart <= change.start &&
-          change.end <= c.innerEnd
+          innerStart <= change.start &&
+          change.end <= innerEnd
         ) {
           next = i
           break
         }
+        offset += c.green.width
       }
       if (next === -1) break
 
       spine.push({ node: node.green, index: next })
+      // The child's absolute start: the accumulated offset at its index.
+      nodeOffset += node.green.leadingWidth
+      for (let i = 0; i < next; i++) nodeOffset += node.children[i].green.width
       node = node.children[next]
       ancestorKinds.add(node.kind)
     }
@@ -483,12 +503,16 @@ export class IncrementalParser {
     // included: an insertion sits between two children and both are candidates.
     let first = -1
     let last = -1
+    let offset = nodeOffset + node.green.leadingWidth
     for (let i = 0; i < children.length; i++) {
       const c = children[i]
-      if (c.range.start <= change.end && change.start <= c.range.end) {
+      const start = offset
+      const end = offset + c.green.width
+      if (start <= change.end && change.start <= end) {
         if (first === -1) first = i
         last = i
       }
+      offset = end
     }
     // A change past the last child (typing at the very end) touches nothing;
     // anchor it to the final child so there is something to re-parse.
@@ -506,13 +530,20 @@ export class IncrementalParser {
     // it would come back as `spacing`. Walk left to the run's real start.
     while (from > 0 && children[from].kind === 'empty_line') from--
 
+    // Window offsets, again from green widths (identical to the red ranges the
+    // tree would report once materialized).
+    let windowStart = nodeOffset + node.green.leadingWidth
+    for (let i = 0; i < from; i++) windowStart += children[i].green.width
+    let windowEnd = windowStart
+    for (let i = from; i < to; i++) windowEnd += children[i].green.width
+
     return {
       spine,
       parent: node.green,
       from,
       to,
-      windowStart: children[from].range.start,
-      windowEnd: children[to - 1].range.end,
+      windowStart,
+      windowEnd,
       ancestorKinds,
     }
   }
@@ -527,15 +558,29 @@ export class IncrementalParser {
   findAffectedNodes(root: RedNode, change: TextChange): RedNode[] {
     const affected: RedNode[] = []
     let current: RedNode | undefined = root
+    // Absolute offset of `current`, accumulated from GREEN widths — reading red
+    // ranges here would materialize every pending lazy shift (see
+    // `RedNode.setStart`), walking the displaced tail for a call that only
+    // needs the containment chain. Same invariant as `findReparseWindow`.
+    let offset = root.range.start
 
     while (current) {
-      if (current.range.start <= change.start && current.range.end >= change.end) {
+      if (offset <= change.start && offset + current.green.width >= change.end) {
         affected.push(current)
         // Children partition their parent, so at most one can contain the
         // change — the first match is the only match.
-        current = current.children.find(
-          c => c.range.start <= change.start && c.range.end >= change.end,
-        )
+        let next: RedNode | undefined
+        let childOffset = offset + current.green.leadingWidth
+        for (const child of current.children) {
+          const cEnd = childOffset + child.green.width
+          if (childOffset <= change.start && cEnd >= change.end) {
+            next = child
+            offset = childOffset
+            break
+          }
+          childOffset = cEnd
+        }
+        current = next
       } else {
         break
       }

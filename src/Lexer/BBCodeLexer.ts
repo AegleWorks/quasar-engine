@@ -74,6 +74,7 @@ const CHAR_LOWER_Z = 122
 const CHAR_ZERO = 48
 const CHAR_NINE = 57
 const CHAR_UNDERSCORE = 95
+const CHAR_HYPHEN = 45
 const CHAR_STAR = 42
 const CHAR_BRACKET_OPEN = 91
 const CHAR_BRACKET_CLOSE = 93
@@ -81,13 +82,14 @@ const CHAR_SLASH = 47
 const CHAR_LF = 10
 const CHAR_CR = 13
 
-/** Valid in a tag name: `a-z A-Z 0-9 _ *` — the old `/[a-zA-Z0-9_*]/`. */
+/** Valid in a tag name: `a-z A-Z 0-9 _ * -` — the old `/[a-zA-Z0-9_*-]/`. */
 function isNameChar(c: number): boolean {
   return (
     (c >= CHAR_LOWER_A && c <= CHAR_LOWER_Z) ||
     (c >= CHAR_UPPER_A && c <= CHAR_UPPER_Z) ||
     (c >= CHAR_ZERO && c <= CHAR_NINE) ||
     c === CHAR_UNDERSCORE ||
+    c === CHAR_HYPHEN ||
     c === CHAR_STAR
   )
 }

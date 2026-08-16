@@ -27,7 +27,7 @@
 import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
 import type { NodeKind } from '../Types/core'
 import { GreenNodePool } from '../Syntax/GreenNodePool'
-import { tagToNodeKind } from './BBCodeToGreenNode'
+import { tagToNodeKind, type BBCodeDialect } from './BBCodeToGreenNode'
 import type { BBCodeToken } from '../Lexer/BBCodeLexer'
 import { scanBBCode } from '../Lexer/BBCodeLexer'
 import { isBlockKind } from './BBCodeToGreenNode'
@@ -43,6 +43,8 @@ import { isBlockKind } from './BBCodeToGreenNode'
  */
 export interface ParseOptions {
   strictMode?: boolean;
+  /** BBCode dialect to parse against ('osu' | 'miliastry' | 'lyne'). Default: 'miliastry'. */
+  dialect?: BBCodeDialect;
   /** Optional interner for structural sharing. If provided, identical subtrees
    *  share the same GreenNode reference in memory. */
   interner?: GreenNodePool;
@@ -75,6 +77,7 @@ export function parseTokensToGreen(
   options: ParseOptions = {}
 ): GreenNode {
   const strictMode = options.strictMode ?? false;
+  const dialect = options.dialect ?? 'miliastry';
   const interner = options.interner ?? null;
   const normalizeParagraphs = options.normalizeParagraphs ?? true;
   const extraTags = options.extraTags;
@@ -202,7 +205,7 @@ export function parseTokensToGreen(
       //
       // Plugin-registered tags (`extraTags`) are the one exception: they are
       // known — just not to the built-in table — and parse as containers.
-      let openKind = tagToNodeKind(tok.tag)
+      let openKind = tagToNodeKind(tok.tag, dialect)
       if (openKind === 'custom') {
         const pluginKind = extraTags?.get(tok.tag)
         if (pluginKind === undefined) {
@@ -231,16 +234,28 @@ export function parseTokensToGreen(
         continue
       }
 
+      if (openKind === 'separator') {
+        addToParent(createLeaf('separator', tok.attrs, tok.end - tok.start))
+        i++
+        continue
+      }
+
+      let attrs = tok.attrs
+      if (openKind === 'effect' || openKind === 'anim' || openKind === 'container') {
+        if (tok.tag !== openKind) {
+          const param = tok.attrs.startsWith('=') ? tok.attrs.slice(1) : tok.attrs
+          attrs = param ? `=${tok.tag}:${param}` : `=${tok.tag}`
+        }
+      } else if (openKind === 'style_tag' && tok.tag !== 'style') {
+        if (tok.tag === 'nowrap') attrs = '=white-space:nowrap'
+        else if (tok.tag === 'smallcaps') attrs = '=font-variant:small-caps'
+      }
+
       // Push onto the stack — children will be added later.
-      //
-      // There used to be a `SELF_CLOSING` branch here, guarded by a Set that
-      // was declared empty (`new Set<string>([])`), so it was unreachable. The
-      // only self-closing tag BBCode has is `[*]`, and that is handled by its
-      // own branch above.
       stack.push({
         tag: tok.tag,
         kind: openKind,
-        attrs: tok.attrs,
+        attrs,
         children: [],
         leadingWidth: tok.end - tok.start,
       })

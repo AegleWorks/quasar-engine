@@ -13,6 +13,8 @@ import { Visitor } from './Visitor'
 import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree } from '../RenderPipeline/RenderTree'
 
+import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+
 export interface HTMLRendererOptions {
   /** 
    * Replicate osu! forum BBCode spacing quirks. 
@@ -22,31 +24,51 @@ export interface HTMLRendererOptions {
   osuBehaviour?: boolean
   /** Registry for resolving custom tags */
   registry?: TagRegistry
+  /** BBCode dialect to render for ('osu' | 'miliastry' | 'lyne') */
+  dialect?: BBCodeDialect
+  /** Visual theme for markup classes ('osu' | 'lyne' | 'miliastry') */
+  theme?: 'osu' | 'lyne' | 'miliastry'
+  /** Safe media proxy callback to rewrite image and media URLs */
+  mediaProxy?: (url: string) => string
+  /** Resolver for entity links like profile, guild, map */
+  entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
 }
 
 export class HTMLRenderer extends Visitor<string> {
-  private options: Required<Omit<HTMLRendererOptions, 'registry'>> & { registry?: TagRegistry }
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver'>> & {
+    registry?: TagRegistry
+    mediaProxy?: (url: string) => string
+    entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
+  }
 
   constructor(options: HTMLRendererOptions = {}) {
     super()
     this.options = {
       osuBehaviour: options.osuBehaviour ?? true,
-      registry: options.registry
+      registry: options.registry,
+      dialect: options.dialect ?? (options.theme === 'lyne' ? 'lyne' : 'miliastry'),
+      theme: options.theme ?? (options.dialect === 'lyne' ? 'lyne' : 'osu'),
+      mediaProxy: options.mediaProxy,
+      entityLinkResolver: options.entityLinkResolver,
     }
   }
 
   // ─── Tag → HTML Element Map ─────────────────────────────
 
   private readonly BLOCK_TAGS = new Set([
-    'notice', 'spoilerbox', 'box', 'list', 'quote', 'code', 'svg',
-    'heading', 'center', 'right', 'imagemap', 'image', 'document',
+    'notice', 'wnotice', 'spoilerbox', 'box', 'boxw', 'list', 'quote', 'code', 'svg',
+    'heading', 'center', 'right', 'left', 'align', 'imagemap', 'image', 'document',
+    'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll',
+    'container',
   ])
 
   private readonly INLINE_TAGS = new Set([
     'bold', 'italic', 'underline', 'strikethrough',
-    'color', 'font_size', 'font', 'shadow',
-    'inline_code', 'spoiler', 'url', 'email', 'profile',
+    'color', 'font_size', 'font',
+    'inline_code', 'spoiler', 'url', 'email', 'profile', 'guild', 'map',
     'zalgo', 'aesthetic', 'sparkle', 'bubble', 'flower',
+    'sup', 'sub', 'abbr', 'mark', 'kbd', 'tooltip', 'flip', 'raw', 'plain',
+    'effect', 'anim', 'style_tag',
   ])
 
   /**
@@ -131,11 +153,15 @@ export class HTMLRenderer extends Visitor<string> {
    *
    * Se paga a propósito: la precisión del clic es una función que se pidió, y
    * 56 ms sigue holgadamente dentro de lo que se percibe como inmediato.
-   * `'blocks'` queda disponible para quien priorice la latencia.
+   * `'blocks'` queda disponible para quien priorice la latencia, y `'none'`
+   * para los consumidores de solo lectura (foros, render estático): sin
+   * `data-node-id` en absoluto, el HTML es más pequeño y no hay nada que
+   * mantenga vivos los nodos del árbol.
    */
-  static idMode: 'blocks' | 'all' = 'all'
+  static idMode: 'blocks' | 'all' | 'none' = 'all'
 
   private idAttr(node: RedNode): string {
+    if (HTMLRenderer.idMode === 'none') return ''
     if (HTMLRenderer.idMode === 'all') return ` data-node-id="${node.id}"`
     return HTMLRenderer.ID_BEARING_KINDS.has(node.kind)
       ? ` data-node-id="${node.id}"`
@@ -150,8 +176,9 @@ export class HTMLRenderer extends Visitor<string> {
    * `text` or any inline formatting kind — see {@link idAttr}.
    */
   private static readonly ID_BEARING_KINDS = new Set([
-    'notice', 'spoilerbox', 'box', 'list', 'list_item', 'quote', 'code', 'svg',
-    'heading', 'center', 'right', 'imagemap', 'image', 'video', 'audio',
+    'notice', 'wnotice', 'spoilerbox', 'box', 'boxw', 'list', 'list_item', 'quote', 'code', 'svg',
+    'heading', 'center', 'right', 'left', 'align', 'imagemap', 'image', 'video', 'audio',
+    'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll', 'container',
   ])
 
   // ─── Main Entry ─────────────────────────────────────────
@@ -172,7 +199,13 @@ export class HTMLRenderer extends Visitor<string> {
    * array of N strings at every level of the tree. Appending to one string lets
    * the engine use its rope representation instead.
    */
-  private renderChildren(node: RedNode): string {
+  /**
+   * Render the direct children of `node` to HTML (no wrapper element).
+   *
+   * Public so the incremental preview (`BlockPatcher`) can morph a block
+   * element's inner content without re-rendering the whole document.
+   */
+  renderChildren(node: RedNode): string {
     const children = node.children
     let out = ''
     for (let i = 0; i < children.length; i++) {
@@ -221,7 +254,6 @@ export class HTMLRenderer extends Visitor<string> {
       case 'color': return this.wrapInline('span', node, this.colorStyle(node))
       case 'font_size': return this.wrapInline('span', node, this.fontSizeStyle(node))
       case 'font': return this.wrapInline('span', node, this.fontStyle(node))
-      case 'shadow': return this.wrapInline('span', node, this.shadowStyle(node))
       case 'url': return this.renderLink(node, 'url')
       case 'email': return this.renderLink(node, 'email')
       case 'profile': return this.renderProfile(node)
@@ -230,16 +262,46 @@ export class HTMLRenderer extends Visitor<string> {
       case 'audio': return this.renderAudio(node)
       case 'center': return this.wrapBlock('div', node, 'style="text-align:center;"')
       case 'right': return this.wrapBlock('div', node, 'style="text-align:right;"')
+      case 'left': return this.wrapBlock('div', node, 'style="text-align:left;"')
       case 'heading': return this.wrapBlock('h2', node)
-      case 'notice': return this.wrapBlock('div', node, 'class="notice"')
+      case 'notice': return this.renderNotice(node, false)
+      case 'wnotice': return this.renderNotice(node, true)
       case 'quote': return this.renderQuote(node)
       case 'spoilerbox': return this.renderSpoilerbox(node)
-      case 'box': return this.renderBox(node)
+      case 'box':
+      case 'boxw': return this.renderBox(node)
       case 'list': return this.renderList(node)
       case 'list_item': return this.renderListItem(node)
       case 'code': return this.renderCode(node)
       case 'svg': return this.renderSVG(node)
       case 'imagemap': return this.renderImagemap(node)
+      case 'align': return this.renderAlign(node)
+      case 'tables': return this.renderTables(node)
+      case 'table_row': return this.wrapBlock('tr', node)
+      case 'table_col': return this.wrapInline('td', node)
+      case 'table_th': {
+        const content = this.renderChildren(node)
+        return `<th${this.idAttr(node)} class="bb-th"><span class="bb-table-badge">${content}</span></th>`
+      }
+      case 'gallery': return this.renderGallery(node)
+      case 'columns': return this.renderColumns(node)
+      case 'separator': return this.renderSeparator(node)
+      case 'scroll': return this.renderScroll(node)
+      case 'sup': return this.wrapInline('sup', node)
+      case 'sub': return this.wrapInline('sub', node)
+      case 'abbr': return this.renderAbbr(node)
+      case 'mark': return this.wrapInline('mark', node, 'class="bb-mark"')
+      case 'kbd': return this.wrapInline('kbd', node, 'class="bb-kbd"')
+      case 'tooltip': return this.renderTooltip(node)
+      case 'flip': return this.wrapInline('span', node, 'style="display:inline-block;transform:scaleX(-1);"')
+      case 'raw': return this.renderRaw(node)
+      case 'plain': return this.renderPlain(node)
+      case 'guild': return this.renderEntity(node, 'guild')
+      case 'map': return this.renderEntity(node, 'map')
+      case 'effect': return this.renderEffect(node)
+      case 'anim': return this.renderAnim(node)
+      case 'container': return this.renderContainer(node)
+      case 'style_tag': return this.renderStyleTag(node)
       case 'zalgo': return this.wrapInline('span', node, 'class="zalgo"')
       case 'aesthetic': return this.wrapInline('span', node, 'class="aesthetic"')
       case 'sparkle': return this.wrapInline('span', node, 'class="sparkle"')
@@ -248,9 +310,11 @@ export class HTMLRenderer extends Visitor<string> {
       case 'gradient': return this.renderGradient(node)
       case 'spacing':
         if (this.options.osuBehaviour && this.isNextCodeBlock(node)) return '\n'
+        if (this.isTrailingBlockBoundary(node)) return '\n'
         return this.isPrevBlockBoundary(node) ? '\n' : '<br>'
       case 'empty_line':
         if (this.options.osuBehaviour && this.isImmediateEmptyLineBeforeCode(node)) return '\n'
+        if (this.isTrailingBlockBoundary(node)) return '\n'
         return '<br>'
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un
@@ -319,6 +383,25 @@ export class HTMLRenderer extends Visitor<string> {
     if (prev && this.BLOCK_TAGS.has(prev.kind) && prev.kind !== 'image' && prev.kind !== 'imagemap') return true
     if (!prev && node.parent && this.BLOCK_TAGS.has(node.parent.kind) && node.parent.kind !== 'image' && node.parent.kind !== 'imagemap') return true
 
+    return false
+  }
+
+  private isTrailingBlockBoundary(node: RedNode): boolean {
+    let next = node.nextSibling
+    while (next) {
+      if (next.kind === 'spacing' || next.kind === 'empty_line') {
+        next = next.nextSibling
+        continue
+      }
+      if (next.kind === 'text' && next.text.trim() === '') {
+        next = next.nextSibling
+        continue
+      }
+      break
+    }
+    if (!next && node.parent && this.BLOCK_TAGS.has(node.parent.kind) && node.parent.kind !== 'document') {
+      return true
+    }
     return false
   }
 
@@ -405,11 +488,6 @@ export class HTMLRenderer extends Visitor<string> {
     return font ? `style="font-family:${font};"` : ''
   }
 
-  private shadowStyle(node: RedNode): string {
-    const color = this.sanitizeColor(this.metaOrAttr(node, 'color'))
-    return color ? `style="text-shadow:0 0 3px ${color};"` : ''
-  }
-
   /**
    * Extract the attribute value from a BBCode tag node.
    *
@@ -450,26 +528,332 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderProfile(node: RedNode): string {
-    const username = String(node.metadata?.username ?? '') || this.extractValue(node)
-    const content = this.renderChildren(node) || username
-    return `<strong><a${this.idAttr(node)} href="https://osu.ppy.sh/users/${this.escapeHtml(username || content)}" target="_blank">${content}</a></strong>`
+    return this.renderEntity(node, 'profile')
+  }
+
+  private renderEntity(node: RedNode, type: 'profile' | 'guild' | 'map'): string {
+    const key = type === 'profile' ? 'username' : type === 'guild' ? 'tag' : 'id'
+    const val = String(node.metadata?.[key] ?? '') || this.extractValue(node)
+    const content = this.renderChildren(node) || val
+    if (this.options.entityLinkResolver) {
+      const link = this.options.entityLinkResolver(type, val || content)
+      if (link) {
+        const ext = link.external ? ' target="_blank" rel="noopener noreferrer"' : ''
+        return `<strong><a${this.idAttr(node)} href="${this.escapeHtml(link.href)}"${ext}>${content}</a></strong>`
+      }
+    }
+    if (type === 'profile') {
+      const url = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
+        ? `/u/${encodeURIComponent(val || content)}`
+        : `https://osu.ppy.sh/users/${this.escapeHtml(val || content)}`
+      return `<strong><a${this.idAttr(node)} href="${url}" target="_blank" rel="noopener">${content}</a></strong>`
+    }
+    if (type === 'guild') {
+      return `<strong><a${this.idAttr(node)} href="/guilds/${encodeURIComponent(val || content)}">${content}</a></strong>`
+    }
+    if (type === 'map') {
+      return `<strong><a${this.idAttr(node)} href="/maps/${encodeURIComponent(val || content)}">${content}</a></strong>`
+    }
+    return `<strong><a${this.idAttr(node)} href="#">${content}</a></strong>`
+  }
+
+  private parseImgAttr(v: string | null): { w?: number; h?: number; round?: boolean; shadow?: boolean; float?: boolean } {
+    if (!v) return {}
+    const t = v.trim().toLowerCase()
+    if (t === 'round') return { round: true }
+    if (t === 'shadow') return { shadow: true }
+    if (t === 'float') return { float: true }
+    const m = /^(\d{1,4})x(\d{1,4})$/i.exec(t)
+    if (m) return { w: Math.min(2000, parseInt(m[1], 10)), h: Math.min(2000, parseInt(m[2], 10)) }
+    return {}
   }
 
   private renderImage(node: RedNode): string {
-    const src = String(node.metadata?.src ?? '') || this.extractValue(node) || ''
+    let src = String(node.metadata?.src ?? '') || this.extractValue(node) || ''
     if (!src) return '<div class="media-error">[img] missing source URL</div>'
-    return `<img${this.idAttr(node)} src="${this.escapeHtml(src)}" alt="" style="max-width:100%;height:auto;display:inline-block;">`
+    if (this.options.mediaProxy) {
+      src = this.options.mediaProxy(src)
+    }
+    const imgAttr = this.parseImgAttr(this.extractValue(node))
+    const styles: string[] = []
+    if (imgAttr.w) styles.push(`width:${imgAttr.w}px`)
+    if (imgAttr.h) styles.push(`height:${imgAttr.h}px`)
+    if (imgAttr.round) {
+      styles.push('border-radius:50%', 'object-fit:cover')
+      if (!imgAttr.w) styles.push('width:120px')
+      if (!imgAttr.h) styles.push('height:120px')
+    }
+    if (imgAttr.shadow) styles.push('box-shadow:0 0 15px rgba(0,0,0,0.5)')
+    if (imgAttr.float) styles.push('float:left', 'margin:0 8px 8px 0')
+    if (styles.length === 0) {
+      styles.push('max-width:100%', 'height:auto', 'display:inline-block')
+    }
+    const cls = imgAttr.round ? '' : ' class="bb-img"'
+    return `<img${this.idAttr(node)}${cls} src="${this.escapeHtml(src)}" alt="" style="${styles.join(';')};">`
   }
 
   private renderVideo(node: RedNode): string {
-    const id = String(node.metadata?.videoId ?? '') || this.extractValue(node) || ''
+    let id = String(node.metadata?.videoId ?? '') || this.extractValue(node) || ''
     if (!id) return '<div class="media-error">[youtube] missing video ID</div>'
+    const ytMatch = /(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([\w-]{11})/.exec(id)
+    if (ytMatch) id = ytMatch[1]
     return `<iframe${this.idAttr(node)} src="https://www.youtube.com/embed/${this.escapeHtml(id)}" frameborder="0" allowfullscreen></iframe>`
   }
 
   private renderAudio(node: RedNode): string {
-    const src = String(node.metadata?.src ?? '') || node.text || ''
-    return `<audio${this.idAttr(node)} controls src="${this.escapeHtml(src)}"></audio>`
+    let src = String(node.metadata?.src ?? '') || node.text || ''
+    if (this.options.mediaProxy && src) {
+      src = this.options.mediaProxy(src)
+    }
+    return `<audio${this.idAttr(node)} controls src="${this.escapeHtml(src)}" class="bb-audio"></audio>`
+  }
+
+  private hexToRgba(hex: string, alpha: number): string {
+    if (!hex.startsWith('#')) return hex
+    const t = hex.replace('#', '')
+    const full = t.length <= 4 ? t.split('').map(c => c + c).join('') : t
+    const r = parseInt(full.slice(0, 2), 16) || 0
+    const g = parseInt(full.slice(2, 4), 16) || 0
+    const b = parseInt(full.slice(4, 6), 16) || 0
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+
+  private renderNotice(node: RedNode, warning: boolean): string {
+    const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne' || warning
+    if (isLyne) {
+      const color = this.sanitizeColor(this.metaOrAttr(node, 'color'))
+      const styleAttr = color
+        ? ` style="background:${this.hexToRgba(color, 0.08)};border-color:${this.hexToRgba(color, 0.4)};border-left-color:${color};color:${this.hexToRgba(color, 0.85)};"`
+        : ''
+      const markStyle = color ? ` style="color:${color};"` : ''
+      const content = this.renderChildren(node)
+      const warningIcon = warning ? `<span aria-hidden class="bb-notice-mark"${markStyle}>⚠</span>` : ''
+      return `<div${this.idAttr(node)} class="notice bb-cut-panel bb-notice${warning ? ' bb-wnotice' : ''}" role="note"${styleAttr}>${warningIcon}<div class="bb-notice-body">${content}</div></div>`
+    }
+
+    return this.wrapBlock('div', node, 'class="notice"')
+  }
+
+  private renderTables(node: RedNode): string {
+    const variant = (String(node.metadata?.variant ?? '') || this.extractValue(node) || '').trim().toLowerCase()
+    const variants = new Set(variant.split(/[\s,]+/).filter(Boolean))
+    const tableClasses = [
+      'bb-table',
+      variants.has('striped') ? 'bb-table-striped' : '',
+      variants.has('borders') ? 'bb-table-borders' : '',
+    ].filter(Boolean).join(' ')
+    const content = this.renderChildren(node)
+    // `[tables=striped:#hex]`: de `--table-accent` se deriva toda la paleta
+    // de la tabla (gradiente del frame, hover de filas, encabezado, bordes).
+    const accent = this.boxAccentStyle(node, 'table')
+    return `<div${this.idAttr(node)} class="bb-table-frame"${accent}><table class="${tableClasses}"><tbody>${content}</tbody></table></div>`
+  }
+
+  private renderGallery(node: RedNode): string {
+    const content = this.renderChildren(node)
+    return `<div${this.idAttr(node)} class="bb-gallery">${content}</div>`
+  }
+
+  private renderColumns(node: RedNode): string {
+    const cols = parseInt(String(node.metadata?.columns ?? '') || this.extractValue(node) || '2', 10)
+    const numCols = Math.max(2, Math.min(4, isNaN(cols) ? 2 : cols))
+    const content = this.renderChildren(node)
+    // `[columns=2:#hex]`: con color se añade la superficie (borde + fondo
+    // derivados del acento) para que el color se vea; sin color, grid limpio.
+    const accent = this.boxAccentStyle(node, 'columns')
+    const surfaceCls = accent ? ' bb-columns-surface' : ''
+    const styleBase = `column-count:${numCols};`
+    return `<div${this.idAttr(node)} class="bb-columns${surfaceCls}" style="${styleBase}">${content}</div>`
+  }
+
+  private renderSeparator(node: RedNode): string {
+    const variant = (String(node.metadata?.variant ?? '') || this.extractValue(node) || 'line').trim().toLowerCase()
+    if (variant === 'dots') return `<div${this.idAttr(node)} class="bb-separator">· · ·</div>`
+    if (variant === 'stars') return `<div${this.idAttr(node)} class="bb-separator">✦ ✦ ✦</div>`
+    return `<hr${this.idAttr(node)} class="bb-separator" />`
+  }
+
+  private renderScroll(node: RedNode): string {
+    const h = parseInt(String(node.metadata?.height ?? '') || this.extractValue(node) || '200', 10)
+    const maxH = Math.max(50, Math.min(2000, isNaN(h) ? 200 : h))
+    const content = this.renderChildren(node)
+    return `<div${this.idAttr(node)} class="bb-scroll" style="max-height:${maxH}px;">${content}</div>`
+  }
+
+  private renderAbbr(node: RedNode): string {
+    const title = String(node.metadata?.title ?? '') || this.extractValue(node)
+    const attr = title ? ` title="${this.escapeHtml(title)}"` : ''
+    return this.wrapInline('abbr', node, attr)
+  }
+
+  private renderTooltip(node: RedNode): string {
+    const tip = String(node.metadata?.tip ?? '') || this.extractValue(node)
+    const attr = tip ? ` title="${this.escapeHtml(tip)}"` : ''
+    return this.wrapInline('span', node, `class="bb-tooltip"${attr}`)
+  }
+
+  private renderRaw(node: RedNode): string {
+    const text = this.collectNodeText(node) || node.text || ''
+    return `<span${this.idAttr(node)} class="bb-raw">${this.escapeHtml(text)}</span>`
+  }
+
+  private renderPlain(node: RedNode): string {
+    return `<span${this.idAttr(node)}>${this.escapeHtml(this.collectNodeText(node))}</span>`
+  }
+
+  private renderAlign(node: RedNode): string {
+    const alignVal = (String(node.metadata?.align ?? '') || this.extractValue(node) || 'center').trim().toLowerCase()
+    const validAlign = alignVal === 'left' || alignVal === 'right' ? alignVal : 'center'
+    return this.wrapBlock('div', node, `style="text-align:${validAlign};"`)
+  }
+
+  private renderEffect(node: RedNode): string {
+    const raw = (String(node.metadata?.effectType ?? '') || this.extractValue(node) || 'glow').toLowerCase().trim()
+    const effectType = raw.includes(':') ? raw.split(':')[0] : (raw.startsWith('#') ? 'glow' : raw)
+    const rawColor = String(node.metadata?.color ?? '') || (raw.includes(':') ? raw.split(':')[1] : (raw.startsWith('#') ? raw : this.extractValue(node)))
+    const color = this.sanitizeColor(rawColor)
+    const content = this.renderChildren(node)
+    const idAttr = this.idAttr(node)
+
+    switch (effectType) {
+      case 'glow': {
+        const c = color || 'var(--color-accent, #2EE6E2)'
+        return `<span${idAttr} class="bb-glow" style="--glow-color:${c};text-shadow:0 0 4px ${c}, 0 0 8px ${c};">${content}</span>`
+      }
+      case 'neon': {
+        // Fallback blanco como el renderer original de Lyne (c || '#fff').
+        const c = color || '#fff'
+        return `<span${idAttr} class="bb-neon" style="--neon-color:${c};">${content}</span>`
+      }
+      case 'outline': {
+        const c = color || '#000'
+        return `<span${idAttr} style="-webkit-text-stroke:1px ${c};paint-order:stroke fill;">${content}</span>`
+      }
+      case 'emboss': return `<span${idAttr} class="bb-emboss">${content}</span>`
+      case 'engrave': return `<span${idAttr} class="bb-engrave">${content}</span>`
+      // NOTA: el tipo 'shadow' se eliminó de Lyne — ignoraba el color y
+      // chocaba con el kind `shadow` de osu. El `[shadow]` de osu sigue vivo
+      // vía su propio kind (shadowStyle, con color).
+      case 'shimmer': return `<span${idAttr} class="bb-shimmer">${content}</span>`
+      case 'ghost': return `<span${idAttr} class="bb-ghost">${content}</span>`
+      case 'rainbow': return `<span${idAttr} class="bb-rainbow">${content}</span>`
+      case 'fire': return `<span${idAttr} class="bb-fire">${content}</span>`
+      case 'ice': return `<span${idAttr} class="bb-ice">${content}</span>`
+      default: return `<span${idAttr}>${content}</span>`
+    }
+  }
+
+  private renderAnim(node: RedNode): string {
+    const raw = (String(node.metadata?.animType ?? '') || this.extractValue(node) || 'pulse').toLowerCase().trim()
+    const animType = raw.includes(':') ? raw.split(':')[0] : raw
+    const content = this.renderChildren(node)
+    const idAttr = this.idAttr(node)
+
+    switch (animType) {
+      case 'bounce': return `<span${idAttr} class="bb-bounce">${content}</span>`
+      case 'shake': return `<span${idAttr} class="bb-shake">${content}</span>`
+      case 'pulse': return `<span${idAttr} class="bb-pulse">${content}</span>`
+      // NOTA: el tipo 'fade' se eliminó de Lyne (era duplicado de fade-in).
+      case 'fade-in': return `<span${idAttr} class="bb-fade-in">${content}</span>`
+      case 'fade-out': return `<span${idAttr} class="bb-fade-out">${content}</span>`
+      case 'typewriter': {
+        const charCount = this.collectNodeText(node).length || 20
+        return `<span${idAttr} class="bb-typewriter-wrap" style="--bb-ch:${charCount};"><span class="bb-typewriter">${content}</span></span>`
+      }
+      case 'wave': return `<span${idAttr} class="bb-wave" style="display:inline-block;">${content}</span>`
+      case 'sparkle': return `<span${idAttr} class="bb-sparkle">${content}</span>`
+      case 'glitch': {
+        const rawText = this.collectNodeText(node)
+        return `<span${idAttr} class="bb-glitch" data-text="${this.escapeHtml(rawText)}">${content}</span>`
+      }
+      case 'levitate': return `<span${idAttr} class="bb-levitate" style="display:inline-block;">${content}</span>`
+      default: return `<span${idAttr} class="bb-pulse">${content}</span>`
+    }
+  }
+
+  private renderContainer(node: RedNode): string {
+    const raw = (String(node.metadata?.containerType ?? '') || this.extractValue(node) || 'stack').trim()
+    const [type, ...params] = raw.split(':')
+    const containerType = type.toLowerCase()
+    const param = params.join(':')
+    const content = this.renderChildren(node)
+    const idAttr = this.idAttr(node)
+
+    switch (containerType) {
+      case 'stack':
+        return `<div${idAttr} class="bb-stack">${content}</div>`
+      case 'flex': {
+        const gap = parseInt(param || '8', 10)
+        const safeG = Math.max(0, Math.min(100, isNaN(gap) ? 8 : gap))
+        return `<div${idAttr} class="bb-flex" style="gap:${safeG}px;">${content}</div>`
+      }
+      case 'grid': {
+        const n = parseInt(param || '2', 10)
+        const cols = Math.max(1, Math.min(6, isNaN(n) ? 2 : n))
+        return `<div${idAttr} class="bb-grid" style="grid-template-columns:repeat(${cols}, 1fr);">${content}</div>`
+      }
+      case 'middle':
+        return `<div${idAttr} class="bb-middle">${content}</div>`
+      case 'circle':
+        return `<div${idAttr} class="bb-circle">${content}</div>`
+      case 'card':
+      case 'glass': {
+        // `[card=#hex]` / `[container=glass:#hex]`: el color se pasa como
+        // `type:param` (igual que neon-box) y se emite como `--<tipo>-accent`
+        // del que el CSS deriva borde, tinte de fondo y —vía la clase
+        // `bb-accented`— la paleta del contenido sin color propio. Sin color,
+        // defaults y sin clase.
+        const accent = this.sanitizeColor(param)
+        const cls = accent ? ' bb-accented' : ''
+        const style = accent ? ` style="--${containerType}-accent:${accent};"` : ''
+        return `<div${idAttr} class="bb-cut-panel bb-${containerType}${cls}"${style}>${content}</div>`
+      }
+      case 'neon-box':
+      case 'neonbox': {
+        const c = this.sanitizeColor(param || this.extractValue(node)) || 'var(--color-accent, #2EE6E2)'
+        return `<div${idAttr} class="bb-cut-panel bb-neon-box" style="--neon-color:${c};border-color:${c};">${content}</div>`
+      }
+      default:
+        return `<div${idAttr} class="bb-stack">${content}</div>`
+    }
+  }
+
+  private static readonly STYLE_PROP_WHITELIST = new Set([
+    'width', 'height', 'padding', 'margin', 'display',
+    'background', 'border', 'opacity', 'filter', 'transform',
+    'float', 'clear', 'white-space', 'font-variant', 'text-transform',
+    'text-align', 'gap', 'color', 'font-size', 'font-weight',
+    'padding-left', 'padding-right', 'padding-top', 'padding-bottom',
+    'margin-left', 'margin-right', 'margin-top', 'margin-bottom',
+    'line-height', 'letter-spacing', 'word-spacing',
+  ])
+
+  private renderStyleTag(node: RedNode): string {
+    const raw = (String(node.metadata?.style ?? '') || this.extractValue(node) || '').trim()
+    const content = this.renderChildren(node)
+    const idAttr = this.idAttr(node)
+    if (!raw) return `<span${idAttr}>${content}</span>`
+
+    const safeStyles: string[] = []
+    const decls = raw.split(';')
+    for (const decl of decls) {
+      const colon = decl.indexOf(':')
+      if (colon < 0) continue
+      const prop = decl.slice(0, colon).trim().toLowerCase()
+      const val = decl.slice(colon + 1).trim()
+      if (!prop || !val) continue
+      if (!HTMLRenderer.STYLE_PROP_WHITELIST.has(prop)) continue
+      // Los paréntesis son válidos en CSS (rgba(), blur(), rotate(), scale(),
+      // color-mix()…) — antes se eliminaban y rompían esos valores. Lo que sí
+      // se bloquea son las funciones/fuentes peligrosas (url(), expression(),
+      // javascript:), que no tienen uso legítimo en el whitelist de props.
+      const safeVal = val.replace(/["'{}<>]/g, '').slice(0, 100)
+      if (/url\s*\(|expression\s*\(|javascript\s*:/i.test(safeVal)) continue
+      safeStyles.push(`${prop}:${safeVal}`)
+    }
+
+    if (safeStyles.length === 0) return `<span${idAttr}>${content}</span>`
+    return `<span${idAttr} style="${safeStyles.join(';')}">${content}</span>`
   }
 
   private renderQuote(node: RedNode): string {
@@ -482,15 +866,53 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderSpoilerbox(node: RedNode): string {
-    const title = node.metadata?.title || this.extractValue(node) || 'Spoiler'
+    const title = this.renderTitle(node, 'Spoiler')
     const content = this.renderChildren(node)
-    return `<details${this.idAttr(node)}><summary>${this.escapeHtml(String(title))}</summary>${content}</details>`
+    const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
+    const bodyCls = isLyne ? 'bb-box-body' : 'bbcode-box-body'
+    // El wrapper agrupa el título en un solo flex item (ver renderBox) y usa
+    // `bb-box-heading` (no `bb-box-title`) para no colisionar con la regla
+    // legacy `.bbcode-preview .bb-box-title` de la app, que pinta un fondo.
+    // `--box-accent` colorea el acento del box (título + chevron, y el borde
+    // en boxw) cuando el autor puso `[box=Title:#hex]`.
+    const accent = this.boxAccentStyle(node)
+    return `<details${this.idAttr(node)}${accent}><summary><span class="bb-box-heading">${title}</span></summary><div class="${bodyCls}">${content}</div></details>`
   }
 
   private renderBox(node: RedNode): string {
-    const title = node.metadata?.title || this.extractValue(node) || 'Box'
+    const title = this.renderTitle(node, 'Box')
     const content = this.renderChildren(node)
-    return `<details${this.idAttr(node)} class="box"><summary>${this.escapeHtml(String(title))}</summary>${content}</details>`
+    const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
+    const bodyCls = isLyne ? 'bb-box-body' : 'bbcode-box-body'
+    // boxw = box con líneas y fondo (estilo Lyne). [box] normal queda limpio
+    // por defecto; la clase `boxw` es la que dispara ese look en lyne.css.
+    const cls = node.kind === 'boxw' ? 'box boxw' : 'box'
+    // El wrapper agrupa el título en un solo flex item: sin él, el summary
+    // flex de Lyne separa cada span de [color] con su gap. `bb-box-heading`
+    // (no `bb-box-title`) evita la regla legacy `.bbcode-preview .bb-box-title`
+    // de la app, que pinta un fondo sobre el título.
+    const accent = this.boxAccentStyle(node)
+    return `<details${this.idAttr(node)} class="${cls}"${accent}><summary><span class="bb-box-heading">${title}</span></summary><div class="${bodyCls}">${content}</div></details>`
+  }
+
+  private renderTitle(node: RedNode, fallback: string): string {
+    const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
+    if (titleNodes && titleNodes.length > 0) {
+      return titleNodes.map(c => this.renderNode(c)).join('')
+    }
+    const title = node.metadata?.title ?? this.extractValue(node) ?? fallback
+    return this.escapeHtml(String(title))
+  }
+
+  /**
+   * `[box=Title:#hex]`, `[tables=striped:#hex]`, `[columns=2:#hex]` → un
+   * ` style="--<suffix>-accent:#hex;"` del que el CSS deriva la paleta
+   * (título + chevron y borde en boxw; gradientes/header/hover en tables;
+   * borde + fondo en columns). Devuelve '' si no hay color válido.
+   */
+  private boxAccentStyle(node: RedNode, suffix: 'box' | 'table' | 'columns' = 'box'): string {
+    const color = this.sanitizeColor(String(node.metadata?.color ?? ''))
+    return color ? ` style="--${suffix}-accent:${color};"` : ''
   }
 
   private renderList(node: RedNode): string {

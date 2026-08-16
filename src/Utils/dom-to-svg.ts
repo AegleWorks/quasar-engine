@@ -188,10 +188,15 @@ function collectFontFamilies(root: HTMLElement): Set<string> {
   let node: Node | null = walker.currentNode
   while (node) {
     if (node.nodeType === Node.ELEMENT_NODE) {
-      const cs = window.getComputedStyle(node as Element)
-      const family = cs.fontFamily?.split(",")[0]?.replace(/['"]/g, "").trim()
-      if (family && family !== "sans-serif" && family !== "monospace" && family !== "serif") {
-        fonts.add(family)
+      // Mismo guard que walkElement: los overlays de edición del imagemap no
+      // deben colar su fuente en el @import del SVG (p. ej. un tooltip con
+      // font-family propia).
+      if (!isImagemapOverlay(node as Element)) {
+        const cs = window.getComputedStyle(node as Element)
+        const family = cs.fontFamily?.split(",")[0]?.replace(/['"]/g, "").trim()
+        if (family && family !== "sans-serif" && family !== "monospace" && family !== "serif") {
+          fonts.add(family)
+        }
       }
     }
     node = walker.nextNode()
@@ -294,12 +299,36 @@ function getVisualLines(textNode: Text): VisualLine[] {
 
 const SKIP_TAGS = new Set(["script", "style", "noscript", "head", "meta", "title"])
 
+/**
+ * Overlays de EDICIÓN del imagemap que no deben salir en el vector exportado:
+ * las áreas clicables (rectángulos invisibles de la región) y su tooltip de
+ * hover. NO incluye el contenedor (`.imagemap-container`): ese guarda la
+ * imagen real, que sí forma parte del contenido.
+ *
+ * El HTMLRenderer genera las áreas como `imagemap-area bbcode-imap-area`;
+ * `bb-imagemap-area` es la clase legacy que también se salta por si algún
+ * render anterior la dejó en el DOM.
+ */
+const IMAGEMAP_OVERLAY_CLASSES = new Set([
+  "imagemap-area",
+  "bbcode-imap-area",
+  "bb-imagemap-area",
+  "bb-imagemap-tooltip",
+])
+
+function isImagemapOverlay(el: Element): boolean {
+  for (const c of el.classList) {
+    if (IMAGEMAP_OVERLAY_CLASSES.has(c)) return true
+  }
+  return false
+}
+
 function walkElement(el: Element, state: WalkState, depth: number): void {
   const tag = el.tagName.toLowerCase()
   if (SKIP_TAGS.has(tag)) return
 
   // Skip interactive overlays that shouldn't be part of the vector export
-  if (el.classList.contains("bb-imagemap-area")) return
+  if (isImagemapOverlay(el)) return
 
   const cs = window.getComputedStyle(el)
   if (cs.display === "none" || cs.visibility === "hidden") return

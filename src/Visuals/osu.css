@@ -16,7 +16,7 @@
 
 /* ─── Base ───────────────────────────────────────────── */
 
-.bbcode-preview {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) {
   font-family: "Inter", "Segoe UI", Tahoma, Geneva, Verdana, "Cambria Math", "STIX Two Math", sans-serif;
   font-size: 14px;
   line-height: 1.5;
@@ -24,19 +24,19 @@
   word-break: break-word;
   overflow-wrap: break-word;
 }
-.bbcode-preview a {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a {
   color: #7EB8E0;
   text-decoration: none;
   transition: border-color 0.15s, color 0.15s;
 }
-.bbcode-preview a:hover {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:hover {
   color: #94C8EA;
   border-bottom: 1px solid rgba(126,184,224,0.7);
 }
 
 /* ─── Headings ───────────────────────────────────────── */
 
-.bbcode-preview h2 {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) h2 {
   font-size: 23.1px;
   font-weight: 700;
   color: #ffffff;
@@ -48,7 +48,7 @@
 
 /* ─── Blockquotes ────────────────────────────────────── */
 
-.bbcode-preview blockquote {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote {
   padding: 0 0 0 20px;
   margin: 0 0 20px 0;
   border-left: 2px solid #D194B3;
@@ -58,7 +58,7 @@
 }
 /* ─── Code ───────────────────────────────────────────── */
 
-.bbcode-preview pre {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) pre {
   padding: 10px;
   margin-bottom: 10px;
   background: #1C1719;
@@ -66,7 +66,7 @@
   border-radius: 8px;
   overflow-x: auto;
 }
-.bbcode-preview pre code {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) pre code {
   font-family: 'PT Mono', 'Geist Mono', 'JetBrains Mono', monospace;
   font-size: 13px;
   line-height: 1.5;
@@ -76,19 +76,19 @@
   padding: 0;
   border: none;
 }
-.bbcode-preview code.inline {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) code.inline {
   font-family: 'JetBrains Mono', monospace;
   font-size: 13px;
   padding: 1px 5px;
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 4px;
-  color: #E8E0E4;
+  color: inherit;
 }
 
 /* ─── Notice ─────────────────────────────────────────── */
 
-.bbcode-preview .notice {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .notice {
   padding: 19px;
   background: rgba(0, 0, 0, 0.3);
   border: 2px solid rgba(255, 231, 250, 0.202);
@@ -98,75 +98,79 @@
 
 /* ─── Spoiler ────────────────────────────────────────── */
 
-.bbcode-preview .spoiler {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .spoiler {
   background: #000;
   color: #000;
   cursor: text;
 }
-.bbcode-preview .spoiler::selection {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .spoiler::selection {
   color: #fff;
   background: #555;
 }
 
 /* ─── Box / Spoilerbox ───────────────────────────────── */
 
-.bbcode-preview details {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) details {
   padding: 0;
   background: none;
   border: none;
   border-radius: 0;
 }
-.bbcode-preview details summary {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) details summary {
   cursor: pointer;
   font-weight: 600;
   color: #D194B3;
   font-size: 13px;
   user-select: none;
 }
-.bbcode-preview details[open] {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) details[open] {
   padding-bottom: 0;
 }
 
 /* ─── Lists ──────────────────────────────────────────── */
 
-.bbcode-preview ul {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) ul {
   margin: 0;
   padding-left: 24px;
   list-style: disc outside;
 }
-.bbcode-preview ol {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) ol {
   margin: 0;
   padding-left: 24px;
   list-style: decimal outside;
 }
-.bbcode-preview li {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) li {
   margin: 0;
   line-height: 1.5;
   display: list-item;
 }
-.bbcode-preview li::marker {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) li::marker {
   color: #D194B3;
 }
 
 /* ─── Media ──────────────────────────────────────────── */
 
-.bbcode-preview img {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) img {
   max-width: 100%;
   height: auto;
   border-radius: 8px;
 }
-.bbcode-preview iframe {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) iframe {
+  /* inline-block (no block): el preflight de Tailwind fuerza `iframe{display:block}`
+   * y eso rompe el centrado por `text-align:center` de [centre]. Igual que las
+   * imágenes: inline-level para que text-align lo centre. */
+  display: inline-block;
   max-width: 100%;
   border-radius: 8px;
 }
-.bbcode-preview audio {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) audio {
   width: 100%;
 }
 
 /* ─── Image Map ──────────────────────────────────────── */
 
-.bbcode-preview .bbcode-imagemap,
-.bbcode-preview .imagemap-container {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-imagemap,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap-container {
   display: inline-block;
   position: relative;
   max-width: 100%;
@@ -174,8 +178,8 @@
   border-radius: 8px;
 }
 
-.bbcode-preview .bbcode-imap-area,
-.bbcode-preview .imagemap-area {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-imap-area,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap-area {
   position: absolute;
   display: block;
   border-radius: 6px;
@@ -187,8 +191,8 @@
   box-sizing: border-box;
 }
 
-.bbcode-preview .bbcode-imap-area:hover,
-.bbcode-preview .imagemap-area:hover {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-imap-area:hover,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap-area:hover {
   border-style: solid;
   border-color: rgba(255, 173, 210, 1);
   background: rgba(255, 173, 210, 0.38);
@@ -198,7 +202,7 @@
 
 /* ─── Decorative / Fun Styles ────────────────────────── */
 
-.bbcode-preview .media-error {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .media-error {
   padding: 8px 12px;
   background: rgba(229,90,107,0.1);
   border: 1px solid rgba(229,90,107,0.25);
@@ -207,29 +211,29 @@
   font-size: 12px;
   font-family: 'JetBrains Mono', monospace;
 }
-.bbcode-preview .zalgo {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .zalgo {
   letter-spacing: 0.5em;
   opacity: 0.8;
 }
-.bbcode-preview .aesthetic {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .aesthetic {
   letter-spacing: 0.3em;
   font-weight: 300;
   opacity: 0.85;
 }
-.bbcode-preview .sparkle {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .sparkle {
   background: linear-gradient(45deg, #FFD700, #FF69B4, #00CED1);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
-.bbcode-preview .bubble {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bubble {
   display: inline-block;
   padding: 2px 10px;
   border-radius: 12px;
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.12);
 }
-.bbcode-preview .flower {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .flower {
   display: inline-block;
   transform: rotate(-5deg) scale(0.95);
   font-style: italic;
@@ -238,14 +242,14 @@
 
 /* ─── Semantic Spacing ───────────────────────────────── */
 
-.bbcode-preview .bbcode-sp {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-sp {
   display: block;
   height: 0;
   min-height: 0;
   margin: 0;
   padding: 0;
 }
-.bbcode-preview .bbcode-para {
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-para {
   display: block;
   height: 1em;
   min-height: 12px;

@@ -49,10 +49,11 @@ export { TreeDiffer, type DiffOperation, type DiffKind } from './Diff/TreeDiffer
 
 // ── Visitors ──
 export { Visitor, type VisitorContext } from './Visitors/Visitor'
-export { BBCodeExporter, type ExportTarget } from './Visitors/BBCodeExporter'
+export { BBCodeExporter, MILIASTRY_ONLY_TAGS, LYNE_ONLY_TAGS, type ExportTarget } from './Visitors/BBCodeExporter'
 export { BBBlocksExporter, type UIBBBlock } from './Visitors/BBBlocksExporter'
-export { HTMLRenderer } from './Visitors/HTMLRenderer'
+export { HTMLRenderer, type HTMLRendererOptions } from './Visitors/HTMLRenderer'
 export { morphHTML } from './Visitors/DOMMorpher'
+export { patchBlocksInto } from './Visitors/BlockPatcher'
 export { SVGRenderer } from './Visitors/SVGRenderer'
 export { MarkdownExporter } from './Visitors/MarkdownExporter'
 export { JSONExporter } from './Visitors/JSONExporter'
@@ -96,7 +97,18 @@ export { PluginRegistry, type PluginManifest, type PluginContribution } from './
 // ── BBCode Bridge ──
 export { BBCodeDocumentModel } from './BBCode/BBCodeDocumentModel'
 export type { BBCodeDocumentModelOptions } from './BBCode/BBCodeDocumentModel'
-export { bbBlocksToRedTree, bbBlocksToGreenTree, bbBlockToGreenNode, greenToRedNode, tagToNodeKind, nodeKindToTag, isBlockKind, BBCODE_TAG_NAMES } from './BBCode/BBCodeToGreenNode'
+export {
+  bbBlocksToRedTree,
+  bbBlocksToGreenTree,
+  bbBlockToGreenNode,
+  greenToRedNode,
+  tagToNodeKind,
+  nodeKindToTag,
+  isBlockKind,
+  BBCODE_TAG_NAMES,
+  getBBCodeTagNames,
+  type BBCodeDialect,
+} from './BBCode/BBCodeToGreenNode'
 export type { BBBlock } from './BBCode/BBCodeToGreenNode'
 
 // ── Events ──

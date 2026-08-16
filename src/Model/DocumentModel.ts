@@ -29,7 +29,7 @@ import {
   type FallbackReason,
 } from '../Incremental/IncrementalParser'
 import { ChangeTracker } from '../Incremental/ChangeTracker'
-import type { TextChange } from '../Incremental/ChangeTracker'
+import type { TextChange, TextChangeRange } from '../Incremental/ChangeTracker'
 import { SemanticAnalyzer } from '../Semantic/SemanticAnalyzer'
 import type { AnalyzeResult, Validator } from '../Semantic/SemanticAnalyzer'
 import { Transaction } from '../Transactions/Transaction'
@@ -107,6 +107,11 @@ export class DocumentModel {
   // ── State ──
   private _diagnostics: DiagnosticCollection | null = null
   private _lastAnalyzeResult: AnalyzeResult | null = null
+  /**
+   * Source range of the last applied edit — see {@link TextChangeRange}.
+   * `null` after a full rebuild, which is not an edit.
+   */
+  private _lastChangeRange: TextChangeRange | null = null
   private _options: Required<DocumentModelOptions>
   private _analyzeTimeout: ReturnType<typeof setTimeout> | null = null
   /** The debounced post-edit work, kept so `ensureAnalyzed` can run it early. */
@@ -180,6 +185,19 @@ export class DocumentModel {
     return this._lastAnalyzeResult
   }
 
+  /**
+   * The source range of the last applied edit, in new-source coordinates.
+   *
+   * `null` after a `rebuild` (there is no incremental edit to point at). The
+   * BlockPatcher reads this to reconcile only the blocks around the edit
+   * instead of walking the whole document. The same range is also attached to
+   * the current `redRoot` (`__changeRange`), so a consumer that only holds the
+   * AST — like the live preview — can find it without plumbing the model.
+   */
+  get lastChangeRange(): TextChangeRange | null {
+    return this._lastChangeRange
+  }
+
   // ── Document Operations ──
 
   /**
@@ -193,6 +211,11 @@ export class DocumentModel {
     this._source = source
     this._greenRoot = this.parseToGreen(source)
     this._redRoot = this.buildRedFromGreen(this._greenRoot)
+    // A rebuild is not an edit: there is no "changed region" to reconcile
+    // incrementally, so the range is cleared and the preview falls back to its
+    // full reconcile (which is what it must do for undo/redo/load anyway).
+    this._lastChangeRange = null
+    this._attachChangeRange(this._redRoot)
     // Unchanged nodes keep the identity they had before the rebuild, so the
     // HTML of untouched subtrees stays byte-identical between renders and the
     // DOMMorpher's isEqualNode fast path actually fires.
@@ -259,6 +282,20 @@ export class DocumentModel {
   }
 
   /**
+   * Attach the last change range to a root node.
+   *
+   * The range travels with the AST so the preview can read it from the root it
+   * is about to patch — no prop drilling through workspace → window → preview.
+   * `__changeRange` is deliberately not part of RedNode's API; it is a runtime
+   * marker owned by the model (the BlockPatcher reads it with a cast).
+   */
+  private _attachChangeRange(root: RedNode | null): void {
+    if (root) {
+      ;(root as RedNode & { __changeRange?: TextChangeRange | null }).__changeRange = this._lastChangeRange
+    }
+  }
+
+  /**
    * Apply a source text change (e.g. from Monaco editor input).
    * Uses incremental parsing when possible.
    *
@@ -273,6 +310,14 @@ export class DocumentModel {
 
     // Track the change
     this.changeTracker.track(change)
+
+    // The edit range, in both coordinate systems. `change.end` is the OLD
+    // end; `start + change.text.length` is the NEW end after the splice.
+    this._lastChangeRange = {
+      start: change.start,
+      end: change.start + change.text.length,
+      endOld: change.end,
+    }
 
     // Apply to source
     const before = this._source.slice(0, change.start)
@@ -333,6 +378,9 @@ export class DocumentModel {
           preserveNodeIds(oldRoot, this._redRoot)
         }
         this._version++
+        // The incremental path resolved: the range stays attached to the new
+        // root so the preview can find the edited region.
+        this._attachChangeRange(this._redRoot)
       } catch {
         this.lastReparsePath = 'full_rebuild'
         this.lastReparseTimings = null
@@ -449,6 +497,13 @@ export class DocumentModel {
     }
 
     this.applyChange({ start, end: oldEnd, text: newSource.slice(start, newEnd) }, origin)
+
+    // The diff computed here is authoritative: `newEnd`/`oldEnd` are the exact
+    // boundary in each coordinate system (applyChange derived the same values
+    // from the TextChange — this just re-states them and re-attaches, since
+    // the range must ride the current root).
+    this._lastChangeRange = { start, end: newEnd, endOld: oldEnd }
+    this._attachChangeRange(this._redRoot)
 
     // Overwrite with the flat source from the textarea to prevent
     // deep ConsStrings from accumulating across edits.

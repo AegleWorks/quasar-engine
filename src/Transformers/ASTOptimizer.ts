@@ -253,7 +253,7 @@ export class ASTOptimizer implements Transformer {
   }
 
   private static VOID_TAGS = new Set(['img', 'image', 'url', 'empty_line', 'spacing'])
-  private static UNMERGEABLE = new Set(['document', 'group', 'paragraph', 'empty_line', 'spacing', 'text', 'code', 'inline_code', 'notice', 'box', 'spoilerbox', 'quote', 'list', 'center', 'heading', 'right'])
+  private static UNMERGEABLE = new Set(['document', 'group', 'paragraph', 'empty_line', 'spacing', 'text', 'code', 'inline_code', 'notice', 'box', 'boxw', 'spoilerbox', 'quote', 'list', 'center', 'heading', 'right', 'left'])
 
   private isEmptyNode(node: RedNode): boolean {
     if (ASTOptimizer.VOID_TAGS.has(node.kind)) return false
@@ -307,7 +307,7 @@ export class ASTOptimizer implements Transformer {
     const ranks: Record<string, number> = {
       'url': 1, 'email': 1, 'profile': 1,
       'font_size': 2, 'font': 2,
-      'bold': 3, 'italic': 3, 'underline': 3, 'strikethrough': 3, 'shadow': 3,
+      'bold': 3, 'italic': 3, 'underline': 3, 'strikethrough': 3,
       'color': 4
     }
     return ranks[kind] ?? 99

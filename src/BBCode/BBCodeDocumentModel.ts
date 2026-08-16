@@ -28,10 +28,11 @@ import type { ReparseParseOptions } from '../Incremental/IncrementalParser'
 import { GreenNodePool, type InterningMode } from '../Syntax/GreenNodePool'
 import { GreenNode, greenLeaf } from '../Syntax/GreenNode'
 import { RedNode } from '../Syntax/RedNode'
-import { greenToRedNode, greenToRedNodeReusing } from './BBCodeToGreenNode'
+import { greenToRedNode, greenToRedNodeReusing, type BBCodeDialect } from './BBCodeToGreenNode'
 import { parseTokensToGreen } from './Parser'
 import { scanBBCode } from '../Lexer/BBCodeLexer'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
+import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 
 export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
   /** Source BBCode text to parse */
@@ -40,6 +41,10 @@ export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
   language?: string
   /** Enforce strict tag nesting (disables osu! auto-close legacy behavior) */
   strictMode?: boolean
+  /** BBCode dialect to parse against ('osu' | 'miliastry' | 'lyne'). Default: 'miliastry'. */
+  dialect?: BBCodeDialect
+  /** Alias for dialect ('osu' | 'miliastry' | 'lyne') */
+  mode?: BBCodeDialect
   /**
    * Deduplicate structurally identical green nodes across the document.
    *
@@ -57,6 +62,7 @@ export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
 
 export class BBCodeDocumentModel extends DocumentModel {
   private _strictMode: boolean
+  private _dialect: BBCodeDialect
   /** Per-document interner, or null when interning is off. */
   private _interner: GreenNodePool | null
   /** Memoized parser `extraTags`, rebuilt only when the registry changes. */
@@ -80,10 +86,25 @@ export class BBCodeDocumentModel extends DocumentModel {
       reuseRed: options.reuseRed,
     })
     this._strictMode = options.strictMode ?? false
+    this._dialect = options.dialect ?? options.mode ?? 'miliastry'
     this._interner = options.interning ? GreenNodePool.create(options.interning) : null
     if (options.source) {
       this.rebuild(options.source)
     }
+  }
+
+  get dialect(): BBCodeDialect {
+    return this._dialect
+  }
+
+  get root(): RedNode | null {
+    return this.redRoot
+  }
+
+  toHTML(renderer?: HTMLRenderer): string {
+    if (!this.redRoot) return ''
+    const r = renderer ?? new HTMLRenderer({ dialect: this._dialect, theme: this._dialect === 'lyne' ? 'lyne' : 'osu' })
+    return r.render(this.redRoot)
   }
 
   /**
@@ -107,6 +128,7 @@ export class BBCodeDocumentModel extends DocumentModel {
       // 2. Parse: tokens → GreenNode (with proper empty_line handling)
       const green = parseTokensToGreen(tokens, source, {
         strictMode: this._strictMode,
+        dialect: this._dialect,
         normalizeParagraphs: options?.normalizeParagraphs ?? true,
         interner: this._interner ?? undefined,
         extraTags: this._extraTags ?? undefined,
@@ -147,6 +169,7 @@ export class BBCodeDocumentModel extends DocumentModel {
    * …) as-is instead of expanding them, which is what round-tripping needs.
    */
   protected exportSource(root: RedNode): string {
-    return new BBCodeExporter(this.tagRegistry, 'miliastry').export(root)
+    const exportTarget = this._dialect === 'lyne' ? 'lyne' : this._dialect === 'osu' ? 'osu' : 'miliastry'
+    return new BBCodeExporter(this.tagRegistry, exportTarget).export(root)
   }
 }

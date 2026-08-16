@@ -11,18 +11,35 @@
 import { RedNode } from '../Syntax/RedNode'
 import { Visitor } from './Visitor'
 import type { VisitorContext } from './Visitor'
-import type { TagRegistry, TagDefinition } from '../Model/TagRegistry'
+import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 
 /**
  * Export target for BBCodeExporter.
- * - 'osu': Expands Miliastry-native tags (gradient, grow, sinewave, rainbow)
- *   into osu!-compatible BBCode ([color=#HEX], [size=N], etc.).
+ * - 'osu': Expands Miliastry/Lyne-native tags into osu!-compatible BBCode.
  * - 'miliastry': Preserves Miliastry-native tags as-is for round-trip editing.
+ * - 'lyne': Preserves Lyne-native tags as-is for round-trip editing.
  */
-export type ExportTarget = 'osu' | 'miliastry'
+export type ExportTarget = 'osu' | 'miliastry' | 'lyne'
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
 const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow'])
+
+/**
+ * Tags que existen SOLO en Miliastry (registrados en el TagRegistry) y que
+ * osu! NO renderiza. Si un usuario pega `[shadow]`/`[zalgo]`/etc. en osu!,
+ * el texto sale roto (los corchetes se ven literalmente). Cuando el target
+ * es 'osu', estos tags se DEGRADAN a su contenido plano: mejor perder el
+ * efecto que romper la userpage. El target 'miliastry' los conserva.
+ */
+export const MILIASTRY_ONLY_TAGS = new Set([
+  'font', 'zalgo', 'aesthetic', 'sparkle', 'bubble', 'flower', 'svg', 'group',
+])
+
+export const LYNE_ONLY_TAGS = new Set([
+  'boxw', 'wnotice', 'tables', 'table_row', 'table_col', 'table_th', 'gallery', 'columns',
+  'separator', 'scroll', 'sup', 'sub', 'abbr', 'mark', 'kbd', 'tooltip', 'flip',
+  'raw', 'plain', 'guild', 'map', 'align', 'effect', 'anim', 'container', 'style_tag',
+])
 
 /**
  * kind → BBCode tag name, in the osu! spelling (`centre`, `youtube`).
@@ -41,16 +58,20 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   color: 'color',
   font_size: 'size',
   font: 'font',
-  shadow: 'shadow',
   inline_code: 'c',
   code: 'code',
   spoiler: 'spoiler',
   center: 'centre',
+  left: 'left',
+  right: 'right',
   heading: 'heading',
   notice: 'notice',
+  wnotice: 'wnotice',
   url: 'url',
   email: 'email',
   profile: 'profile',
+  guild: 'guild',
+  map: 'map',
   image: 'img',
   video: 'youtube',
   audio: 'audio',
@@ -58,6 +79,7 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   quote: 'quote',
   spoilerbox: 'spoilerbox',
   box: 'box',
+  boxw: 'boxw',
   list: 'list',
   list_item: '*',
   zalgo: 'zalgo',
@@ -67,7 +89,28 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   flower: 'flower',
   gradient: 'gradient',
   grow: 'grow',
-  right: 'right',
+  align: 'align',
+  tables: 'tables',
+  table_row: 'row',
+  table_col: 'col',
+  table_th: 'th',
+  gallery: 'gallery',
+  columns: 'columns',
+  separator: 'separator',
+  scroll: 'scroll',
+  sup: 'sup',
+  sub: 'sub',
+  abbr: 'abbr',
+  mark: 'mark',
+  kbd: 'kbd',
+  tooltip: 'tooltip',
+  flip: 'flip',
+  raw: 'raw',
+  plain: 'plain',
+  effect: 'effect',
+  anim: 'anim',
+  container: 'container',
+  style_tag: 'style',
 }
 
 
@@ -76,7 +119,7 @@ export class BBCodeExporter extends Visitor<string> {
   private depth: number = 0
   private target: ExportTarget
 
-  constructor(registry: TagRegistry, target: ExportTarget = 'osu') {
+  constructor(registry: TagRegistry = new TagRegistry(), target: ExportTarget = 'osu') {
     super()
     this.registry = registry
     this.target = target
@@ -144,6 +187,12 @@ export class BBCodeExporter extends Visitor<string> {
       })
     }
 
+    // Tags Miliastry-only / Lyne-only: en target 'osu' se degradan a contenido plano para
+    // que el BBCode generado SIEMPRE sea pegable en osu! sin tags rotos.
+    if (this.target === 'osu' && (MILIASTRY_ONLY_TAGS.has(node.kind) || LYNE_ONLY_TAGS.has(node.kind))) {
+      return node.children.map((c) => this.exportNode(c)).join('')
+    }
+
     // Default BBCode serialization
     let tagName = this.kindToTagName(node.kind)
     const attrs = this.getTagAttributes(node)
@@ -165,7 +214,11 @@ export class BBCodeExporter extends Visitor<string> {
     }
 
     if (node.kind === 'image' || node.kind === 'video' || node.kind === 'audio') {
-      return `[${tagName}]${content}[/${tagName}]`
+      // image lleva su tamaño/modificador en el attr (`[img=400x300]url[/img]`)
+      // y la URL en el contenido; video/audio usan el attr como src, así que
+      // solo image debe re-emitir atributos.
+      const mediaAttrs = node.kind === 'image' ? attrs : ''
+      return `[${tagName}${mediaAttrs}]${content}[/${tagName}]`
     }
 
     const kindName: string = node.kind
@@ -212,8 +265,44 @@ export class BBCodeExporter extends Visitor<string> {
         return `=${(node.metadata.href as string).replace('mailto:', '')}`
       } else if (node.kind === 'quote' && node.metadata.source !== undefined) {
         return `="${node.metadata.source}"`
-      } else if ((node.kind === 'box' || node.kind === 'spoilerbox') && node.metadata.title !== undefined) {
+      } else if ((node.kind === 'box' || node.kind === 'boxw' || node.kind === 'spoilerbox') && (node.metadata.rawTitle !== undefined || node.metadata.title !== undefined)) {
+        const titleVal = node.metadata.rawTitle !== undefined ? node.metadata.rawTitle : node.metadata.title
+        // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
+        // a añadir aquí para que el round-trip no pierda el sufijo.
+        const color = node.metadata.color as string | undefined
+        return `=${titleVal}${color ? `:${color}` : ''}`
+      } else if ((node.kind === 'notice' || node.kind === 'wnotice') && node.metadata.color !== undefined) {
+        return `=${node.metadata.color}`
+      } else if (node.kind === 'tables' && node.metadata.variant !== undefined) {
+        const color = node.metadata.color as string | undefined
+        return `=${node.metadata.variant}${color ? `:${color}` : ''}`
+      } else if (node.kind === 'columns' && node.metadata.columns !== undefined) {
+        const color = node.metadata.color as string | undefined
+        return `=${node.metadata.columns}${color ? `:${color}` : ''}`
+      } else if (node.kind === 'separator' && node.metadata.variant !== undefined) {
+        return `=${node.metadata.variant}`
+      } else if (node.kind === 'scroll' && node.metadata.height !== undefined) {
+        return `=${node.metadata.height}`
+      } else if (node.kind === 'abbr' && node.metadata.title !== undefined) {
         return `=${node.metadata.title}`
+      } else if (node.kind === 'tooltip' && node.metadata.tip !== undefined) {
+        return `=${node.metadata.tip}`
+      } else if (node.kind === 'guild' && node.metadata.tag !== undefined) {
+        return `=${node.metadata.tag}`
+      } else if (node.kind === 'map' && node.metadata.id !== undefined) {
+        return `=${node.metadata.id}`
+      } else if (node.kind === 'align' && node.metadata.align !== undefined) {
+        return `=${node.metadata.align}`
+      } else if (node.kind === 'effect' && node.metadata.effectType !== undefined) {
+        return `=${node.metadata.effectType}`
+      } else if (node.kind === 'image' && node.metadata.imgAttr !== undefined) {
+        return `=${node.metadata.imgAttr}`
+      } else if (node.kind === 'anim' && node.metadata.animType !== undefined) {
+        return `=${node.metadata.animType}`
+      } else if (node.kind === 'container' && node.metadata.containerType !== undefined) {
+        return `=${node.metadata.containerType}`
+      } else if (node.kind === 'style_tag' && node.metadata.style !== undefined) {
+        return `=${node.metadata.style}`
       }
     }
 

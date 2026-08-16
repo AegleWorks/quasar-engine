@@ -11,6 +11,26 @@ export interface TextChange {
   text: string
 }
 
+/**
+ * Source range of a text edit, in BOTH coordinate systems.
+ *
+ * An edit sits between two documents: `start`/`end` describe the changed
+ * region in NEW-source coordinates (the current document), while `endOld` is
+ * the end of the replaced region in OLD-source coordinates. The incremental
+ * preview (`BlockPatcher`) uses `start`/`endOld` to locate the affected blocks
+ * in the PREVIOUS tree (whose offsets are pre-edit) and `start`/`end` in the
+ * new one — insertions or deletions between the two make the naive single-`end`
+ * wrong, which is exactly why both ends are kept.
+ */
+export interface TextChangeRange {
+  /** Start of the edited region (identical in both coordinate systems). */
+  start: number
+  /** End of the edited region, in new-source coordinates. */
+  end: number
+  /** End of the replaced region, in old-source coordinates. */
+  endOld: number
+}
+
 export interface TextChangeStats {
   totalChanges: number
   totalInserted: number

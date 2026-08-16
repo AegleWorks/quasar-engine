@@ -30,6 +30,12 @@ export const visualThemes = [
     description: 'Estilo visual inspirado en los foros de osu!',
     cssFile: 'osu.css',
   },
+  {
+    id: 'lyne',
+    name: 'Lyne Style',
+    description: 'Estilo visual cyberpunk con cortes a 45° inspirado en Lyne',
+    cssFile: 'lyne.css',
+  },
 ] as const
 
 export type VisualThemeId = (typeof visualThemes)[number]['id']
