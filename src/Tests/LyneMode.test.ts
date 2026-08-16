@@ -183,5 +183,109 @@ describe('Lyne Mode & Dialect Isolation', () => {
       const exported = exporter.export(doc.root!)
       expect(exported).toBe('[wnotice=#ff0000]Be careful[/wnotice]')
     })
+
+    it('linkifies @mentions via mentionResolver and keeps unresolved ones as text', () => {
+      const doc = new BBCodeDocumentModel({
+        source: '[b]Hey @airi and @ghost[/b] tail',
+        mode: 'lyne',
+      })
+      const renderer = new HTMLRenderer({
+        registry: doc.tagRegistry,
+        dialect: 'lyne',
+        theme: 'lyne',
+        mentionResolver: (name) => (name === 'airi' ? { href: `/u/${name}`, external: false } : null),
+      })
+      const html = renderer.render(doc.root!)
+      expect(html).toContain('<a class="bb-mention" href="/u/airi">@airi</a>')
+      expect(html).toContain('@ghost')
+      expect(html).toContain('tail')
+    })
+
+    it('escapes mention names and rejects dangerous mention hrefs', () => {
+      const doc = new BBCodeDocumentModel({
+        source: 'Hi @evil"onclick="alert(1)',
+        mode: 'lyne',
+      })
+      const renderer = new HTMLRenderer({
+        registry: doc.tagRegistry,
+        dialect: 'lyne',
+        theme: 'lyne',
+        mentionResolver: () => ({ href: 'javascript:alert(1)', external: false }),
+      })
+      const html = renderer.render(doc.root!)
+      // Dangerous protocol → mention stays plain text, escaped
+      expect(html).not.toContain('javascript:')
+      expect(html).not.toContain('<a class="bb-mention"')
+      expect(html).toContain('&quot;')
+    })
+
+    it('allows safe mention hrefs (root-relative and http)', () => {
+      const doc = new BBCodeDocumentModel({
+        source: '@airi @jane',
+        mode: 'lyne',
+      })
+      const renderer = new HTMLRenderer({
+        registry: doc.tagRegistry,
+        dialect: 'lyne',
+        theme: 'lyne',
+        mentionResolver: (name) => ({
+          href: name === 'airi' ? `/u/${name}` : `https://example.com/u/${name}`,
+          external: name !== 'airi',
+        }),
+      })
+      const html = renderer.render(doc.root!)
+      expect(html).toContain('<a class="bb-mention" href="/u/airi">@airi</a>')
+      expect(html).toContain('<a class="bb-mention" href="https://example.com/u/jane" target="_blank" rel="noopener">@jane</a>')
+    })
+
+    it('turns timestamps into editor deep-link chips via timestampResolver', () => {
+      const doc = new BBCodeDocumentModel({
+        source: 'At 1:23 the beat drops, see 04:05.5 for the outro',
+        mode: 'lyne',
+      })
+      const renderer = new HTMLRenderer({
+        registry: doc.tagRegistry,
+        dialect: 'lyne',
+        theme: 'lyne',
+        timestampResolver: (ms, label) => ({ href: `line://edit?map=42&t=${ms}`, external: false }),
+      })
+      const html = renderer.render(doc.root!)
+      expect(html).toContain('<a class="bb-timeref" href="line://edit?map=42&amp;t=83000">1:23</a>')
+      expect(html).toContain('<a class="bb-timeref" href="line://edit?map=42&amp;t=245500">04:05.5</a>')
+    })
+
+    it('keeps timestamps as plain text without timestampResolver', () => {
+      const doc = new BBCodeDocumentModel({
+        source: 'At 1:23 nothing happens',
+        mode: 'lyne',
+      })
+      const renderer = new HTMLRenderer({
+        registry: doc.tagRegistry,
+        dialect: 'lyne',
+        theme: 'lyne',
+      })
+      const html = renderer.render(doc.root!)
+      expect(html).toContain('At 1:23 nothing happens')
+      expect(html).not.toContain('bb-timeref')
+    })
+
+    it('renders [col] outside [tables] as a plain span, inside as td', () => {
+      const doc = new BBCodeDocumentModel({
+        source: `[columns=2][col]Left[/col][col]Right[/col][/columns]
+[tables][row][col]Cell[/col][/row][/tables]`,
+        mode: 'lyne',
+      })
+      const prev = HTMLRenderer.idMode
+      HTMLRenderer.idMode = 'none'
+      try {
+        const html = doc.toHTML()
+        // Orphaned [col] inside [columns] → span, not td
+        expect(html).toContain('<div class="bb-columns" style="column-count:2;"><span>Left</span><span>Right</span></div>')
+        // [col] inside [tables] stays a real cell
+        expect(html).toContain('<td>Cell</td>')
+      } finally {
+        HTMLRenderer.idMode = prev
+      }
+    })
   })
 })

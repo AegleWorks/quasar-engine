@@ -32,13 +32,27 @@ export interface HTMLRendererOptions {
   mediaProxy?: (url: string) => string
   /** Resolver for entity links like profile, guild, map */
   entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
+  /**
+   * Forum-style `@mention` linkifier. Called with the bare name (no `@`);
+   * return null to leave the mention as plain text. Used by forum hosts that
+   * linkify `@username` to a profile route.
+   */
+  mentionResolver?: (name: string) => { href: string; external?: boolean } | null
+  /**
+   * Timestamp chip linkifier (`1:23`, `01:23.456`, `01:23:456`). Called with
+   * the millisecond offset and the display label; return null to leave the
+   * timestamp as plain text. Used by map hosts that deep-link into an editor.
+   */
+  timestampResolver?: (ms: number, label: string) => { href: string; external?: boolean } | null
 }
 
 export class HTMLRenderer extends Visitor<string> {
-  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver'>> & {
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver'>> & {
     registry?: TagRegistry
     mediaProxy?: (url: string) => string
     entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
+    mentionResolver?: (name: string) => { href: string; external?: boolean } | null
+    timestampResolver?: (ms: number, label: string) => { href: string; external?: boolean } | null
   }
 
   constructor(options: HTMLRendererOptions = {}) {
@@ -50,6 +64,8 @@ export class HTMLRenderer extends Visitor<string> {
       theme: options.theme ?? (options.dialect === 'lyne' ? 'lyne' : 'osu'),
       mediaProxy: options.mediaProxy,
       entityLinkResolver: options.entityLinkResolver,
+      mentionResolver: options.mentionResolver,
+      timestampResolver: options.timestampResolver,
     }
   }
 
@@ -160,6 +176,14 @@ export class HTMLRenderer extends Visitor<string> {
    */
   static idMode: 'blocks' | 'all' | 'none' = 'all'
 
+  /**
+   * Nesting depth of `[tables]` while rendering. `[col]`/`[row]`/`[th]` are
+   * table cells only INSIDE a `[tables]`; orphaned ones (e.g. `[col]` inside
+   * `[columns]`, or stray cells) render as plain inline spans — the same rule
+   * LYNE's forum renderer applies.
+   */
+  private tableDepth = 0
+
   private idAttr(node: RedNode): string {
     if (HTMLRenderer.idMode === 'none') return ''
     if (HTMLRenderer.idMode === 'all') return ` data-node-id="${node.id}"`
@@ -219,7 +243,9 @@ export class HTMLRenderer extends Visitor<string> {
   private renderNode(node: RedNode): string {
     // Leaf nodes
     if (node.children.length === 0 && node.kind === 'text') {
-      let out = this.escapeHtml(node.text)
+      let out = this.mentionResolver || this.options.timestampResolver
+        ? this.linkifyText(node.text)
+        : this.escapeHtml(node.text)
       const style = node.metadata?.style as Record<string, string> | undefined
       if (style) {
         const inlineStyles = []
@@ -277,11 +303,13 @@ export class HTMLRenderer extends Visitor<string> {
       case 'imagemap': return this.renderImagemap(node)
       case 'align': return this.renderAlign(node)
       case 'tables': return this.renderTables(node)
-      case 'table_row': return this.wrapBlock('tr', node)
-      case 'table_col': return this.wrapInline('td', node)
+      case 'table_row': return this.tableDepth > 0 ? this.wrapBlock('tr', node) : this.wrapInline('span', node)
+      case 'table_col': return this.tableDepth > 0 ? this.wrapInline('td', node) : this.wrapInline('span', node)
       case 'table_th': {
         const content = this.renderChildren(node)
-        return `<th${this.idAttr(node)} class="bb-th"><span class="bb-table-badge">${content}</span></th>`
+        return this.tableDepth > 0
+          ? `<th${this.idAttr(node)} class="bb-th"><span class="bb-table-badge">${content}</span></th>`
+          : this.wrapInline('span', node)
       }
       case 'gallery': return this.renderGallery(node)
       case 'columns': return this.renderColumns(node)
@@ -642,7 +670,9 @@ export class HTMLRenderer extends Visitor<string> {
       variants.has('striped') ? 'bb-table-striped' : '',
       variants.has('borders') ? 'bb-table-borders' : '',
     ].filter(Boolean).join(' ')
+    this.tableDepth++
     const content = this.renderChildren(node)
+    this.tableDepth--
     // `[tables=striped:#hex]`: de `--table-accent` se deriva toda la paleta
     // de la tabla (gradiente del frame, hover de filas, encabezado, bordes).
     const accent = this.boxAccentStyle(node, 'table')
@@ -1054,6 +1084,95 @@ export class HTMLRenderer extends Visitor<string> {
    * returns the input untouched in that common case, then does a single pass
    * when there is actually something to escape.
    */
+  /** Resolver configured at construction (read through a getter for brevity). */
+  private get mentionResolver(): ((name: string) => { href: string; external?: boolean } | null) | undefined {
+    return this.options.mentionResolver
+  }
+
+  /**
+   * `@mention` shape used by forum hosts: 3-15 word chars, boundaries that
+   * exclude longer usernames (same rule LYNE's forum uses). Non-global so
+   * `lastIndex` never leaks between calls.
+   */
+  private static readonly MENTION_RE = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{3,15})(?![A-Za-z0-9_-])/g
+
+  /**
+   * Linkify a plain-text leaf: `@mention` runs and (optionally) timestamp
+   * chips. Both run through their resolver; null leaves the run as text.
+   * Every interpolated string is HTML-escaped, and hrefs with dangerous
+   * protocols (javascript:, data:, vbscript:) are rejected (defence in depth;
+   * the resolvers themselves should never produce one).
+   */
+  private linkifyText(text: string): string {
+    const mentionResolver = this.options.mentionResolver
+    const timestampResolver = this.options.timestampResolver
+    if (!mentionResolver && !timestampResolver) return this.escapeHtml(text)
+
+    let out = ''
+    let last = 0
+    HTMLRenderer.MENTION_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = HTMLRenderer.MENTION_RE.exec(text)) !== null) {
+      if (m.index > last) {
+        out += this.linkifyTimestamps(text.slice(last, m.index), timestampResolver)
+      }
+      const name = m[1]
+      const link = mentionResolver?.(name)
+      if (link && this.isSafeHref(link.href)) {
+        const ext = link.external ? ' target="_blank" rel="noopener"' : ''
+        out += `<a class="bb-mention" href="${this.escapeHtml(link.href)}"${ext}>@${this.escapeHtml(name)}</a>`
+      } else {
+        out += this.escapeHtml(m[0])
+      }
+      last = m.index + m[0].length
+    }
+    if (last < text.length) {
+      out += this.linkifyTimestamps(text.slice(last), timestampResolver)
+    }
+    return out
+  }
+
+  /** `1:23`, `01:23.456`, `01:23:456` — the editor deep-link shape. */
+  private static readonly TS_RE = /\b(\d{1,2}):([0-5]\d)(?:\.(\d{1,3})\b|:(\d{1,3})\b)?/g
+
+  private linkifyTimestamps(text: string, resolver: ((ms: number, label: string) => { href: string; external?: boolean } | null) | undefined): string {
+    if (!resolver) return this.escapeHtml(text)
+
+    let out = ''
+    let last = 0
+    HTMLRenderer.TS_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = HTMLRenderer.TS_RE.exec(text)) !== null) {
+      if (m.index > last) out += this.escapeHtml(text.slice(last, m.index))
+      const minutes = parseInt(m[1], 10)
+      const seconds = parseInt(m[2], 10)
+      const frac = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) : m[4] ? parseInt(m[4], 10) : 0
+      const ms = (minutes * 60 + seconds) * 1000 + frac
+      const label = m[4]
+        ? `${m[1].padStart(2, '0')}:${m[2]}:${m[4].padStart(3, '0')}`
+        : m[3]
+          ? `${m[1]}:${m[2]}.${m[3]}`
+          : `${m[1]}:${m[2]}`
+      const link = resolver(ms, label)
+      if (link && this.isSafeHref(link.href)) {
+        const ext = link.external ? ' target="_blank" rel="noopener"' : ''
+        out += `<a class="bb-timeref" href="${this.escapeHtml(link.href)}"${ext}>${this.escapeHtml(label)}</a>`
+      } else {
+        out += this.escapeHtml(m[0])
+      }
+      last = m.index + m[0].length
+    }
+    if (last < text.length) out += this.escapeHtml(text.slice(last))
+    return out
+  }
+
+  /** Root-relative, http(s), mailto and line:// hrefs are the only safe shapes. */
+  private isSafeHref(href: string): boolean {
+    const h = href.trim()
+    if (h.startsWith('/') && !h.startsWith('//')) return true
+    return /^(https?:|mailto:|line:)/i.test(h)
+  }
+
   private escapeHtml(text: string): string {
     if (!HTMLRenderer.HTML_ESCAPE_RE.test(text)) return text
 
