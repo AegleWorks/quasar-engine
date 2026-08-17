@@ -110,7 +110,7 @@ describe('Lyne Mode & Dialect Isolation', () => {
 
       const html = doc.toHTML()
       expect(html).toContain('class="bb-table bb-table-striped bb-table-borders"')
-      expect(html).toContain('class="bb-th"')
+      expect(html).toContain('bb-th')
       expect(html).toContain('class="bb-columns" style="column-count:3;"')
       expect(html).toContain('class="bb-gallery"')
       expect(html).toContain('✦ ✦ ✦')

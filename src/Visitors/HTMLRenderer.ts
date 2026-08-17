@@ -304,12 +304,39 @@ export class HTMLRenderer extends Visitor<string> {
       case 'align': return this.renderAlign(node)
       case 'tables': return this.renderTables(node)
       case 'table_row': return this.tableDepth > 0 ? this.wrapBlock('tr', node) : this.wrapInline('span', node)
-      case 'table_col': return this.tableDepth > 0 ? this.wrapInline('td', node) : this.wrapInline('span', node)
+      case 'table_col': {
+        if (this.tableDepth <= 0) return this.wrapInline('span', node)
+        const { cellCount, maxCols, isDirect } = this.getTableContext(node)
+        let colspanAttr = ''
+        if (node.metadata?.colspan) {
+          colspanAttr = ` colspan="${node.metadata.colspan}"`
+        } else if (cellCount === 1 && maxCols > 1) {
+          colspanAttr = ` colspan="${maxCols}"`
+        } else if (cellCount < maxCols && maxCols % cellCount === 0) {
+          colspanAttr = ` colspan="${maxCols / cellCount}"`
+        }
+        const align = node.metadata?.align ? ` style="text-align:${node.metadata.align};"` : ''
+        const td = `<td${this.idAttr(node)}${colspanAttr}${align}>${this.renderChildren(node)}</td>`
+        return isDirect ? `<tr>${td}</tr>` : td
+      }
       case 'table_th': {
         const content = this.renderChildren(node)
-        return this.tableDepth > 0
-          ? `<th${this.idAttr(node)} class="bb-th"><span class="bb-table-badge">${content}</span></th>`
-          : this.wrapInline('span', node)
+        if (this.tableDepth <= 0) return this.wrapInline('span', node)
+        const { cellCount, maxCols, isDirect } = this.getTableContext(node)
+        let colspanAttr = ''
+        let fullCls = ''
+        if (node.metadata?.colspan) {
+          colspanAttr = ` colspan="${node.metadata.colspan}"`
+        } else if (cellCount === 1) {
+          colspanAttr = maxCols > 1 ? ` colspan="${maxCols}"` : ' colspan="100"'
+          fullCls = ' bb-th-full'
+        } else if (cellCount < maxCols && maxCols % cellCount === 0) {
+          colspanAttr = ` colspan="${maxCols / cellCount}"`
+        }
+        const alignCls = node.metadata?.align ? ` bb-th-${node.metadata.align}` : ''
+        const alignStyle = node.metadata?.align ? ` style="text-align:${node.metadata.align};"` : ''
+        const th = `<th${this.idAttr(node)}${colspanAttr} class="bb-th${fullCls}${alignCls}"${alignStyle}><span class="bb-table-badge">${content}</span></th>`
+        return isDirect ? `<tr>${th}</tr>` : th
       }
       case 'gallery': return this.renderGallery(node)
       case 'columns': return this.renderColumns(node)
@@ -475,8 +502,35 @@ export class HTMLRenderer extends Visitor<string> {
   /** Characters `escapeHtml` has to rewrite. Non-global on purpose: `test` must not carry `lastIndex`. */
   private static readonly HTML_ESCAPE_RE = /[&<>"']/
 
+  private static readonly BARE_HEX_RE = /^[0-9a-f]{3,8}$/i
+
+  private static readonly NAMED_COLORS: Record<string, string> = {
+    black: '#000000',
+    white: '#FFFFFF',
+    red: '#FF4C4C',
+    green: '#2ECC71',
+    blue: '#3498DB',
+    yellow: '#F1C40F',
+    cyan: '#2EE6E2',
+    magenta: '#E056FD',
+    pink: '#FF94C4',
+    purple: '#A972FF',
+    orange: '#FF9F43',
+    amber: '#FFC34D',
+    gray: '#8395A7',
+    grey: '#8395A7',
+    lime: '#10AC84',
+    teal: '#01CBC6',
+    violet: '#5F27CD',
+    gold: '#FFD700',
+  }
+
   private sanitizeColor(raw: string): string | null {
-    const v = raw.trim()
+    let v = raw.trim()
+    if (!v) return null
+    if (HTMLRenderer.BARE_HEX_RE.test(v) && (v.length === 3 || v.length === 4 || v.length === 6 || v.length === 8)) {
+      v = '#' + v
+    }
     return HTMLRenderer.CSS_COLOR_RE.test(v) ? v : null
   }
 
@@ -637,8 +691,12 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private hexToRgba(hex: string, alpha: number): string {
-    if (!hex.startsWith('#')) return hex
-    const t = hex.replace('#', '')
+    let clean = hex.trim().toLowerCase()
+    if (HTMLRenderer.NAMED_COLORS[clean]) {
+      clean = HTMLRenderer.NAMED_COLORS[clean]
+    }
+    if (!clean.startsWith('#')) return clean
+    const t = clean.replace('#', '')
     const full = t.length <= 4 ? t.split('').map(c => c + c).join('') : t
     const r = parseInt(full.slice(0, 2), 16) || 0
     const g = parseInt(full.slice(2, 4), 16) || 0
@@ -677,6 +735,26 @@ export class HTMLRenderer extends Visitor<string> {
     // de la tabla (gradiente del frame, hover de filas, encabezado, bordes).
     const accent = this.boxAccentStyle(node, 'table')
     return `<div${this.idAttr(node)} class="bb-table-frame"${accent}><table class="${tableClasses}"><tbody>${content}</tbody></table></div>`
+  }
+
+  private getTableContext(node: RedNode): { cellCount: number; maxCols: number; isDirect: boolean } {
+    const parent = node.parent
+    const isDirect = parent?.kind === 'tables'
+    const tableNode = isDirect ? parent : (parent?.parent?.kind === 'tables' ? parent.parent : undefined)
+    const cellCount = parent?.children
+      ? parent.children.filter(c => c.kind === 'table_th' || c.kind === 'table_col').length
+      : 1
+
+    let maxCols = cellCount
+    if (tableNode) {
+      for (const row of tableNode.children) {
+        if (row.kind === 'table_row') {
+          const count = row.children.filter(c => c.kind === 'table_th' || c.kind === 'table_col').length
+          if (count > maxCols) maxCols = count
+        }
+      }
+    }
+    return { cellCount, maxCols, isDirect }
   }
 
   private renderGallery(node: RedNode): string {
@@ -824,8 +902,14 @@ export class HTMLRenderer extends Visitor<string> {
       }
       case 'middle':
         return `<div${idAttr} class="bb-middle">${content}</div>`
-      case 'circle':
-        return `<div${idAttr} class="bb-circle">${content}</div>`
+      case 'square':
+      case 'circle': {
+        const accent = this.sanitizeColor(param)
+        const border = accent ? this.hexToRgba(accent, 0.35) : ''
+        const bg = accent ? this.hexToRgba(accent, 0.08) : ''
+        const style = accent ? ` style="--square-accent:${accent};--square-border:${border};--square-bg:${bg};"` : ''
+        return `<div${idAttr} class="bb-square bb-cut-panel"${style}>${content}</div>`
+      }
       case 'card':
       case 'glass': {
         // `[card=#hex]` / `[container=glass:#hex]`: el color se pasa como
@@ -942,7 +1026,10 @@ export class HTMLRenderer extends Visitor<string> {
    */
   private boxAccentStyle(node: RedNode, suffix: 'box' | 'table' | 'columns' = 'box'): string {
     const color = this.sanitizeColor(String(node.metadata?.color ?? ''))
-    return color ? ` style="--${suffix}-accent:${color};"` : ''
+    if (!color) return ''
+    const border = this.hexToRgba(color, 0.35)
+    const bg = this.hexToRgba(color, 0.08)
+    return ` style="--${suffix}-accent:${color};--${suffix}-border:${border};--${suffix}-bg:${bg};"`
   }
 
   private renderList(node: RedNode): string {

@@ -249,8 +249,8 @@
  * del autor ([boxw=Title:#hex]) si lo hay; si no, el hairline del tema. */
 .bbcode-preview-lyne details.boxw,
 .bbcode-preview.theme-lyne details.boxw {
-  background: rgba(11, 16, 36, 0.5) !important;
-  border: 1px solid var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-hairline, rgba(255, 255, 255, 0.12))))) !important;
+  background: var(--box-bg, rgba(11, 16, 36, 0.5)) !important;
+  border: 1px solid var(--box-border, var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-hairline, rgba(255, 255, 255, 0.12)))))) !important;
   border-radius: 0 !important;
   clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
   padding: 0 !important;
@@ -331,8 +331,8 @@
   width: 7px !important;
   height: 7px !important;
   flex: 0 0 7px !important;
-  border-right: 1.5px solid currentColor !important;
-  border-bottom: 1.5px solid currentColor !important;
+  border-right: 1px solid currentColor !important;
+  border-bottom: 1px solid currentColor !important;
   transform: rotate(-45deg) !important;
   transition: transform 0.15s ease !important;
 }
@@ -360,7 +360,7 @@
 
 .bbcode-preview-lyne details.boxw[open] > summary,
 .bbcode-preview.theme-lyne details.boxw[open] > summary {
-  border-bottom: 1px solid var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-hairline, rgba(255, 255, 255, 0.12))))) !important;
+  border-bottom: 1px solid var(--box-border, var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-hairline, rgba(255, 255, 255, 0.12)))))) !important;
 }
 
 .bbcode-preview-lyne details[open] > summary::before,
@@ -370,7 +370,8 @@
 
 .bbcode-preview-lyne details > summary:hover,
 .bbcode-preview.theme-lyne details > summary:hover {
-  color: var(--color-accent-bright, #68FFF8) !important;
+  color: var(--box-accent, var(--card-accent, var(--glass-accent, var(--color-accent-bright, #68FFF8)))) !important;
+  filter: brightness(1.25) !important;
 }
 
 /* ─── Lists & Markers ───────────────────────────────────────────────────── */
@@ -469,6 +470,7 @@
 .bb-table {
   width: 100% !important;
   min-width: 380px !important;
+  table-layout: fixed !important;
   border-collapse: separate !important;
   border-spacing: 0 !important;
   margin: 0 !important;
@@ -518,6 +520,64 @@
   line-height: 1.3 !important;
   text-transform: uppercase !important;
   padding: 8px 10px !important;
+  text-align: left !important;
+}
+
+.bb-table .bb-th.bb-th-full {
+  width: 100% !important;
+}
+
+/* Table header alignments */
+.bb-table .bb-th.bb-th-left,
+.bb-table .bb-th:has(.bb-left),
+.bb-table .bb-th:has([style*="text-align:left"]),
+.bb-table .bb-th:has([style*="text-align: left"]),
+.bb-left .bb-table .bb-th {
+  text-align: left !important;
+}
+
+.bb-table .bb-th.bb-th-left .bb-table-badge,
+.bb-table .bb-th:has(.bb-left) .bb-table-badge,
+.bb-table .bb-th:has([style*="text-align:left"]) .bb-table-badge,
+.bb-table .bb-th:has([style*="text-align: left"]) .bb-table-badge,
+.bb-left .bb-table .bb-th .bb-table-badge {
+  margin-right: auto !important;
+  margin-left: 0 !important;
+}
+
+.bb-table .bb-th.bb-th-centered,
+.bb-table .bb-th.bb-th-center,
+.bb-table .bb-th:has(.bb-centre),
+.bb-table .bb-th:has([style*="text-align:center"]),
+.bb-table .bb-th:has([style*="text-align: center"]),
+.bb-centre .bb-table .bb-th {
+  text-align: center !important;
+}
+
+.bb-table .bb-th.bb-th-centered .bb-table-badge,
+.bb-table .bb-th.bb-th-center .bb-table-badge,
+.bb-table .bb-th:has(.bb-centre) .bb-table-badge,
+.bb-table .bb-th:has([style*="text-align:center"]) .bb-table-badge,
+.bb-table .bb-th:has([style*="text-align: center"]) .bb-table-badge,
+.bb-centre .bb-table .bb-th .bb-table-badge {
+  margin: 0 auto !important;
+}
+
+.bb-table .bb-th.bb-th-right,
+.bb-table .bb-th:has(.bb-right),
+.bb-table .bb-th:has([style*="text-align:right"]),
+.bb-table .bb-th:has([style*="text-align: right"]),
+.bb-right .bb-table .bb-th {
+  text-align: right !important;
+}
+
+.bb-table .bb-th.bb-th-right .bb-table-badge,
+.bb-table .bb-th:has(.bb-right) .bb-table-badge,
+.bb-table .bb-th:has([style*="text-align:right"]) .bb-table-badge,
+.bb-table .bb-th:has([style*="text-align: right"]) .bb-table-badge,
+.bb-right .bb-table .bb-th .bb-table-badge {
+  margin-left: auto !important;
+  margin-right: 0 !important;
 }
 
 .bb-table-badge {
@@ -733,7 +793,7 @@
 .bb-neon-box {
   padding: 16px !important;
   margin: 0 !important;
-  border: 2px solid var(--neon-color, var(--color-accent, #2EE6E2)) !important;
+  border: 1px solid var(--neon-color, var(--color-accent, #2EE6E2)) !important;
   background: color-mix(in srgb, var(--neon-color, var(--color-accent, #2EE6E2)) 4%, rgba(7, 10, 23, 0.55)) !important;
   border-radius: 0 !important;
   box-shadow: none !important;
@@ -758,10 +818,9 @@
   align-items: center !important;
 }
 
-/* Circle: replica el .bbCircle original de Lyne (Main Bridge/line/web/
- * components/bbcode.module.css). aspect-ratio:1 + centrado convierten el div
- * en un círculo real con el contenido al centro; fondo y borde lo pintan como
- * badge. clip-path:none evita que herede los cortes de esquina de los paneles. */
+/* Square: cuadradito badge con las muescas angulares características de Lyne.
+ * aspect-ratio: 1/1, centrado, borde hairline y corte angular de esquina. */
+.bb-square,
 .bb-circle {
   display: inline-flex !important;
   align-items: center !important;
@@ -771,11 +830,11 @@
   min-height: 1.85em !important;
   padding: 0.2em 0.35em !important;
   box-sizing: border-box !important;
-  border-radius: 50% !important;
+  border-radius: 0 !important;
   overflow: hidden !important;
-  background: rgb(11 16 36 / 0.5) !important;
-  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.12)) !important;
-  clip-path: none !important;
+  background: var(--square-bg, rgb(11 16 36 / 0.5)) !important;
+  border: 1px solid var(--square-border, var(--square-accent, var(--color-hairline, rgba(255, 255, 255, 0.12)))) !important;
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px) !important;
   text-align: center !important;
   line-height: 1 !important;
   vertical-align: middle !important;

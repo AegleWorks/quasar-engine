@@ -188,6 +188,7 @@ const LYNE_LEGACY_ALIASES: Record<string, NodeKind> = {
   'flex': 'container',
   'grid': 'container',
   'middle': 'container',
+  'square': 'container',
   'circle': 'container',
   'card': 'container',
   'glass': 'container',
@@ -441,6 +442,22 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       // Parse "=#ff0000,#00ff00" → { colors: ['#FF0000', '#00FF00'] }
       const gradientColors = value.split(',').map(c => c.trim()).filter(c => c.startsWith('#'))
       return gradientColors.length > 0 ? { colors: gradientColors } : {}
+    case 'table_th':
+    case 'table_col': {
+      if (!value) return {}
+      const parts = value.split(/[:,\s]+/).filter(Boolean)
+      const res: Record<string, any> = {}
+      for (const p of parts) {
+        if (/^\d+$/.test(p)) {
+          res.colspan = parseInt(p, 10)
+        } else if (/^(center|centre|left|right|justify)$/i.test(p)) {
+          res.align = p.toLowerCase() === 'centre' ? 'center' : p.toLowerCase()
+        } else if (/^#[0-9a-fA-F]{3,8}$/.test(p)) {
+          res.color = p
+        }
+      }
+      return res
+    }
     case 'notice':
     case 'wnotice':  return value ? { color: value } : {}
     case 'tables':

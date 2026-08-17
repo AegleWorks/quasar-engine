@@ -464,6 +464,9 @@ export class TagRegistry {
       { name: 'left', kind: 'left', label: 'Left', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true },
       { name: 'heading', kind: 'heading', label: 'Heading', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true },
       { name: 'notice', kind: 'notice', label: 'Notice', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true },
+      { name: 'wnotice', kind: 'wnotice', label: 'Warning Notice', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true },
+      { name: 'square', kind: 'container', label: 'Square Badge', category: 'layout', isInline: true, isSelfClosing: false, canHaveChildren: true },
+      { name: 'circle', kind: 'container', label: 'Square Badge', category: 'layout', isInline: true, isSelfClosing: false, canHaveChildren: true, isDeprecated: true, deprecatedReplacement: 'square' },
       { name: 'spacing', kind: 'spacing', label: 'Spacing', category: 'layout', isInline: false, isSelfClosing: true, canHaveChildren: false },
       { name: 'empty_line', kind: 'empty_line', label: 'Empty Line', category: 'layout', isInline: false, isSelfClosing: true, canHaveChildren: false },
 
