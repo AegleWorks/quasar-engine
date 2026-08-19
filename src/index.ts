@@ -58,6 +58,8 @@ export { SVGRenderer } from './Visitors/SVGRenderer'
 export { MarkdownExporter } from './Visitors/MarkdownExporter'
 export { JSONExporter } from './Visitors/JSONExporter'
 export { TiptapExporter } from './Visitors/TiptapExporter'
+export { LexicalExporter } from './Visitors/LexicalExporter'
+export { $generateBBCodeFromLexical } from './Visitors/LexicalToBBCode'
 
 // ── Transactions ──
 export { Transaction } from './Transactions/Transaction'

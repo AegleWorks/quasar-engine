@@ -48,11 +48,6 @@ export function markdownAstToGreenTree(root: MarkdownNode): GreenNode {
         text = `=${node.url}`;
         for (const child of node.children) children.push(convert(child));
         break;
-      case 'image':
-        kind = 'image';
-        text = node.url;
-        currentOffset += text.length;
-        break;
       case 'code_block':
         kind = 'code';
         children.push(greenLeaf('text', node.value));
