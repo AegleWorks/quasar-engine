@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
@@ -16,6 +16,15 @@ import { repairNesting } from '../Repair/NestingRepair'
  */
 
 const DOCS = join(__dirname, '../../../../docs/ai')
+
+// The real-userpage oracle is personal content, deliberately unversioned
+// (docs/ai/** is gitignored). The suite that needs it skips when the files are
+// absent — see OsuNestingFidelity.test.ts for the same arrangement.
+const FIXTURES = ['NyuPenyu', 'NyuPenyuGoal', 'hxovc.bbcode'] as const
+const HAS_FIXTURES = FIXTURES.every(name => existsSync(join(DOCS, name)))
+const readFixture = (name: string): string =>
+  HAS_FIXTURES ? readFileSync(join(DOCS, name), 'utf8') : ''
+
 const ZERO_WIDTH = new RegExp(String.fromCharCode(0x200b), 'g')
 
 const parse = (source: string) => new BBCodeDocumentModel({ source }).redRoot!
@@ -93,9 +102,9 @@ describe('repairNesting', () => {
   })
 })
 
-describe('repairNesting on the real userpages', () => {
-  const broken = readFileSync(join(DOCS, 'NyuPenyu'), 'utf8')
-  const goal = readFileSync(join(DOCS, 'NyuPenyuGoal'), 'utf8')
+describe.skipIf(!HAS_FIXTURES)('repairNesting on the real userpages', () => {
+  const broken = readFixture('NyuPenyu')
+  const goal = readFixture('NyuPenyuGoal')
 
   it('balances the worst document in the repo', () => {
     const r = repair(broken)
@@ -127,7 +136,7 @@ describe('repairNesting on the real userpages', () => {
   })
 
   it('finds nothing to repair in an already clean document', () => {
-    const clean = readFileSync(join(DOCS, 'hxovc.bbcode'), 'utf8')
+    const clean = readFixture('hxovc.bbcode')
     expect(repair(clean).hasChanges).toBe(false)
   })
 })

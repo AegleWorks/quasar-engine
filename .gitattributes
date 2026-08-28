@@ -1,0 +1,20 @@
+# Normalize all text to LF everywhere.
+#
+# The engine's tests replay byte-offset edits against large committed fixtures
+# (500KCharsTest is 547 KB with 4,753 line breaks). With core.autocrlf=true on
+# Windows and no attributes file, git checked those fixtures out as CRLF: every
+# offset shifted and the windowed-morph assertions in Chars500kEdits.test.ts
+# failed on Windows only. Pinning eol=lf makes the working tree byte-identical
+# to CI on every platform.
+* text=auto eol=lf
+
+# Binaries — never subject to eol conversion.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.wasm binary

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
@@ -20,6 +20,16 @@ import type { RedNode } from '../Syntax/RedNode'
  */
 
 const DOCS = join(__dirname, '../../../../docs/ai')
+
+// The oracle pair is a real userpage: personal content, deliberately left out
+// of version control (docs/ai/** is gitignored). These suites only run on a
+// machine where someone has dropped the files into docs/ai/ — everywhere else
+// (CI included) they skip instead of killing the whole file at collection time.
+const FIXTURES = ['NyuPenyu', 'NyuPenyuGoal', 'hxovc.bbcode'] as const
+const HAS_FIXTURES = FIXTURES.every(name => existsSync(join(DOCS, name)))
+const readFixture = (name: string): string =>
+  HAS_FIXTURES ? readFileSync(join(DOCS, name), 'utf8') : ''
+
 const ZERO_WIDTH = new RegExp(String.fromCharCode(0x200b), 'g')
 
 const parse = (source: string) => new BBCodeDocumentModel({ source }).redRoot!
@@ -46,9 +56,9 @@ function boxDepths(source: string): Record<number, number> {
 
 const repair = (source: string) => repairNesting(source, parse(source))
 
-describe('osu! fidelity on a badly nested userpage', () => {
-  const broken = readFileSync(join(DOCS, 'NyuPenyu'), 'utf8')
-  const goal = readFileSync(join(DOCS, 'NyuPenyuGoal'), 'utf8')
+describe.skipIf(!HAS_FIXTURES)('osu! fidelity on a badly nested userpage', () => {
+  const broken = readFixture('NyuPenyu')
+  const goal = readFixture('NyuPenyuGoal')
 
   it('keeps the sections inside the box they were written in', () => {
     // Before the late-closer rule this was {0: 46, 1: 9}: a stray `[/box]` closed
@@ -80,7 +90,7 @@ describe('osu! fidelity on a badly nested userpage', () => {
   })
 
   it('leaves a document that was already clean alone', () => {
-    const clean = readFileSync(join(DOCS, 'hxovc.bbcode'), 'utf8')
+    const clean = readFixture('hxovc.bbcode')
     expect(repair(clean).hasChanges).toBe(false)
   })
 })
