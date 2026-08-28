@@ -99,13 +99,22 @@
 /* ─── Spoiler ────────────────────────────────────────── */
 
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .spoiler {
-  background: #000;
-  color: #000;
-  cursor: text;
+  background: #111111;
+  color: #111111;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 3px;
+  user-select: text;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .spoiler:hover,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .spoiler:active {
+  color: #ffffff;
+  background: #333333;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .spoiler::selection {
-  color: #fff;
-  background: #555;
+  color: #ffffff;
+  background: #555555;
 }
 
 /* ─── Box / Spoilerbox ───────────────────────────────── */

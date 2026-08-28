@@ -1,10 +1,35 @@
-import { MarkdownToken, MarkdownFenceToken } from './MarkdownLexer';
-import { MarkdownNode, MarkdownDocument, MarkdownParagraph, MarkdownText, MarkdownHeading } from './MarkdownAST';
+import { MarkdownToken, MarkdownFenceToken, MarkdownContainerToken, scanMarkdown } from './MarkdownLexer';
+import {
+  MarkdownNode,
+  MarkdownDocument,
+  MarkdownParagraph,
+  MarkdownText,
+  MarkdownHeading,
+  MarkdownStrikethrough,
+  MarkdownUnderline,
+  MarkdownColor,
+  MarkdownFontSize,
+  MarkdownFont,
+  MarkdownAlign,
+  MarkdownBox,
+  MarkdownSeparator,
+} from './MarkdownAST';
+
+interface BBCodeTagInfo {
+  tagName: string;
+  attrValue?: string;
+  tokenEndIndex: number;
+}
+
+const BLOCK_BBCODE_TAGS = new Set([
+  'box', 'boxw', 'spoilerbox', 'centre', 'center', 'right', 'left', 'align', 'quote', 'notice', 'wnotice', 'code',
+  'columns', 'tables', 'row', 'th', 'col', 'glass', 'card', 'neon-box', 'scroll', 'separator', 'list', 'group', 'svg', 'imagemap', 'image',
+]);
 
 /**
  * DocumentEngine — MarkdownParser
  * 
- * Basic implementation to parse a token stream into an AST.
+ * Parses Markdown tokens with hybrid BBCode embedding support into a typed AST.
  */
 export class MarkdownParser {
   private tokens: MarkdownToken[];
@@ -25,12 +50,8 @@ export class MarkdownParser {
       while (this.match('newline')) newlines++;
 
       if (newlines > 0) {
-        // Since blocks like parseParagraph consume their trailing newline, 
-        // seeing 1 newline here means there were 2 newlines in the source (a blank line).
-        // 1 newline here -> 1 empty_line
-        // 2 newlines here -> 2 empty_lines
         for (let i = 0; i < newlines; i++) {
-          doc.children.push({ type: 'empty_line' } as any);
+          doc.children.push({ type: 'empty_line' });
         }
       }
 
@@ -50,6 +71,13 @@ export class MarkdownParser {
 
     const token = this.peek();
 
+    // Horizontal Rule (---)
+    if (token.kind === 'hr' || (token.kind === 'dash' && ('value' in token && token.value === '---'))) {
+      this.advance();
+      this.match('newline');
+      return { type: 'separator' };
+    }
+
     if (token.kind === 'hash') {
       return this.parseHeading();
     }
@@ -57,16 +85,14 @@ export class MarkdownParser {
     if (token.kind === 'gt') {
       const saved = this.current;
       this.advance(); // consume gt
-      const next1 = this.peek();
-      if (next1 && next1.kind === 'text' && ('value' in next1) && (next1.value as string).trim() === '') {
+      while (!this.isAtEnd() && this.peek()?.kind === 'text' && ('value' in this.peek()) && (this.peek() as any).value.trim() === '') {
         this.advance(); // consume space
       }
-      const next2 = this.peek();
-      if (next2 && next2.kind === 'bracket_open') {
-        const next3 = this.tokens[this.current + 1];
-        if (next3 && next3.kind === 'bang') {
-           this.current = saved; // restore
-           return this.parseNotice();
+      if (this.check('bracket_open')) {
+        const nextToken = this.tokens[this.current + 1];
+        if (nextToken && (nextToken.kind === 'bang' || ('value' in nextToken && nextToken.value === '!'))) {
+          this.current = saved; // restore
+          return this.parseNotice();
         }
       }
       this.current = saved; // restore
@@ -76,13 +102,23 @@ export class MarkdownParser {
     if (token.kind === 'fence') {
       return this.parseFence();
     }
+
+    // Fenced Container Divs (::: details Title, ::: center, ::: warning)
+    if (token.kind === 'container') {
+      return this.parseContainer();
+    }
     
-    if (token.kind === 'dash' || token.kind === 'star') {
-       // Must be followed by a space to be a list!
-       const next = this.tokens[this.current + 1];
-       if (next && next.kind === 'text' && ('value' in next) && (next.value as string).startsWith(' ')) {
-         return this.parseList();
-       }
+    // Lists (unordered or ordered)
+    if (this.isListStart()) {
+      return this.parseList();
+    }
+
+    // Embedded Block BBCode tags (e.g. [box=Title]...[/box], [centre]...[/centre])
+    if (token.kind === 'bracket_open') {
+      const bbTag = this.peekBBCodeOpenTag(this.current);
+      if (bbTag && BLOCK_BBCODE_TAGS.has(bbTag.tagName)) {
+        return this.parseBBCodeBlock(bbTag);
+      }
     }
 
     // Default to paragraph
@@ -93,20 +129,18 @@ export class MarkdownParser {
     const hash = this.advance();
     const level = hash.kind === 'hash' ? Math.min(hash.value.length, 6) : 1;
     
-    // We don't want to blindly consume a text token if it contains actual text.
-    // Let's just let parseInline handle it. The renderer can deal with leading spaces,
-    // or we can trim the first child if it's text.
     const children: MarkdownNode[] = [];
     while (!this.isAtEnd() && !this.check('newline')) {
       const inlineNode = this.parseInline();
       if (inlineNode) {
         children.push(inlineNode);
+      } else {
+        break;
       }
     }
     
-    // Trim leading space from the first child if it's text
     if (children.length > 0 && children[0].type === 'text') {
-      children[0].value = (children[0] as any).value.replace(/^\\s+/, '');
+      children[0].value = (children[0] as MarkdownText).value.replace(/^\s+/, '');
     }
 
     this.match('newline');
@@ -120,26 +154,113 @@ export class MarkdownParser {
 
   private parseBlockquote(): MarkdownNode {
     const children: MarkdownNode[] = [];
-    
-    while (!this.isAtEnd()) {
-      if (this.match('gt')) {
-        // blockquote line prefix
+    this.advance(); // consume initial gt
+    while (!this.isAtEnd() && this.peek()?.kind === 'text' && ('value' in this.peek()) && (this.peek() as any).value.trim() === '') {
+      this.advance();
+    }
+
+    // Parse the first line's inline nodes to check for author attribution (e.g. **Author wrote:**, **Author:**, **Author**)
+    const firstLineNodes: MarkdownNode[] = [];
+    while (!this.isAtEnd() && !this.check('newline')) {
+      const inlineNode = this.parseInline();
+      if (inlineNode) firstLineNodes.push(inlineNode);
+      else break;
+    }
+
+    let source: string | undefined;
+
+    const getPlainText = (n: MarkdownNode): string => {
+      if ('value' in n && typeof (n as any).value === 'string') return (n as any).value;
+      if ('children' in n && Array.isArray((n as any).children)) {
+        return (n as any).children.map(getPlainText).join('');
       }
-      
+      return '';
+    };
+
+    // Trim trailing whitespace nodes from the first line
+    const trimmed = [...firstLineNodes];
+    while (
+      trimmed.length > 0 &&
+      trimmed[trimmed.length - 1].type === 'text' &&
+      (trimmed[trimmed.length - 1] as any).value.trim() === ''
+    ) {
+      trimmed.pop();
+    }
+
+    if (trimmed.length > 0) {
+      // 1. Single bold node: **Author**, **Author wrote:**, **Author:**
+      if (trimmed.length === 1 && trimmed[0].type === 'strong') {
+        const raw = getPlainText(trimmed[0]).trim();
+        const cleaned = raw.replace(/\s*wrote:\s*$/i, '').replace(/:\s*$/, '').trim();
+        if (cleaned) {
+          source = cleaned;
+        }
+      }
+      // 2. Bold node followed by "wrote:", "wrote", ":", etc.
+      else if (
+        trimmed.length === 2 &&
+        trimmed[0].type === 'strong' &&
+        trimmed[1].type === 'text' &&
+        /^\s*(wrote:|wrote|:)\s*$/i.test((trimmed[1] as any).value)
+      ) {
+        const cleaned = getPlainText(trimmed[0]).trim();
+        if (cleaned) {
+          source = cleaned;
+        }
+      }
+      // 3. Plain text patterns: [quote=Author] or Author wrote:
+      else {
+        const fullLine = trimmed.map(getPlainText).join('').trim();
+        const quoteMatch = fullLine.match(/^\[quote=["']?([^\]"']+)["']?\]$/i);
+        if (quoteMatch) {
+          source = quoteMatch[1].trim();
+        } else {
+          const wroteMatch = fullLine.match(/^(\*\*)?([^*\n]+?)\1\s*wrote:\s*$/i);
+          if (wroteMatch) {
+            source = wroteMatch[2].trim();
+          }
+        }
+      }
+    }
+
+    if (!source) {
+      children.push(...firstLineNodes);
+    }
+
+    while (!this.isAtEnd()) {
       if (this.check('newline')) {
         this.advance();
         if (this.check('newline') || this.isAtEnd()) {
           break; // Empty line ends blockquote
         }
-        children.push({ type: 'text', value: '\n' });
+        if (children.length > 0) {
+          children.push({ type: 'text', value: '\n' });
+        }
+      }
+
+      if (this.match('gt')) {
+        // blockquote line prefix
+        while (!this.isAtEnd() && this.peek()?.kind === 'text' && ('value' in this.peek()) && (this.peek() as any).value.trim() === '') {
+          this.advance();
+        }
+      }
+
+      if (this.check('newline')) {
+        // will be handled on next loop iteration
       } else {
         const inlineNode = this.parseInline();
         if (inlineNode) children.push(inlineNode);
+        else break;
       }
+    }
+
+    if (children.length > 0 && children[0].type === 'text') {
+      (children[0] as MarkdownText).value = (children[0] as MarkdownText).value.replace(/^\s+/, '');
     }
 
     return {
       type: 'blockquote',
+      source,
       children
     };
   }
@@ -147,16 +268,40 @@ export class MarkdownParser {
   private parseNotice(): MarkdownNode {
     const children: MarkdownNode[] = [];
     this.advance(); // consume gt
-    
-    // consume the [!NOTE] part
-    while (!this.isAtEnd() && !this.check('newline')) {
-      if (this.match('bracket_close')) break;
+    while (!this.isAtEnd() && this.peek()?.kind === 'text' && ('value' in this.peek()) && (this.peek() as any).value.trim() === '') {
       this.advance();
     }
     
+    // consume the [!NOTE] or [!NOTE]- Title part
+    let headerText = '';
+    let isCollapsible = false;
+    let title = '';
+
+    while (!this.isAtEnd() && !this.check('newline')) {
+      if (this.match('bracket_close')) {
+        // Check if immediately followed by - or + (Obsidian collapsible syntax)
+        if (this.match('dash')) isCollapsible = true;
+        else if (this.match('plus')) isCollapsible = true;
+        
+        // Read rest of title line
+        while (!this.isAtEnd() && !this.check('newline')) {
+          const t = this.advance();
+          title += this.tokenValue(t);
+        }
+        break;
+      }
+      const t = this.advance();
+      headerText += this.tokenValue(t);
+    }
+    
+    this.match('newline');
+
     while (!this.isAtEnd()) {
       if (this.match('gt')) {
         // blockquote line prefix
+        while (!this.isAtEnd() && this.peek()?.kind === 'text' && ('value' in this.peek()) && (this.peek() as any).value.trim() === '') {
+          this.advance();
+        }
       }
       if (this.check('newline')) {
         this.advance();
@@ -165,22 +310,87 @@ export class MarkdownParser {
       } else {
         const inlineNode = this.parseInline();
         if (inlineNode) children.push(inlineNode);
+        else break;
       }
     }
     
+    if (isCollapsible) {
+      const cleanTitle = title.trim() || 'Details';
+      return { type: 'box', title: cleanTitle, rawTitle: cleanTitle, children };
+    }
+
     return { type: 'notice', children };
+  }
+
+  private parseContainer(): MarkdownNode {
+    const token = this.advance() as MarkdownContainerToken;
+    const info = token.info ? token.info.trim() : '';
+    const firstSpace = info.indexOf(' ');
+    const tag = (firstSpace === -1 ? info : info.slice(0, firstSpace)).toLowerCase();
+    const rest = firstSpace === -1 ? '' : info.slice(firstSpace + 1).trim();
+
+    this.match('newline');
+    const children: MarkdownNode[] = [];
+
+    while (!this.isAtEnd()) {
+      if (this.check('container')) {
+        this.advance(); // closing :::
+        this.match('newline');
+        break;
+      }
+      if (this.check('newline')) {
+        this.advance();
+        while (this.match('newline')) {
+          children.push({ type: 'empty_line' });
+        }
+      } else {
+        const block = this.parseBlock();
+        if (block) children.push(block);
+        else break;
+      }
+    }
+
+    switch (tag) {
+      case 'details':
+      case 'box':
+      case 'boxw':
+        return { type: 'box', title: rest || 'Details', rawTitle: rest, children };
+      case 'spoilerbox':
+        return { type: 'spoilerbox', title: rest || 'Spoiler', rawTitle: rest, children };
+      case 'center':
+      case 'centre':
+        return { type: 'center', children };
+      case 'right':
+        return { type: 'right', children };
+      case 'left':
+        return { type: 'left', children };
+      case 'info':
+      case 'note':
+      case 'warning':
+      case 'tip':
+      case 'caution':
+      case 'notice':
+      case 'wnotice':
+        return { type: 'notice', color: rest ? rest : undefined, children };
+      case 'quote':
+        return { type: 'blockquote', source: rest || undefined, children };
+      default:
+        return { type: 'box', title: info || 'Box', rawTitle: info, children };
+    }
   }
   
   private tokenValue(token: MarkdownToken): string {
+    if (!token) return '';
     if ('value' in token) return (token as any).value;
     switch (token.kind) {
       case 'bracket_open': return '[';
       case 'bracket_close': return ']';
+      case 'brace_open': return '{';
+      case 'brace_close': return '}';
       case 'paren_open': return '(';
       case 'paren_close': return ')';
       case 'bang': return '!';
       case 'gt': return '>';
-      case 'plus': return '+';
       case 'dot': return '.';
       case 'hr': return '---';
       default: return '';
@@ -194,33 +404,76 @@ export class MarkdownParser {
     while (!this.isAtEnd()) {
       if (this.check('fence')) {
         this.advance(); // close fence
+        this.match('newline');
         break;
       }
       const p = this.advance();
       code += this.tokenValue(p);
     }
-    return { type: 'code_block', lang: value, value: code.trim() };
+    if (code.startsWith('\r\n')) code = code.slice(2);
+    else if (code.startsWith('\n')) code = code.slice(1);
+    if (code.endsWith('\r\n')) code = code.slice(0, -2);
+    else if (code.endsWith('\n')) code = code.slice(0, -1);
+
+    return { type: 'code_block', lang: value, value: code };
+  }
+
+  private isListStart(): boolean {
+    if (this.isAtEnd()) return false;
+    const token = this.peek();
+    if (token.kind === 'dash' || token.kind === 'star') {
+      const next = this.tokens[this.current + 1];
+      if (next && next.kind === 'text' && ('value' in next) && (next.value as string).startsWith(' ')) {
+        return true;
+      }
+    }
+    return this.isOrderedListStart();
+  }
+
+  private isOrderedListStart(): boolean {
+    if (this.isAtEnd()) return false;
+    const token = this.peek();
+    if (token.kind === 'text' && /^\d+$/.test(('value' in token ? (token as any).value : '').trim())) {
+      const next1 = this.tokens[this.current + 1];
+      if (next1 && next1.kind === 'dot') {
+        const next2 = this.tokens[this.current + 2];
+        if (next2 && next2.kind === 'text' && ('value' in next2) && (next2.value as string).startsWith(' ')) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
   
   private parseList(): MarkdownNode {
     const items: any[] = [];
-    while (!this.isAtEnd() && (this.check('dash') || this.check('star'))) {
-      this.advance(); // consume dash/star
+    const ordered = this.isOrderedListStart();
+
+    while (!this.isAtEnd()) {
+      if (ordered) {
+        if (!this.isOrderedListStart()) break;
+        this.advance(); // number
+        this.advance(); // dot
+      } else {
+        if (!this.check('dash') && !this.check('star')) break;
+        this.advance(); // dash or star
+      }
+
       const children: MarkdownNode[] = [];
       while (!this.isAtEnd() && !this.check('newline')) {
         const inlineNode = this.parseInline();
         if (inlineNode) children.push(inlineNode);
+        else break;
       }
-      // Trim leading space from the first child if it's text
       if (children.length > 0 && children[0].type === 'text') {
-        children[0].value = (children[0] as any).value.replace(/^\\s+/, '');
+        children[0].value = (children[0] as MarkdownText).value.replace(/^\s+/, '');
       }
       items.push({ type: 'list_item', children });
       if (this.match('newline')) {
         if (this.check('newline')) break; // End of list on double newline
       }
     }
-    return { type: 'list', ordered: false, children: items };
+    return { type: 'list', ordered, children: items };
   }
 
   private parseParagraph(): MarkdownParagraph {
@@ -229,21 +482,30 @@ export class MarkdownParser {
     while (!this.isAtEnd()) {
       if (this.check('newline')) {
         this.advance();
-        // Two newlines mean end of paragraph
         if (this.check('newline') || this.isAtEnd()) {
           break;
         } else {
-          // A single newline could mean lazy continuation, BUT we must check if a new block starts!
-          if (this.check('hash') || this.check('gt') || this.check('fence') || this.check('hr') || this.check('dash')) {
-            break; // Paragraph interrupted by block
+          if (this.check('hash') || this.check('gt') || this.check('fence') || this.check('hr') || this.check('container')) {
+            break;
           }
-          // Single newline treated as space in paragraph
+          if (this.isListStart()) {
+            break;
+          }
+          // Also break if block BBCode starts
+          if (this.check('bracket_open')) {
+            const bbTag = this.peekBBCodeOpenTag(this.current);
+            if (bbTag && BLOCK_BBCODE_TAGS.has(bbTag.tagName)) {
+              break;
+            }
+          }
           children.push({ type: 'text', value: '\n' });
         }
       } else {
         const inlineNode = this.parseInline();
         if (inlineNode) {
           children.push(inlineNode);
+        } else {
+          break;
         }
       }
     }
@@ -254,7 +516,7 @@ export class MarkdownParser {
     };
   }
 
-  private parseInline(terminator?: { kind: string, value?: string }): MarkdownNode | null {
+  public parseInline(terminator?: { kind: string, value?: string }): MarkdownNode | null {
     if (this.isAtEnd()) return null;
 
     if (terminator) {
@@ -264,9 +526,54 @@ export class MarkdownParser {
       }
     }
 
+    // Check for BBCode close tag matching an active parent
+    if (this.check('bracket_open')) {
+      const peekClose = this.peekBBCodeCloseTag(this.current);
+      if (peekClose) {
+        return null;
+      }
+
+      // Check for BBCode open tag
+      const openTag = this.peekBBCodeOpenTag(this.current);
+      if (openTag) {
+        return this.parseBBCodeInline(openTag);
+      }
+    }
+
     const token = this.advance();
+
+    // Inline Code (`code`)
+    if (token.kind === 'backtick') {
+      const val = ('value' in token) ? token.value as string : '`';
+      if (val === '`') {
+        const savedCurrent = this.current;
+        let code = '';
+        let closed = false;
+
+        while (!this.isAtEnd()) {
+          const next = this.peek();
+          if (next.kind === 'newline') break;
+
+          if (next.kind === 'backtick' && ('value' in next && next.value === '`')) {
+            this.advance();
+            closed = true;
+            break;
+          }
+
+          const p = this.advance();
+          code += this.tokenValue(p);
+        }
+
+        if (closed) {
+          return { type: 'code_inline', value: code };
+        } else {
+          this.current = savedCurrent;
+          return { type: 'text', value: '`' };
+        }
+      }
+    }
     
-    // Bold and Italic
+    // Bold and Italic (*, **, _, __)
     if (token.kind === 'star' || token.kind === 'underscore') {
       const val = ('value' in token) ? token.value as string : '';
       if (val === '**' || val === '__' || val === '*' || val === '_') {
@@ -278,10 +585,10 @@ export class MarkdownParser {
 
         while (!this.isAtEnd()) {
           const next = this.peek();
-          if (next.kind === 'newline') break; // Don't span across lines in this basic parser
+          if (next.kind === 'newline') break;
 
           if (next.kind === token.kind && ('value' in next && next.value === val)) {
-            this.advance(); // consume closing token
+            this.advance();
             closed = true;
             break;
           }
@@ -297,14 +604,13 @@ export class MarkdownParser {
         if (closed) {
           return { type, children };
         } else {
-          // Backtrack and treat as text
           this.current = savedCurrent;
           return { type: 'text', value: val };
         }
       }
     }
 
-    // Strikethrough
+    // Strikethrough (~~)
     if (token.kind === 'tilde') {
       const val = ('value' in token) ? token.value as string : '';
       if (val === '~~') {
@@ -328,7 +634,7 @@ export class MarkdownParser {
         }
 
         if (closed) {
-          return { type: 'strikethrough', children } as any; 
+          return { type: 'strikethrough', children }; 
         } else {
           this.current = savedCurrent;
           return { type: 'text', value: val };
@@ -336,6 +642,68 @@ export class MarkdownParser {
       }
     }
     
+    // Underline (++) (CriticMarkup / markdown-it-ins)
+    if (token.kind === 'plus' && ('value' in token && token.value === '++')) {
+      const savedCurrent = this.current;
+      const children: MarkdownNode[] = [];
+      let closed = false;
+      while (!this.isAtEnd()) {
+        const next = this.peek();
+        if (next.kind === 'newline') break;
+        if (next.kind === 'plus' && ('value' in next && next.value === '++')) {
+          this.advance();
+          closed = true;
+          break;
+        }
+        const child = this.parseInline({ kind: 'plus', value: '++' });
+        if (child) children.push(child);
+        else break;
+      }
+      if (closed) {
+        return { type: 'underline', children };
+      } else {
+        this.current = savedCurrent;
+        return { type: 'text', value: '++' };
+      }
+    }
+
+    // Alignment arrow (-> text <- or -> text ->)
+    if (token.kind === 'arrow_right') {
+      const savedCurrent = this.current;
+      const children: MarkdownNode[] = [];
+      let alignType: 'center' | 'right' | null = null;
+      while (!this.isAtEnd()) {
+        const next = this.peek();
+        if (next.kind === 'newline') break;
+        if (next.kind === 'arrow_left') {
+          this.advance();
+          alignType = 'center';
+          break;
+        }
+        if (next.kind === 'arrow_right') {
+          this.advance();
+          alignType = 'right';
+          break;
+        }
+        const child = this.parseInline();
+        if (child) children.push(child);
+        else break;
+      }
+      if (alignType) {
+        if (children.length > 0 && children[0].type === 'text') {
+          children[0].value = (children[0] as MarkdownText).value.replace(/^\s+/, '');
+        }
+        if (children.length > 0 && children[children.length - 1].type === 'text') {
+          const last = children[children.length - 1] as MarkdownText;
+          last.value = last.value.replace(/\s+$/, '');
+        }
+        return { type: alignType, children };
+      } else {
+        this.current = savedCurrent;
+        return { type: 'text', value: '->' };
+      }
+    }
+
     // Spoiler (||)
     if (token.kind === 'text' && token.value === '||') {
       const savedCurrent = this.current;
@@ -361,8 +729,9 @@ export class MarkdownParser {
       }
     }
 
-    // Link or Image
+    // Link, Image, or Generic Attribute Span [text]{attributes}
     if (token.kind === 'bracket_open' || token.kind === 'bang') {
+      const savedCurrent = this.current;
       const isImage = token.kind === 'bang';
       if (isImage) {
         if (!this.match('bracket_open')) {
@@ -370,7 +739,6 @@ export class MarkdownParser {
         }
       }
       
-      const savedCurrent = this.current;
       let text = '';
       let closedBracket = false;
       
@@ -380,7 +748,7 @@ export class MarkdownParser {
           break;
         }
         const p = this.advance();
-        text += ('value' in p) ? (p as any).value : '';
+        text += this.tokenValue(p);
       }
 
       if (closedBracket && this.match('paren_open')) {
@@ -392,7 +760,7 @@ export class MarkdownParser {
             break;
           }
           const p = this.advance();
-          url += ('value' in p) ? (p as any).value : '';
+          url += this.tokenValue(p);
         }
 
         if (closedParen) {
@@ -403,16 +771,336 @@ export class MarkdownParser {
           }
         }
       }
+
+      // Generic Attribute Span [text]{.underline} or [text]{color="#ff0055"} or [text]{#ff0055}
+      if (closedBracket && this.match('brace_open')) {
+        let attrString = '';
+        let closedBrace = false;
+        while (!this.isAtEnd() && !this.check('newline')) {
+          if (this.match('brace_close')) {
+            closedBrace = true;
+            break;
+          }
+          const p = this.advance();
+          attrString += this.tokenValue(p);
+        }
+
+        if (closedBrace) {
+          return this.createAttributeSpanNode(text, attrString.trim());
+        }
+      }
       
-      // Fallback
+      // Fallback: restore cursor to before bracket was consumed
       this.current = savedCurrent;
-      return { type: 'text', value: isImage ? '![' : '[' };
+      return { type: 'text', value: isImage ? '!' : '[' };
     }
 
     return {
       type: 'text',
       value: this.tokenValue(token)
     };
+  }
+
+  private createAttributeSpanNode(rawText: string, attrString: string): MarkdownNode {
+    const innerTokens = scanMarkdown(rawText);
+    const innerDoc = new MarkdownParser(innerTokens).parseInline();
+    const children: MarkdownNode[] = innerDoc ? [innerDoc] : [{ type: 'text', value: rawText }];
+
+    // 1. Shorthand class: .underline
+    if (attrString === '.underline' || attrString.includes('.underline')) {
+      return { type: 'underline', children };
+    }
+
+    // 2. Shorthand hex color: #ff0055 or #f00
+    if (/^#[0-9a-fA-F]{3,8}$/.test(attrString)) {
+      return { type: 'color', color: attrString, children };
+    }
+
+    // 3. Key-value attributes: color="...", size="...", font="..."
+    let resultNode: MarkdownNode = { type: 'paragraph', children };
+    let wrapped = false;
+
+    // Match color=... or style="color:..."
+    const colorMatch = attrString.match(/color=["']?([^"'\s}]+)["']?/) || attrString.match(/style=["'][^"']*color:\s*([^;"'\s]+)/);
+    if (colorMatch) {
+      resultNode = { type: 'color', color: colorMatch[1], children };
+      wrapped = true;
+    }
+
+    // Match size=... or style="font-size:..."
+    const sizeMatch = attrString.match(/size=["']?([^"'\s}]+)["']?/) || attrString.match(/style=["'][^"']*font-size:\s*([^;"'\s]+)/);
+    if (sizeMatch) {
+      const currentChildren = wrapped ? [resultNode] : children;
+      resultNode = { type: 'font_size', size: sizeMatch[1], children: currentChildren };
+      wrapped = true;
+    }
+
+    // Match font=... or style="font-family:..."
+    const fontMatch = attrString.match(/font(?:-family)?=["']?([^"'}]+)["']?/);
+    if (fontMatch) {
+      const currentChildren = wrapped ? [resultNode] : children;
+      resultNode = { type: 'font', font: fontMatch[1].trim(), children: currentChildren };
+      wrapped = true;
+    }
+
+    if (wrapped) {
+      return resultNode;
+    }
+
+    return { type: 'text', value: `[${rawText}]{${attrString}}` };
+  }
+
+  // --- BBCode Embedding Support ---
+
+  private peekBBCodeOpenTag(startIndex: number): BBCodeTagInfo | null {
+    if (this.tokens[startIndex]?.kind !== 'bracket_open') return null;
+    let idx = startIndex + 1;
+    let tagContent = '';
+
+    while (idx < this.tokens.length) {
+      const t = this.tokens[idx];
+      if (t.kind === 'newline') return null;
+      if (t.kind === 'bracket_close') {
+        // Evaluate tagContent
+        const trimmed = tagContent.trim();
+        if (trimmed.startsWith('/')) return null; // closing tag
+
+        const eqIdx = trimmed.indexOf('=');
+        const tagName = (eqIdx >= 0 ? trimmed.slice(0, eqIdx) : trimmed).trim().toLowerCase();
+        let attrValue = eqIdx >= 0 ? trimmed.slice(eqIdx + 1).trim() : undefined;
+        if (attrValue && ((attrValue.startsWith('"') && attrValue.endsWith('"')) || (attrValue.startsWith("'") && attrValue.endsWith("'")))) {
+          attrValue = attrValue.slice(1, -1);
+        }
+
+        // If immediately followed by (url) or {attributes}, it is a Markdown construct, not BBCode
+        if (idx + 1 < this.tokens.length) {
+          const nextToken = this.tokens[idx + 1];
+          if (nextToken.kind === 'paren_open' || nextToken.kind === 'brace_open') {
+            return null;
+          }
+        }
+
+        if (/^[a-z0-9_-]+$/i.test(tagName)) {
+          return { tagName, attrValue, tokenEndIndex: idx };
+        }
+        return null;
+      }
+      tagContent += this.tokenValue(t);
+      idx++;
+    }
+
+    return null;
+  }
+
+  private peekBBCodeCloseTag(startIndex: number): { tagName: string; tokenEndIndex: number } | null {
+    if (this.tokens[startIndex]?.kind !== 'bracket_open') return null;
+    let idx = startIndex + 1;
+    let tagContent = '';
+
+    while (idx < this.tokens.length) {
+      const t = this.tokens[idx];
+      if (t.kind === 'newline') return null;
+      if (t.kind === 'bracket_close') {
+        const trimmed = tagContent.trim();
+        if (trimmed.startsWith('/')) {
+          const tagName = trimmed.slice(1).trim().toLowerCase();
+          if (/^[a-z0-9_-]+$/i.test(tagName)) {
+            return { tagName, tokenEndIndex: idx };
+          }
+        }
+        return null;
+      }
+      tagContent += this.tokenValue(t);
+      idx++;
+    }
+
+    return null;
+  }
+
+  private isMatchingCloseTag(closeTagName: string, openTagName: string): boolean {
+    const c = closeTagName.toLowerCase();
+    const o = openTagName.toLowerCase();
+    if (c === o) return true;
+    if ((c === 'centre' || c === 'center') && (o === 'centre' || o === 'center')) return true;
+    if ((c === 'u' || c === 'underline') && (o === 'u' || o === 'underline')) return true;
+    if ((c === 's' || c === 'strike' || c === 'strikethrough') && (o === 's' || o === 'strike' || o === 'strikethrough')) return true;
+    if ((c === 'b' || c === 'bold') && (o === 'b' || o === 'bold')) return true;
+    if ((c === 'i' || c === 'italic') && (o === 'i' || o === 'italic')) return true;
+    if ((c === 'box' || c === 'boxw') && (o === 'box' || o === 'boxw')) return true;
+    return false;
+  }
+
+  private parseBBCodeBlock(openTag: BBCodeTagInfo): MarkdownNode {
+    const t = openTag.tagName.toLowerCase();
+    if (t === 'code') {
+      this.current = openTag.tokenEndIndex + 1;
+      let raw = '';
+      while (!this.isAtEnd()) {
+        if (this.check('bracket_open')) {
+          const closeTag = this.peekBBCodeCloseTag(this.current);
+          if (closeTag && closeTag.tagName.toLowerCase() === 'code') {
+            this.current = closeTag.tokenEndIndex + 1;
+            this.match('newline');
+            break;
+          }
+        }
+        const p = this.advance();
+        raw += this.tokenValue(p);
+      }
+      if (raw.startsWith('\r\n')) raw = raw.slice(2);
+      else if (raw.startsWith('\n')) raw = raw.slice(1);
+      if (raw.endsWith('\r\n')) raw = raw.slice(0, -2);
+      else if (raw.endsWith('\n')) raw = raw.slice(0, -1);
+      return { type: 'code_block', lang: '', value: raw };
+    }
+
+    this.current = openTag.tokenEndIndex + 1;
+    this.match('newline');
+
+    const children: MarkdownNode[] = [];
+
+    while (!this.isAtEnd()) {
+      if (this.check('bracket_open')) {
+        const closeTag = this.peekBBCodeCloseTag(this.current);
+        if (closeTag && this.isMatchingCloseTag(closeTag.tagName, openTag.tagName)) {
+          this.current = closeTag.tokenEndIndex + 1;
+          this.match('newline');
+          break;
+        }
+      }
+
+      if (this.check('newline')) {
+        this.advance();
+        while (this.match('newline')) {
+          children.push({ type: 'empty_line' });
+        }
+      } else {
+        const block = this.parseBlock();
+        if (block) children.push(block);
+        else break;
+      }
+    }
+
+    return this.createBBCodeNode(openTag.tagName, openTag.attrValue, children);
+  }
+
+  private parseBBCodeInline(openTag: BBCodeTagInfo): MarkdownNode {
+    const t = openTag.tagName.toLowerCase();
+    if (t === 'c') {
+      this.current = openTag.tokenEndIndex + 1;
+      let raw = '';
+      while (!this.isAtEnd()) {
+        if (this.check('bracket_open')) {
+          const closeTag = this.peekBBCodeCloseTag(this.current);
+          if (closeTag && closeTag.tagName.toLowerCase() === 'c') {
+            this.current = closeTag.tokenEndIndex + 1;
+            break;
+          }
+        }
+        if (this.check('newline')) break;
+        const p = this.advance();
+        raw += this.tokenValue(p);
+      }
+      return { type: 'code_inline', value: raw };
+    }
+
+    if (t === 'raw' || t === 'noparse' || t === 'plain') {
+      this.current = openTag.tokenEndIndex + 1;
+      let raw = '';
+      while (!this.isAtEnd()) {
+        if (this.check('bracket_open')) {
+          const closeTag = this.peekBBCodeCloseTag(this.current);
+          if (closeTag && this.isMatchingCloseTag(closeTag.tagName, openTag.tagName)) {
+            this.current = closeTag.tokenEndIndex + 1;
+            break;
+          }
+        }
+        if (this.check('newline')) {
+          this.advance();
+          raw += '\n';
+        } else {
+          const p = this.advance();
+          raw += this.tokenValue(p);
+        }
+      }
+      return { type: 'bbcode_tag', tagName: t === 'noparse' ? 'raw' : t, attrValue: openTag.attrValue, children: [{ type: 'text', value: raw }] };
+    }
+
+    this.current = openTag.tokenEndIndex + 1;
+    const children: MarkdownNode[] = [];
+
+    while (!this.isAtEnd()) {
+      if (this.check('bracket_open')) {
+        const closeTag = this.peekBBCodeCloseTag(this.current);
+        if (closeTag && this.isMatchingCloseTag(closeTag.tagName, openTag.tagName)) {
+          this.current = closeTag.tokenEndIndex + 1;
+          break;
+        }
+      }
+
+      if (this.check('newline')) {
+        this.advance();
+        children.push({ type: 'text', value: '\n' });
+      } else {
+        const child = this.parseInline();
+        if (child) children.push(child);
+        else break;
+      }
+    }
+
+    return this.createBBCodeNode(openTag.tagName, openTag.attrValue, children);
+  }
+
+  private createBBCodeNode(tagName: string, attrValue: string | undefined, children: MarkdownNode[]): MarkdownNode {
+    const t = tagName.toLowerCase();
+    switch (t) {
+      case 'b':
+      case 'bold':
+        return { type: 'strong', children };
+      case 'i':
+      case 'italic':
+        return { type: 'emphasis', children };
+      case 'u':
+      case 'underline':
+        return { type: 'underline', children };
+      case 's':
+      case 'strike':
+      case 'strikethrough':
+        return { type: 'strikethrough', children };
+      case 'c':
+        return { type: 'code_inline', value: children.map(c => ('value' in c ? (c as any).value : '')).join('') };
+      case 'color':
+      case 'colour':
+        return { type: 'color', color: attrValue || '#ffffff', children };
+      case 'size':
+        return { type: 'font_size', size: attrValue || '100', children };
+      case 'font':
+        return { type: 'font', font: attrValue || 'sans-serif', children };
+      case 'centre':
+      case 'center':
+        return { type: 'center', children };
+      case 'right':
+        return { type: 'right', children };
+      case 'left':
+        return { type: 'left', children };
+      case 'align':
+        return { type: (attrValue === 'center' || attrValue === 'right' || attrValue === 'left' ? attrValue : 'center') as any, children };
+      case 'box':
+      case 'boxw':
+        return { type: 'box', title: attrValue || 'Box', rawTitle: attrValue, children };
+      case 'spoilerbox':
+        return { type: 'spoilerbox', title: attrValue || 'Spoiler', rawTitle: attrValue, children };
+      case 'spoiler':
+        return { type: 'spoiler', children };
+      case 'quote':
+        return { type: 'blockquote', source: attrValue, children };
+      case 'notice':
+        return { type: 'notice', color: attrValue, children };
+      case 'wnotice':
+        return { type: 'wnotice', color: attrValue, children };
+      default:
+        return { type: 'bbcode_tag', tagName: t, attrValue, children };
+    }
   }
 
   // --- Helpers ---
@@ -445,7 +1133,6 @@ export class MarkdownParser {
       return true;
     }
     return false;
-
   }
 }
 

@@ -1431,6 +1431,10 @@ export class HTMLRenderer extends Visitor<string> {
  * per character instead, or the preview and the export disagree.
  */
 function isPlainGradient(params: EffectParams): boolean {
+  // A tag carrying a span is one fragment of a longer ramp. Painting it
+  // as a full-width CSS gradient restarts the sweep inside every
+  // fragment, which is exactly the discontinuity the span exists to fix.
+  if (params.documentLength !== undefined && params.documentLength > 1) return false
   return (params.wave === undefined || params.wave === 'none')
     && (params.axis === undefined || params.axis === 'index')
     && (params.easing === undefined || params.easing === 'linear')

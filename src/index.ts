@@ -148,6 +148,9 @@ export { RainbowTransformer, type RainbowOptions } from './Transformers/RainbowT
 export { GradientTransformer, type GradientOptions } from './Transformers/GradientTransformer'
 export { GrowTransformer, type GrowOptions } from './Transformers/GrowTransformer'
 
+// ── MilHibri Unified Hybrid Language ──
+export { MilHibriDocumentModel, type MilHibriDocumentModelOptions } from './MilHibri/MilHibriDocumentModel'
+
 // ── Markdown Bridge ──
 export { MarkdownDocumentModel } from './Markdown/MarkdownDocumentModel'
 export { markdownAstToGreenTree, markdownAstToRedTree } from './Markdown/MarkdownToGreenNode'
@@ -179,13 +182,14 @@ export { isHexColor } from './Utils/ColorMath'
 // ── Effect math: the kernel shared by the tag handlers, the HTML
 // renderer and @miliastry/quasar-studio. ──
 export {
-  hashSeed, mulberry32, randAt, valueNoise, fbm,
+  hashSeed, randAt, valueNoise, fbm,
   validateExpression, compileExpression, EXPRESSION_VARS,
   waveform, WAVE_KINDS, DEFAULT_WAVE_OPTIONS, clamp01,
   blendHex, BLEND_MODES, rgbToHex, adjustHsl, posterizeHex, clampRange,
   buildSampleTable, buildRangeScope, documentScope, axisValue, expressionVars, AXES,
+  effectiveAxis, mergeStyledSegments, normalizeHex,
   parseColorStops, stringifyColorStops, parseEffectParams, stringifyEffectParams,
-  evaluateEffect, GRADIENT_DEFAULTS, RAINBOW_DEFAULTS, GROW_DEFAULTS,
+  evaluateEffect, GRADIENT_DEFAULTS, RAINBOW_DEFAULTS, GROW_DEFAULTS, NEUTRAL_SIZE,
 } from './Utils/EffectMath'
 export type {
   WaveKind, WaveOptions, BlendMode, ExpressionVars, CompiledExpression,

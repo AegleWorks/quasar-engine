@@ -10,7 +10,10 @@
 
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Saira+Condensed:wght@600;700&family=Saira:wght@400;600&display=swap');
 
-:root {
+.theme-lyne,
+.bbcode-preview-lyne,
+[data-theme='syne'],
+[data-dialect='lyne'] {
   --color-accent: #2EE6E2;
   --color-accent-bright: #68FFF8;
   --color-warning: #FFC34D;
@@ -1121,3 +1124,64 @@
   background-clip: text !important;
   color: transparent !important;
 }
+
+/* ─── Lyne (SYNE) Preview Highlight Overrides ────────────────────────────── */
+
+.theme-lyne [data-bbid]:hover,
+.bbcode-preview-lyne [data-bbid]:hover {
+  outline: 1.5px solid #2EE6E2 !important;
+  background-color: rgba(46, 230, 226, 0.1) !important;
+  box-shadow: 0 0 8px rgba(46, 230, 226, 0.25) !important;
+}
+
+.theme-lyne[data-hover-highlight="on"] [data-bbid]:hover,
+.bbcode-preview-lyne[data-hover-highlight="on"] [data-bbid]:hover,
+.theme-lyne[data-hover-highlight="on"] [data-bbid]:has([data-bbid]:hover),
+.bbcode-preview-lyne[data-hover-highlight="on"] [data-bbid]:has([data-bbid]:hover),
+.theme-lyne[data-hover-highlight="on"] [data-node-id]:hover,
+.bbcode-preview-lyne[data-hover-highlight="on"] [data-node-id]:hover {
+  outline: 1px dashed rgba(46, 230, 226, 0.55) !important;
+  box-shadow: 0 0 6px rgba(46, 230, 226, 0.2) !important;
+}
+
+.theme-lyne [data-node-id].cursor-highlight,
+.bbcode-preview-lyne [data-node-id].cursor-highlight,
+.theme-lyne .cursor-highlight,
+.bbcode-preview-lyne .cursor-highlight {
+  outline: 2px solid #2EE6E2 !important;
+  background-color: rgba(46, 230, 226, 0.18) !important;
+  box-shadow: 0 0 12px rgba(46, 230, 226, 0.35) !important;
+}
+
+.theme-lyne .bb-empty-line.cursor-highlight,
+.bbcode-preview-lyne .bb-empty-line.cursor-highlight {
+  background-color: rgba(46, 230, 226, 0.22) !important;
+  outline: 2px solid #2EE6E2 !important;
+  box-shadow: 0 0 8px rgba(46, 230, 226, 0.3) !important;
+}
+
+.theme-lyne[data-hover-highlight="on"] .bb-empty-line:hover,
+.bbcode-preview-lyne[data-hover-highlight="on"] .bb-empty-line:hover {
+  outline: 1px dashed rgba(46, 230, 226, 0.55) !important;
+  background-color: rgba(46, 230, 226, 0.1) !important;
+}
+
+.theme-lyne div.bb-block.cursor-highlight::after,
+.bbcode-preview-lyne div.bb-block.cursor-highlight::after {
+  box-shadow: inset 0 0 0 2px #2EE6E2, 0 0 10px rgba(46, 230, 226, 0.35) !important;
+  background-color: rgba(46, 230, 226, 0.18) !important;
+}
+
+.theme-lyne span.bb-block.cursor-highlight,
+.bbcode-preview-lyne span.bb-block.cursor-highlight {
+  outline: 2px solid #2EE6E2 !important;
+  background-color: rgba(46, 230, 226, 0.18) !important;
+  box-shadow: 0 0 8px rgba(46, 230, 226, 0.3) !important;
+}
+
+.theme-lyne ::selection,
+.bbcode-preview-lyne ::selection {
+  background-color: rgba(46, 230, 226, 0.3) !important;
+  color: #ffffff !important;
+}
+

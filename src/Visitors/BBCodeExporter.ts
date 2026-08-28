@@ -39,6 +39,9 @@ export const LYNE_ONLY_TAGS = new Set([
   'boxw', 'wnotice', 'tables', 'table_row', 'table_col', 'table_th', 'gallery', 'columns',
   'separator', 'scroll', 'sup', 'sub', 'abbr', 'mark', 'kbd', 'tooltip', 'flip',
   'raw', 'plain', 'guild', 'map', 'align', 'effect', 'anim', 'container', 'style_tag',
+  'neon', 'shimmer', 'glitch', 'typewriter', 'wave', 'fire', 'ice', 'ghost', 'glow',
+  'outline', 'emboss', 'engrave', 'pulse', 'bounce', 'shake', 'levitate', 'fade-in', 'fade-out',
+  'card', 'glass', 'neon-box', 'square', 'row', 'col', 'th',
 ])
 
 /**
@@ -89,10 +92,6 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   flower: 'flower',
   gradient: 'gradient',
   grow: 'grow',
-  // `rainbow` and `sinewave` were in MILIASTRY_INTERNAL_TAGS but missing
-  // here, so a miliastry-target export looked the tag name up, found
-  // nothing, and emitted the children alone — deleting the effect from
-  // the document it was meant to preserve.
   rainbow: 'rainbow',
   sinewave: 'sinewave',
   align: 'align',
@@ -100,6 +99,9 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   table_row: 'row',
   table_col: 'col',
   table_th: 'th',
+  row: 'row',
+  col: 'col',
+  th: 'th',
   gallery: 'gallery',
   columns: 'columns',
   separator: 'separator',
@@ -117,6 +119,28 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   anim: 'anim',
   container: 'container',
   style_tag: 'style',
+  neon: 'neon',
+  shimmer: 'shimmer',
+  glitch: 'glitch',
+  typewriter: 'typewriter',
+  wave: 'wave',
+  fire: 'fire',
+  ice: 'ice',
+  ghost: 'ghost',
+  glow: 'glow',
+  outline: 'outline',
+  emboss: 'emboss',
+  engrave: 'engrave',
+  pulse: 'pulse',
+  bounce: 'bounce',
+  shake: 'shake',
+  levitate: 'levitate',
+  'fade-in': 'fade-in',
+  'fade-out': 'fade-out',
+  card: 'card',
+  glass: 'glass',
+  'neon-box': 'neon-box',
+  square: 'square',
 }
 
 
@@ -346,15 +370,21 @@ export class BBCodeExporter extends Visitor<string> {
       } else if (node.kind === 'align' && node.metadata.align !== undefined) {
         return `=${node.metadata.align}`
       } else if (node.kind === 'effect' && node.metadata.effectType !== undefined) {
-        return `=${node.metadata.effectType}`
+        const color = node.metadata.color as string | undefined
+        return `=${node.metadata.effectType}${color ? `:${color}` : ''}`
       } else if (node.kind === 'image' && node.metadata.imgAttr !== undefined) {
         return `=${node.metadata.imgAttr}`
       } else if (node.kind === 'anim' && node.metadata.animType !== undefined) {
         return `=${node.metadata.animType}`
       } else if (node.kind === 'container' && node.metadata.containerType !== undefined) {
-        return `=${node.metadata.containerType}`
+        const color = node.metadata.color as string | undefined
+        return `=${node.metadata.containerType}${color ? `:${color}` : ''}`
       } else if (node.kind === 'style_tag' && node.metadata.style !== undefined) {
         return `=${node.metadata.style}`
+      } else if (hasAttrValue(node.metadata.value)) {
+        return `=${node.metadata.value}`
+      } else if (hasAttrValue(node.metadata.raw)) {
+        return `=${node.metadata.raw}`
       }
     }
 

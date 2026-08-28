@@ -102,7 +102,7 @@
   {
     "kind": "gradient",
     "text": "uno dos tres",
-    "bb": "[color=#112233]uno[/color] [color=#172839]dos[/color] [color=#28394A]tres[/color]",
+    "bb": "[color=#112233]uno[/color] [color=#1E2F40]dos[/color] [color=#445566]tres[/color]",
     "rn": {
       "kind": "gradient",
       "text": "",
@@ -129,7 +129,7 @@
           "children": [],
           "props": {},
           "style": {
-            "color": "#172839"
+            "color": "#1E2F40"
           }
         },
         {
@@ -145,7 +145,7 @@
           "children": [],
           "props": {},
           "style": {
-            "color": "#28394A"
+            "color": "#445566"
           }
         }
       ],

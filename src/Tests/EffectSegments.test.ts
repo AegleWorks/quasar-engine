@@ -26,6 +26,9 @@ import type { NodeKind, NodeMetadata } from '../Types/core'
  *    gradient silently got a linear one.
  *  - Adjacent runs that resolve to the same style are merged, so a quantised
  *    or single-colour gradient emits one tag instead of one per character.
+ *  - `unit: 'word'` measures by word as well as stepping by word. Measuring
+ *    by character meant each word took the colour of its first letter, so a
+ *    three-word gradient stopped 60% of the way to its end colour.
  *
  * `sinewave` is deliberately NOT expressed through the axis/waveform model:
  * its argument is the character index in radians, so its period is fixed in

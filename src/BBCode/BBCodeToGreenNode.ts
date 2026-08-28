@@ -180,6 +180,7 @@ const LYNE_LEGACY_ALIASES: Record<string, NodeKind> = {
   // Anim legacy aliases
   'typewriter': 'anim',
   'wave': 'anim',
+  'pulse': 'anim',
   'sparkle': 'anim',
   'glitch': 'anim',
   'levitate': 'anim',
@@ -234,10 +235,6 @@ export const BBCODE_TAG_NAMES: readonly string[] = Object.freeze(
 )
 
 export function getBBCodeTagNames(dialect: BBCodeDialect = 'miliastry'): readonly string[] {
-  // Para Lyne, la superficie visible es la CANÓNICA: los legacy aliases se
-  // siguen parseando (compatibilidad) pero no se listan — así un consumidor
-  // (autocomplete, docs) solo ofrece las formas canónicas.
-  if (dialect === 'lyne') return Object.freeze([...Object.keys(LYNE_CANONICAL_TAG_TO_KIND)].sort())
   const map = DIALECT_MAPS[dialect] || DIALECT_MAPS.miliastry
   return Object.freeze([...map.keys()].sort())
 }

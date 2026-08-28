@@ -11,6 +11,14 @@ export type MarkdownNode =
   | MarkdownCodeInline
   | MarkdownStrong
   | MarkdownEmphasis
+  | MarkdownStrikethrough
+  | MarkdownUnderline
+  | MarkdownColor
+  | MarkdownFontSize
+  | MarkdownFont
+  | MarkdownAlign
+  | MarkdownBox
+  | MarkdownSeparator
   | MarkdownLink
   | MarkdownImage
   | MarkdownList
@@ -19,7 +27,15 @@ export type MarkdownNode =
   | MarkdownSpoiler
   | MarkdownNotice
   | MarkdownSpacing
-  | MarkdownEmptyLine;
+  | MarkdownEmptyLine
+  | MarkdownGenericBBNode;
+
+export interface MarkdownGenericBBNode {
+  type: 'bbcode_tag';
+  tagName: string;
+  attrValue?: string;
+  children: MarkdownNode[];
+}
 
 export interface MarkdownDocument {
   type: 'document';
@@ -88,6 +104,7 @@ export interface MarkdownListItem {
 
 export interface MarkdownBlockquote {
   type: 'blockquote';
+  source?: string;
   children: MarkdownNode[];
 }
 
@@ -99,7 +116,8 @@ export interface MarkdownSpoiler {
 
 /** `> [!NOTE]` callout — produced by MarkdownParser, maps to BBCode [notice]. */
 export interface MarkdownNotice {
-  type: 'notice';
+  type: 'notice' | 'wnotice';
+  color?: string;
   children: MarkdownNode[];
 }
 
@@ -109,4 +127,49 @@ export interface MarkdownSpacing {
 
 export interface MarkdownEmptyLine {
   type: 'empty_line';
+}
+
+export interface MarkdownStrikethrough {
+  type: 'strikethrough';
+  children: MarkdownNode[];
+}
+
+export interface MarkdownUnderline {
+  type: 'underline';
+  children: MarkdownNode[];
+}
+
+export interface MarkdownColor {
+  type: 'color';
+  color: string;
+  children: MarkdownNode[];
+}
+
+export interface MarkdownFontSize {
+  type: 'font_size';
+  size: string;
+  children: MarkdownNode[];
+}
+
+export interface MarkdownFont {
+  type: 'font';
+  font: string;
+  children: MarkdownNode[];
+}
+
+export interface MarkdownAlign {
+  type: 'align' | 'center' | 'right' | 'left';
+  children: MarkdownNode[];
+}
+
+export interface MarkdownBox {
+  type: 'box' | 'spoilerbox';
+  title?: string;
+  rawTitle?: string;
+  color?: string;
+  children: MarkdownNode[];
+}
+
+export interface MarkdownSeparator {
+  type: 'separator';
 }

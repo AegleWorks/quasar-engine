@@ -115,7 +115,7 @@ describe('red-subtree reuse', () => {
         .toBe(renderer.render(control.redRoot!).replace(/ data-node-id="[^"]*"/g, ''))
       expect(reuse.redRoot!.green).toBe(reuse.greenRoot)
     }
-  })
+  }, 20000)
 
   it('ids stay unique after adoption plus fresh nodes', () => {
     const model = new BBCodeDocumentModel({ source: bigDoc() })

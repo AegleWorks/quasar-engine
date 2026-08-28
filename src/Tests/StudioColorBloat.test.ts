@@ -19,7 +19,9 @@ describe('Studio Effects Color Bloat', () => {
 
     // The output should NOT contain [color=#000000]
     expect(exportedBBCode).not.toContain('#000000')
-    // It should ONLY contain the gradient colors
-    expect(exportedBBCode).toContain('#ff0000')
+    // It should ONLY contain the gradient colors. Compared case-insensitively:
+    // computed effect colours are emitted upper-case, and this test is about
+    // which colours survive, not how they are spelled.
+    expect(exportedBBCode.toLowerCase()).toContain('#ff0000')
   })
 })

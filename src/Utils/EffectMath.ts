@@ -42,18 +42,6 @@ export function hashSeed(input: string): number {
   return h >>> 0
 }
 
-/** Mulberry32: small, fast, good enough for visual noise. */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
 /**
  * Stateless hash → [0,1) for one (seed, index) pair.
  *
@@ -125,13 +113,27 @@ export const EXPRESSION_VARS: readonly (keyof ExpressionVars)[] = [
   'u', 't', 'x', 'i', 'n', 'line', 'lines', 'col', 'cols', 'word', 'words', 'rnd',
 ]
 
-/** Math members an expression may name. Anything else is rejected. */
-const MATH_ALLOWLIST = new Set([
+/**
+ * Math members an expression may name. Anything else is rejected.
+ *
+ * They are passed to the compiled function as ordinary parameters rather
+ * than pulled in with `with (Math)`. `with` is a syntax error under
+ * `"use strict"`, and dropping strict mode to keep it would hand the
+ * expression a writable global scope — the opposite of what a sandbox is
+ * for.
+ */
+const MATH_NAMES = [
   'abs', 'acos', 'acosh', 'asin', 'asinh', 'atan', 'atan2', 'atanh', 'cbrt',
   'ceil', 'cos', 'cosh', 'exp', 'floor', 'hypot', 'log', 'log2', 'log10',
   'max', 'min', 'pow', 'round', 'sign', 'sin', 'sinh', 'sqrt', 'tan', 'tanh',
   'trunc', 'PI', 'E', 'LN2', 'LN10', 'SQRT2',
-])
+] as const
+
+const MATH_ALLOWLIST = new Set<string>(MATH_NAMES)
+
+const MATH_VALUES = MATH_NAMES.map(
+  name => (Math as unknown as Record<string, unknown>)[name],
+)
 
 const IDENTIFIER_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g
 /** Characters an expression may contain outside identifiers and digits. */
@@ -184,11 +186,12 @@ export function compileExpression(src: string): CompiledExpression | null {
     try {
       // eslint-disable-next-line no-new-func
       const fn = new Function(
+        ...MATH_NAMES,
         ...EXPRESSION_VARS,
-        `"use strict"; with (Math) { return (${src}); }`,
-      ) as (...args: number[]) => unknown
+        `"use strict"; return (${src});`,
+      ) as (...args: unknown[]) => unknown
       compiled = (vars: ExpressionVars) => {
-        const out = fn(...EXPRESSION_VARS.map(k => vars[k]))
+        const out = fn(...MATH_VALUES, ...EXPRESSION_VARS.map(k => vars[k]))
         const num = Number(out)
         return Number.isFinite(num) ? num : 0
       }
@@ -277,12 +280,23 @@ const TAU = Math.PI * 2
  * something sensible for them.
  */
 export function waveform(kind: WaveKind, u: number, opts: Partial<WaveOptions> = {}): number {
-  const o = { ...DEFAULT_WAVE_OPTIONS, ...opts }
+  // Read through with defaults rather than spreading into a fresh object.
+  // This runs once per character per layer, and building a nine-field
+  // object each time cost more than every waveform in the table combined.
+  const o = opts as WaveOptions
+  const oCycles = o.cycles ?? DEFAULT_WAVE_OPTIONS.cycles
+  const oPhase = o.phase ?? DEFAULT_WAVE_OPTIONS.phase
+  const oBezier = o.bezier ?? DEFAULT_WAVE_OPTIONS.bezier
+  const oOctaves = o.octaves ?? DEFAULT_WAVE_OPTIONS.octaves
+  const oSteps = o.steps ?? DEFAULT_WAVE_OPTIONS.steps
+  const oSeed = o.seed ?? DEFAULT_WAVE_OPTIONS.seed
+  const oIndex = o.index ?? DEFAULT_WAVE_OPTIONS.index
+
   const clamped = clamp01(u)
 
   // Position within the current cycle, in [0,1).
-  const cycles = Number.isFinite(o.cycles) ? o.cycles : 1
-  const scaled = clamped * cycles + o.phase
+  const cycles = Number.isFinite(oCycles) ? oCycles : 1
+  const scaled = clamped * cycles + oPhase
   const p = ((scaled % 1) + 1) % 1
   const angle = scaled * TAU
 
@@ -330,28 +344,28 @@ export function waveform(kind: WaveKind, u: number, opts: Partial<WaveOptions> =
     case 'alternate':
       // Index parity, not a continuous wave: the point is that adjacent
       // characters differ, which a periodic function only approximates.
-      v = Math.floor(o.index * Math.max(1, cycles)) % 2 === 0 ? 1 : 0
+      v = Math.floor(oIndex * Math.max(1, cycles)) % 2 === 0 ? 1 : 0
       break
     case 'noise':
-      v = valueNoise(scaled * 4 + o.index * 0.0001, o.seed)
+      v = valueNoise(scaled * 4 + oIndex * 0.0001, oSeed)
       break
     case 'fbm':
-      v = fbm(scaled * 3, o.seed, o.octaves)
+      v = fbm(scaled * 3, oSeed, oOctaves)
       break
     case 'steps': {
-      const levels = Math.max(2, Math.round(o.steps || 4))
+      const levels = Math.max(2, Math.round(oSteps || 4))
       v = Math.round(p * (levels - 1)) / (levels - 1)
       break
     }
     case 'bezier':
-      v = solveCubicBezierY(p, o.bezier[0], o.bezier[1], o.bezier[2], o.bezier[3])
+      v = solveCubicBezierY(p, oBezier[0], oBezier[1], oBezier[2], oBezier[3])
       break
     case 'expr': {
       const fn = o.expression ? compileExpression(o.expression) : null
       if (!fn) { v = clamped; break }
       const vars = o.vars
         ? { ...o.vars, u: p, t: p, x: p }
-        : { u: p, t: p, x: p, i: o.index, n: 1, line: 0, lines: 1, col: 0, cols: 1, word: 0, words: 1, rnd: randAt(o.seed, o.index) }
+        : { u: p, t: p, x: p, i: oIndex, n: 1, line: 0, lines: 1, col: 0, cols: 1, word: 0, words: 1, rnd: randAt(oSeed, oIndex) }
       v = fn(vars)
       break
     }
@@ -362,8 +376,8 @@ export function waveform(kind: WaveKind, u: number, opts: Partial<WaveOptions> =
   // A post-quantisation pass is what turns any smooth wave into a banded
   // one — and, on the export side, collapses hundreds of near-identical
   // [color] tags into a handful of long runs.
-  if (kind !== 'steps' && o.steps && o.steps >= 2) {
-    const levels = Math.round(o.steps)
+  if (kind !== 'steps' && oSteps && oSteps >= 2) {
+    const levels = Math.round(oSteps)
     v = Math.round(clamp01(v) * (levels - 1)) / (levels - 1)
   }
 
@@ -522,9 +536,15 @@ export function blendHex(base: string, layer: string, mode: BlendMode, opacity =
 }
 
 export function rgbToHex(r: number, g: number, b: number): string {
-  const h = (v: number) =>
-    Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')
-  return `#${h(r)}${h(g)}${h(b)}`
+  return `#${BYTE_HEX[clampByte(r)]}${BYTE_HEX[clampByte(g)]}${BYTE_HEX[clampByte(b)]}`
+}
+
+/** Two-character lowercase hex per byte, built once. */
+const BYTE_HEX: string[] = Array.from({ length: 256 }, (_, i) =>
+  i.toString(16).padStart(2, '0'))
+
+function clampByte(v: number): number {
+  return v < 0 ? 0 : v > 255 ? 255 : Math.round(v)
 }
 
 // ── Colour utilities built on the kernel ───────────────────────
@@ -944,9 +964,36 @@ export interface EffectParams {
   // sinewave — an index-in-radians oscillator, not a modulated axis
   freq?: number
   step?: 'char' | 'word'
+
+  /**
+   * Position of this tag's text inside a longer effect, in visible
+   * characters. Set when one logical effect is split across several tags
+   * — a gradient down a multi-paragraph block — so each tag continues the
+   * ramp instead of restarting it.
+   */
+  globalOffset?: number
+  /** Total visible characters of that longer effect. */
+  documentLength?: number
 }
 
 export type EffectUnit = 'character' | 'word' | 'line'
+
+/**
+ * The axis a layer actually reads, given its stepping unit.
+ *
+ * Stepping per word while measuring per character is almost never what
+ * someone means: a word-unit gradient over "one two three" would give
+ * every word the colour of its first letter, so the ramp reached 60% of
+ * the way to its end colour and stopped. `unit` therefore promotes the
+ * default `index` axis to the matching coordinate. An axis the user
+ * chose deliberately — radial, line, random — is left alone.
+ */
+export function effectiveAxis(axis: Axis, unit: EffectUnit | undefined): Axis {
+  if (axis !== 'index') return axis
+  if (unit === 'word') return 'word'
+  if (unit === 'line') return 'line'
+  return 'index'
+}
 
 /** Short attribute keys, so a tag stays readable in a document. */
 const PARAM_KEYS = {
@@ -975,6 +1022,8 @@ const PARAM_KEYS = {
   max: 'max',
   freq: 'freq',
   step: 'step',
+  globalOffset: 'at',
+  documentLength: 'of',
 } as const
 
 const KEY_TO_PARAM = new Map<string, keyof typeof PARAM_KEYS>(
@@ -984,18 +1033,28 @@ const KEY_TO_PARAM = new Map<string, keyof typeof PARAM_KEYS>(
 const NUMERIC_PARAMS = new Set([
   'cycles', 'phase', 'parabolaCenter', 'parabolaPower', 'steps', 'octaves',
   'seed', 'opacity', 'saturation', 'lightness', 'spread', 'offset', 'min', 'max',
-  'freq',
+  'freq', 'globalOffset', 'documentLength',
 ])
 const BOOLEAN_PARAMS = new Set(['invert', 'preserveSL', 'perceptual'])
+
+const stopCache = new Map<string, ColorStop[]>()
+const STOP_CACHE_LIMIT = 256
 
 /**
  * Parse a stop list, `"#hex 0%, #hex 50%, #hex"`.
  *
  * Unpositioned stops are spread evenly between their positioned
  * neighbours, matching CSS gradient semantics.
+ *
+ * Cached because a gradient layer asks for the same string once per
+ * character; the result is treated as immutable by every caller.
  */
 export function parseColorStops(colorsStr: string): ColorStop[] {
-  const parts = (colorsStr ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  const key = colorsStr ?? ''
+  const cached = stopCache.get(key)
+  if (cached) return cached
+
+  const parts = key.split(',').map(s => s.trim()).filter(Boolean)
   const stops: ColorStop[] = []
 
   for (const part of parts) {
@@ -1024,6 +1083,8 @@ export function parseColorStops(colorsStr: string): ColorStop[] {
     }
   }
 
+  if (stopCache.size >= STOP_CACHE_LIMIT) stopCache.clear()
+  stopCache.set(key, stops)
   return stops
 }
 
@@ -1140,6 +1201,9 @@ export interface StyledSegment {
 /** Which effect a set of parameters describes. */
 export type EffectKind = 'gradient' | 'rainbow' | 'grow' | 'sinewave'
 
+/** The size a character has with no size effect on it, in percent. */
+export const NEUTRAL_SIZE = 100
+
 /** Where a node sits in a larger logical effect that spans several nodes. */
 export interface EffectSpan {
   globalOffset?: number
@@ -1220,9 +1284,13 @@ export function evaluateEffect(
 
   // A document-wide span replaces the local index so several nodes read
   // as one continuous effect.
-  const spanned = span.documentLength !== undefined && span.documentLength > 1
-  const spanOffset = span.globalOffset ?? 0
-  const spanLength = span.documentLength ?? scope.count
+  // The span may arrive as node metadata (set by a tree transform) or in
+  // the tag's own attribute (written by Text Studio when it splits one
+  // effect across paragraphs). Either way it means the same thing.
+  const spanLengthRaw = span.documentLength ?? params.documentLength
+  const spanned = spanLengthRaw !== undefined && spanLengthRaw > 1
+  const spanOffset = span.globalOffset ?? params.globalOffset ?? 0
+  const spanLength = spanLengthRaw ?? scope.count
 
   const out: StyledSegment[] = []
   let groupKey: number | null = null
@@ -1255,7 +1323,7 @@ export function evaluateEffect(
     const ctx: SampleContext = { sample, scope, table, local: sample.index }
     let u = spanned
       ? clamp01((spanOffset + sample.index) / (spanLength - 1))
-      : axisValue(p.axis, ctx, p.seed | 0)
+      : axisValue(effectiveAxis(p.axis, p.unit), ctx, p.seed | 0)
     if (p.invert) u = 1 - u
 
     let v = waveform(p.wave, u, {
@@ -1369,7 +1437,14 @@ function styleFor(
   if (kind === 'grow' || kind === 'sinewave') {
     const min = p.min ?? 50
     const max = p.max ?? 200
-    return { text, size: Math.round(min + (max - min) * v) }
+    const size = min + (max - min) * v
+    // `opacity` on a size effect is a STRENGTH: how far the computed size
+    // travels from the neutral 100%. It is the same lerp-toward-what-is-
+    // underneath that opacity performs on a colour, which is why it shares
+    // the field — but a font size has no alpha, so the UI labels it
+    // "strength" rather than pretending otherwise.
+    const strength = p.opacity ?? 1
+    return { text, size: Math.round(NEUTRAL_SIZE + (size - NEUTRAL_SIZE) * strength) }
   }
 
   if (kind === 'rainbow') {
@@ -1395,13 +1470,17 @@ function styleFor(
 /**
  * Upper-case an emitted hex colour.
  *
+ * @remarks Exported so the studio's own compiler can apply the same rule;
+ * the two must agree byte for byte or the same document exports
+ * differently depending on which path produced it.
+ *
  * Interpolated colours come back lower-case while a stop copied straight
  * from the attribute keeps whatever the author typed, so a single
  * gradient used to export `#FF0000` next to `#bf4000`. Normalising here
  * — the one place every effect colour passes through — keeps the output
  * uniform without touching the colour maths.
  */
-function normalizeHex(hex: string): string {
+export function normalizeHex(hex: string): string {
   return /^#[0-9a-fA-F]+$/.test(hex) ? hex.toUpperCase() : hex
 }
 

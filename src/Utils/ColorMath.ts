@@ -86,10 +86,27 @@ export function hslToHex(h: number, s: number, l: number): string {
   const a = (s * Math.min(l, 1 - l)) / 100
   const f = (n: number) => {
     const k = (n + h / 30) % 12
-    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)
-    return Math.round(255 * color).toString(16).padStart(2, "0")
+    return byteHex(255 * (l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)))
   }
   return `#${f(0)}${f(8)}${f(4)}`
+}
+
+/** Hex digit value per char code, `-1` for anything else. */
+const HEX_VALUE: Int8Array = (() => {
+  const table = new Int8Array(128).fill(-1)
+  for (let c = 0; c < 10; c++) table[48 + c] = c          // 0-9
+  for (let c = 0; c < 6; c++) table[97 + c] = 10 + c      // a-f
+  for (let c = 0; c < 6; c++) table[65 + c] = 10 + c      // A-F
+  return table
+})()
+
+/** Two-character lowercase hex for every byte, built once. */
+const BYTE_HEX: string[] = Array.from({ length: 256 }, (_, i) =>
+  i.toString(16).padStart(2, "0"))
+
+function hexAt(s: string, i: number): number {
+  const c = s.charCodeAt(i)
+  return c < 128 ? HEX_VALUE[c] : -1
 }
 
 /**
@@ -100,30 +117,61 @@ export function hslToHex(h: number, s: number, l: number): string {
  * BBCode attributes and from a text field the user is mid-way through
  * typing, and a `NaN` channel propagates into `#NaNNaNNaN`, corrupting
  * the whole gradient rather than the one bad stop.
+ *
+ * Parsed by char code rather than by regex + `parseInt`. This runs once
+ * per character per colour layer per keystroke — two calls for every
+ * `mixHex` — and the regex version was the single largest cost in
+ * compiling a long document.
  */
 export function hexToRgb(hex: string): [number, number, number] {
-  const h = (hex ?? "").trim().replace(/^#/, "")
-  if (/^[0-9a-fA-F]{3,4}$/.test(h)) {
-    return [
-      parseInt(h[0] + h[0], 16),
-      parseInt(h[1] + h[1], 16),
-      parseInt(h[2] + h[2], 16),
-    ]
+  if (typeof hex !== "string") return [0, 0, 0]
+  let start = 0
+  let end = hex.length
+  while (start < end && hex.charCodeAt(start) <= 32) start++
+  while (end > start && hex.charCodeAt(end - 1) <= 32) end--
+  if (start < end && hex.charCodeAt(start) === 35 /* # */) start++
+
+  const len = end - start
+  const short = len === 3 || len === 4
+  if (!short && len !== 6 && len !== 8) return [0, 0, 0]
+
+  const digits = short ? 3 : 6
+  const out: [number, number, number] = [0, 0, 0]
+  for (let i = 0; i < digits; i += short ? 1 : 2) {
+    const hi = hexAt(hex, start + i)
+    if (hi < 0) return [0, 0, 0]
+    if (short) {
+      out[i] = hi * 17
+    } else {
+      const lo = hexAt(hex, start + i + 1)
+      if (lo < 0) return [0, 0, 0]
+      out[i >> 1] = hi * 16 + lo
+    }
   }
-  if (/^[0-9a-fA-F]{6,8}$/.test(h)) {
-    return [
-      parseInt(h.slice(0, 2), 16),
-      parseInt(h.slice(2, 4), 16),
-      parseInt(h.slice(4, 6), 16),
-    ]
-  }
-  return [0, 0, 0]
+  return out
 }
 
 /** True when a token is a hex colour `hexToRgb` can read exactly. */
 export function isHexColor(value: string): boolean {
-  const h = (value ?? "").trim().replace(/^#/, "")
-  return /^[0-9a-fA-F]+$/.test(h) && [3, 4, 6, 8].includes(h.length)
+  if (typeof value !== "string") return false
+  let start = 0
+  let end = value.length
+  while (start < end && value.charCodeAt(start) <= 32) start++
+  while (end > start && value.charCodeAt(end - 1) <= 32) end--
+  if (start < end && value.charCodeAt(start) === 35) start++
+
+  const len = end - start
+  if (len !== 3 && len !== 4 && len !== 6 && len !== 8) return false
+  for (let i = start; i < end; i++) {
+    if (hexAt(value, i) < 0) return false
+  }
+  return true
+}
+
+/** Clamp to a byte and format as two lowercase hex characters. */
+function byteHex(v: number): string {
+  const n = v < 0 ? 0 : v > 255 ? 255 : Math.round(v)
+  return BYTE_HEX[n]
 }
 
 export function hexToHsl(hex: string): [number, number, number] {
@@ -148,13 +196,13 @@ export function hexToHsl(hex: string): [number, number, number] {
 }
 
 export function mixHex(color1: string, color2: string, weight: number): string {
+  // Identical endpoints are the common case in a flat run; skipping the
+  // interpolation also skips two parses and a string build.
+  if (color1 === color2) return color1
   const [r1, g1, b1] = hexToRgb(color1)
   const [r2, g2, b2] = hexToRgb(color2)
-  const w = Math.max(0, Math.min(1, weight))
-  const r = Math.round(r1 + (r2 - r1) * w)
-  const g = Math.round(g1 + (g2 - g1) * w)
-  const b = Math.round(b1 + (b2 - b1) * w)
-  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`
+  const w = weight < 0 ? 0 : weight > 1 ? 1 : weight
+  return `#${byteHex(r1 + (r2 - r1) * w)}${byteHex(g1 + (g2 - g1) * w)}${byteHex(b1 + (b2 - b1) * w)}`
 }
 
 export function mixMultiple(colors: string[], weight: number): string {
@@ -287,10 +335,6 @@ export function perceptualDistance(hex1: string, hex2: string): number {
   return Math.sqrt(dL * dL + da * da + db * db)
 }
 
-function clampByte(val: number): number {
-  return Math.max(0, Math.min(255, Math.round(val)))
-}
-
 /**
  * Mix two hex colours in OKLab space for perceptually uniform interpolation.
  */
@@ -318,10 +362,8 @@ export function mixHexOklab(color1: string, color2: string, weight: number): str
   const gLin = l * -1.2684380046 + m *  2.6097574011 + s * -0.3413193965
   const bLin = l * -0.0041960863 + m * -0.7034186147 + s *  1.7076147010
 
-  // Linear sRGB → gamma-corrected sRGB → hex (with gamut clamping)
-  const r255 = clampByte(linearToSrgb(rLin) * 255)
-  const g255 = clampByte(linearToSrgb(gLin) * 255)
-  const b255 = clampByte(linearToSrgb(bLin) * 255)
-
-  return `#${r255.toString(16).padStart(2, '0')}${g255.toString(16).padStart(2, '0')}${b255.toString(16).padStart(2, '0')}`
+  // Linear sRGB → gamma-corrected sRGB → hex. `byteHex` clamps, which is
+  // what keeps an out-of-gamut OKLab mix from producing a negative or
+  // five-digit channel.
+  return `#${byteHex(linearToSrgb(rLin) * 255)}${byteHex(linearToSrgb(gLin) * 255)}${byteHex(linearToSrgb(bLin) * 255)}`
 }

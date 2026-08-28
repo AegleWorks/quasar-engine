@@ -14,12 +14,17 @@ export interface MarkdownTildeToken { kind: 'tilde'; value: string; start: numbe
 export interface MarkdownBacktickToken { kind: 'backtick'; value: string; start: number; end: number }
 export interface MarkdownBracketOpenToken { kind: 'bracket_open'; start: number; end: number }
 export interface MarkdownBracketCloseToken { kind: 'bracket_close'; start: number; end: number }
+export interface MarkdownBraceOpenToken { kind: 'brace_open'; start: number; end: number }
+export interface MarkdownBraceCloseToken { kind: 'brace_close'; start: number; end: number }
 export interface MarkdownParenOpenToken { kind: 'paren_open'; start: number; end: number }
 export interface MarkdownParenCloseToken { kind: 'paren_close'; start: number; end: number }
 export interface MarkdownBangToken { kind: 'bang'; start: number; end: number }
 export interface MarkdownDashToken { kind: 'dash'; value: string; start: number; end: number }
-export interface MarkdownPlusToken { kind: 'plus'; start: number; end: number }
+export interface MarkdownPlusToken { kind: 'plus'; value: string; start: number; end: number }
 export interface MarkdownDotToken { kind: 'dot'; start: number; end: number }
+export interface MarkdownColonToken { kind: 'colon'; value: string; start: number; end: number }
+export interface MarkdownContainerToken { kind: 'container'; value: string; info: string; start: number; end: number }
+export interface MarkdownArrowToken { kind: 'arrow_right' | 'arrow_left'; value: string; start: number; end: number }
 export interface MarkdownTextToken { kind: 'text'; value: string; start: number; end: number }
 export interface MarkdownNewlineToken { kind: 'newline'; value: string; start: number; end: number }
 export interface MarkdownFenceToken { kind: 'fence'; value: string; lang: string; start: number; end: number }
@@ -31,9 +36,11 @@ export type MarkdownToken =
   | MarkdownHashToken | MarkdownGtToken | MarkdownStarToken
   | MarkdownUnderscoreToken | MarkdownTildeToken | MarkdownBacktickToken
   | MarkdownBracketOpenToken | MarkdownBracketCloseToken
+  | MarkdownBraceOpenToken | MarkdownBraceCloseToken
   | MarkdownParenOpenToken | MarkdownParenCloseToken
   | MarkdownBangToken | MarkdownDashToken | MarkdownPlusToken
-  | MarkdownDotToken | MarkdownTextToken | MarkdownNewlineToken
+  | MarkdownDotToken | MarkdownColonToken | MarkdownContainerToken
+  | MarkdownArrowToken | MarkdownTextToken | MarkdownNewlineToken
   | MarkdownFenceToken | MarkdownHrToken | MarkdownEscapeToken
   | MarkdownAngleToken;
 
@@ -41,20 +48,24 @@ function pushToken(tokens: MarkdownToken[], kind: MarkdownToken['kind'], start: 
   switch (kind) {
     case 'hash': tokens.push({ kind, value: extra?.value ?? '', start, end }); break;
     case 'gt': case 'bracket_open': case 'bracket_close':
+    case 'brace_open': case 'brace_close':
     case 'paren_open': case 'paren_close': case 'bang':
-    case 'plus': case 'dot': case 'hr':
+    case 'dot': case 'hr':
       tokens.push({ kind, start, end } as MarkdownToken); break;
     case 'star': case 'underscore': case 'tilde':
-    case 'backtick': case 'dash': case 'text':
-    case 'newline': case 'escape': case 'angle':
+    case 'backtick': case 'dash': case 'plus':
+    case 'colon': case 'arrow_right': case 'arrow_left':
+    case 'text': case 'newline': case 'escape': case 'angle':
       tokens.push({ kind, value: extra?.value ?? '', start, end } as MarkdownToken); break;
+    case 'container':
+      tokens.push({ kind, value: extra?.value ?? ':::', info: extra?.info ?? '', start, end }); break;
     case 'fence':
       tokens.push({ kind, value: extra?.value ?? '', lang: extra?.lang ?? '', start, end }); break;
   }
 }
 
 function isMarkdownSpecial(ch: string): boolean {
-  return '\\`*_{}[]()#+-.!|~\'"<>'.includes(ch) || ch === '\n' || ch === '\r';
+  return '\\`*_{}[]()#+-.!|~\'":<>'.includes(ch) || ch === '\n' || ch === '\r';
 }
 
 /**
@@ -160,22 +171,57 @@ export function scanMarkdown(source: string): MarkdownToken[] {
       continue;
     }
 
+    // Braces
+    if (ch === '{') { i++; pushToken(tokens, 'brace_open', start, i); continue; }
+    if (ch === '}') { i++; pushToken(tokens, 'brace_close', start, i); continue; }
+
+    // Arrow Right (->)
+    if (ch === '-' && i + 1 < source.length && source[i + 1] === '>') {
+      i += 2;
+      pushToken(tokens, 'arrow_right', start, i, { value: '->' });
+      continue;
+    }
+
+    // Arrow Left (<-)
+    if (ch === '<' && i + 1 < source.length && source[i + 1] === '-') {
+      i += 2;
+      pushToken(tokens, 'arrow_left', start, i, { value: '<-' });
+      continue;
+    }
+
+    // Container (:::) or Colon (:)
+    if (ch === ':') {
+      let count = 1;
+      i++;
+      while (i < source.length && source[i] === ':' && count < 3) { count++; i++; }
+      if (count === 3) {
+        const infoStart = i;
+        while (i < source.length && source[i] !== '\n' && source[i] !== '\r') i++;
+        const info = source.slice(infoStart, i).trim();
+        pushToken(tokens, 'container', start, i, { value: ':::', info });
+      } else {
+        pushToken(tokens, 'colon', start, i, { value: source.slice(start, i) });
+      }
+      continue;
+    }
+
     // Dash (-, --, ---)
     if (ch === '-') {
       let count = 1;
       i++;
       while (i < source.length && source[i] === '-' && count < 3) { count++; i++; }
-      // Hr if --- and alone on line (simplified, normally requires parser validation)
-      if (count === 3) {
-        pushToken(tokens, 'dash', start, i, { value: source.slice(start, i) });
-      } else {
-        pushToken(tokens, 'dash', start, i, { value: source.slice(start, i) });
-      }
+      pushToken(tokens, 'dash', start, i, { value: source.slice(start, i) });
       continue;
     }
 
-    // Plus
-    if (ch === '+') { i++; pushToken(tokens, 'plus', start, i); continue; }
+    // Plus (+, ++)
+    if (ch === '+') {
+      let count = 1;
+      i++;
+      while (i < source.length && source[i] === '+' && count < 2) { count++; i++; }
+      pushToken(tokens, 'plus', start, i, { value: source.slice(start, i) });
+      continue;
+    }
 
     // Dot
     if (ch === '.') { i++; pushToken(tokens, 'dot', start, i); continue; }
@@ -184,6 +230,15 @@ export function scanMarkdown(source: string): MarkdownToken[] {
     if (ch === '<' || ch === '>') {
       i++;
       pushToken(tokens, 'angle', start, i, { value: ch });
+      continue;
+    }
+
+    // Pipe (| or || for spoilers)
+    if (ch === '|') {
+      let count = 1;
+      i++;
+      while (i < source.length && source[i] === '|' && count < 2) { count++; i++; }
+      pushToken(tokens, 'text', start, i, { value: source.slice(start, i) });
       continue;
     }
 

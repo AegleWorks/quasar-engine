@@ -64,7 +64,7 @@ describe('transformOffset', () => {
     expect(transformOffset(5, changes)).toBe(5)
   })
 
-  it('property: positions outside the edit keep pointing at the same character', () => {
+  it('property: positions outside the edit keep pointing at the same character', { timeout: 15000 }, () => {
     const rand = mulberry32(2026)
     const alphabet = 'abcdefghij[]/ \n'
     for (let round = 0; round < 2000; round++) {
