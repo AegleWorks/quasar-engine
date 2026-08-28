@@ -1200,7 +1200,7 @@ export function evaluateEffect(
 
   const defaults =
     kind === 'rainbow' ? RAINBOW_DEFAULTS :
-    kind === 'grow' || kind === 'sinewave' ? GROW_DEFAULTS :
+    kind === 'grow' ? GROW_DEFAULTS :
     GRADIENT_DEFAULTS
   const p = { ...defaults, ...params } as Required<Pick<EffectParams,
     'axis' | 'wave' | 'cycles' | 'phase' | 'easing' | 'bezier' | 'parabolaCenter' |
