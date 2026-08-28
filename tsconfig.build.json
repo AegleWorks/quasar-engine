@@ -1,0 +1,19 @@
+{
+  // Emisión de declaraciones para el paquete publicado.
+  //
+  // tsup ya no las genera (ver `tsup.config.ts`): las emite el binario del
+  // compilador, que es lo único que sigue existiendo en TypeScript 7.
+  //
+  // Los tests quedan fuera a propósito: son fuente del repo, no superficie
+  // del paquete, y sus `.d.ts` solo ensuciarían `dist/types`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "./src",
+    "outDir": "./dist/types"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/Tests"]
+}

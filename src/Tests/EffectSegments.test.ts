@@ -8,13 +8,28 @@ import type { NodeKind, NodeMetadata } from '../Types/core'
 
 /**
  * The four effect tags (gradient, sinewave, grow, rainbow) serialize through
- * ONE segment function each, presented two ways (toBBCode / toRenderNode).
- * Before the consolidation, each handler carried its own copy of the math.
+ * ONE evaluator — `evaluateEffect` in `Utils/EffectMath` — presented two ways
+ * (toBBCode / toRenderNode). The same evaluator backs the HTML renderer's
+ * preview and Text Studio's compiler, so this snapshot pins all three.
  *
- * The expected outputs in `EffectSegments.snapshot.json` were captured from
- * the PRE-consolidation handlers, so this suite pins the refactor to byte
- * equality with the originals — colors, sizes, word/whitespace handling,
- * globalOffset/documentLength, empty-text fallbacks, everything.
+ * `EffectSegments.snapshot.json` is byte-exact expected output: colors, sizes,
+ * word/whitespace handling, globalOffset/documentLength, empty-text fallbacks.
+ *
+ * It was re-captured when the effect maths moved into the shared kernel. Three
+ * behaviours changed deliberately and are pinned in their new form:
+ *
+ *  - Whitespace no longer consumes a step of a gradient, and no longer gets a
+ *    `[color]` tag of its own. Colouring a space is invisible and costs 15
+ *    characters of the 60 000-character budget.
+ *  - `ease-in` / `ease-out` / `ease-in-out` are recognised. They used to fall
+ *    through to `default: return t`, so a document asking for an eased
+ *    gradient silently got a linear one.
+ *  - Adjacent runs that resolve to the same style are merged, so a quantised
+ *    or single-colour gradient emits one tag instead of one per character.
+ *
+ * `sinewave` is deliberately NOT expressed through the axis/waveform model:
+ * its argument is the character index in radians, so its period is fixed in
+ * characters rather than stretching with the text.
  *
  * The inputs here must stay in sync with the snapshot's cases by index.
  */

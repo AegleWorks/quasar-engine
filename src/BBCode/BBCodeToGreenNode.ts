@@ -15,6 +15,7 @@
  *   → DocumentModel
  */
 
+import { parseEffectParams } from '../Utils/EffectMath'
 import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
 import { RedNode } from '../Syntax/RedNode'
 import { RedNodeStore } from '../Syntax/RedNodeStore'
@@ -439,9 +440,15 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
     case 'video':    return { videoId: value || firstChildText(green) }
     case 'audio':    return { src: value || firstChildText(green) }
     case 'gradient':
-      // Parse "=#ff0000,#00ff00" → { colors: ['#FF0000', '#00FF00'] }
-      const gradientColors = value.split(',').map(c => c.trim()).filter(c => c.startsWith('#'))
-      return gradientColors.length > 0 ? { colors: gradientColors } : {}
+    case 'rainbow':
+    case 'grow':
+    case 'sinewave':
+      // One grammar for every effect tag. `[gradient=#a,#b]` still parses
+      // as a bare colour list; `[gradient=#a,#b;easing=easeInOut;axis=line]`
+      // adds the modulation Text Studio configures. Before this, everything
+      // past the colours was dropped on the way in and re-invented from
+      // defaults on the way out, so a saved effect never came back.
+      return parseEffectParams(value) as Record<string, unknown>
     case 'table_th':
     case 'table_col': {
       if (!value) return {}

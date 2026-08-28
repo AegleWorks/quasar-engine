@@ -23,6 +23,9 @@ export type {
 
 // ── Lexer ──
 export { Lexer, type LexerOptions } from './Lexer/Lexer'
+// Which tags carry literal content. The lexer is the only authority on it;
+// exported so consumers stop keeping their own copy.
+export { BBCODE_RAW_TAGS } from './Lexer/BBCodeLexer'
 export type { Token, TokenKind, Trivia, TriviaKind } from './Types/tokens'
 
 // ── Green/Red Tree ──
@@ -58,8 +61,6 @@ export { SVGRenderer } from './Visitors/SVGRenderer'
 export { MarkdownExporter } from './Visitors/MarkdownExporter'
 export { JSONExporter } from './Visitors/JSONExporter'
 export { TiptapExporter } from './Visitors/TiptapExporter'
-export { LexicalExporter } from './Visitors/LexicalExporter'
-export { $generateBBCodeFromLexical } from './Visitors/LexicalToBBCode'
 
 // ── Transactions ──
 export { Transaction } from './Transactions/Transaction'
@@ -95,6 +96,12 @@ export { RenderTree, type RenderNode, type RenderVariant } from './RenderPipelin
 // ── Plugin API ──
 export { PluginAPI } from './Plugins/PluginAPI'
 export { PluginRegistry, type PluginManifest, type PluginContribution } from './Plugins/PluginRegistry'
+
+// ── Repair ──
+export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpener } from './Repair/NestingRepair'
+
+// ── Reconciler ──
+export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult } from './Reconciler/SurgicalReconciler'
 
 // ── BBCode Bridge ──
 export { BBCodeDocumentModel } from './BBCode/BBCodeDocumentModel'
@@ -149,6 +156,43 @@ export { markdownAstToGreenTree, markdownAstToRedTree } from './Markdown/Markdow
 export { HTMLDocumentModel } from './HTML/HTMLDocumentModel'
 export { htmlStringToGreenTree } from './HTML/HTMLToGreenNode'
 
+// ── Colour Maths ──
+// Perceptual colour utilities. Previously reachable only through the `./src/*`
+// subpath, which resolves against source rather than `dist` and so breaks for
+// any consumer of the built package.
+export {
+  ease,
+  solveCubicBezierY,
+  hslToHex,
+  hexToRgb,
+  hexToHsl,
+  hexToOklab,
+  mixHex,
+  mixHexOklab,
+  mixMultiple,
+  mixMultipleStops,
+  perceptualDistance,
+} from './Utils/ColorMath'
+export type { Easing, ColorStop } from './Utils/ColorMath'
+export { isHexColor } from './Utils/ColorMath'
+
+// ── Effect math: the kernel shared by the tag handlers, the HTML
+// renderer and @miliastry/quasar-studio. ──
+export {
+  hashSeed, mulberry32, randAt, valueNoise, fbm,
+  validateExpression, compileExpression, EXPRESSION_VARS,
+  waveform, WAVE_KINDS, DEFAULT_WAVE_OPTIONS, clamp01,
+  blendHex, BLEND_MODES, rgbToHex, adjustHsl, posterizeHex, clampRange,
+  buildSampleTable, buildRangeScope, documentScope, axisValue, expressionVars, AXES,
+  parseColorStops, stringifyColorStops, parseEffectParams, stringifyEffectParams,
+  evaluateEffect, GRADIENT_DEFAULTS, RAINBOW_DEFAULTS, GROW_DEFAULTS,
+} from './Utils/EffectMath'
+export type {
+  WaveKind, WaveOptions, BlendMode, ExpressionVars, CompiledExpression,
+  CharSample, SampleTable, RangeScope, SampleContext, Axis,
+  EffectParams, EffectUnit, EffectKind, EffectSpan, StyledSegment,
+} from './Utils/EffectMath'
+
 // ── Analysis Framework ──
 export {
   Pipeline,
@@ -161,7 +205,10 @@ export {
   GradientAnalyzer,
   RainbowAnalyzer,
   WaveAnalyzer,
+  SymbolAnalyzer,
+  ColorUsageAnalyzer,
   DefaultDecision,
+  PaletteRemapDecision,
   CollapseGradientTransform,
   RainbowCollapseTransform,
   WaveCollapseTransform,
@@ -189,6 +236,12 @@ export type {
   RainbowDiagnostics,
   WaveModel,
   WaveDiagnostics,
+  SymbolGlyph,
+  SymbolRunModel,
+  ColorUsageModel,
+  Palette,
+  PaletteRemapOptions,
+  RemapAction,
 } from './Analysis/index'
 
 // NOTE: `ExportTarget` from Analysis is intentionally omitted to avoid

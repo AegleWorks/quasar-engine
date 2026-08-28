@@ -35,6 +35,16 @@ export interface PipelineResult {
   readonly tree: GreenNode
   /** The aggregated analysis report. */
   readonly report: AnalysisReport
+  /**
+   * The plan the last DecisionPass produced, empty when none ran.
+   *
+   * Usually this is an intermediate the transform stage consumes and the
+   * caller never needs. It is surfaced because a plan is not always something
+   * to execute against the tree: a pass may describe edits meant to be applied
+   * to the source text by range, in which case the plan *is* the output and
+   * there is no transform stage to hand it to.
+   */
+  readonly plan: TransformationPlan
 }
 
 export class Pipeline {
@@ -74,7 +84,7 @@ export class Pipeline {
 
     const elapsed = performance.now() - start
     const report = this.buildReport(allContributions, analysisPassCount, elapsed)
-    return { tree: currentTree, report }
+    return { tree: currentTree, report, plan: latestPlan }
   }
 
   /**

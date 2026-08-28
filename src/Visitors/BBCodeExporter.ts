@@ -89,6 +89,12 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   flower: 'flower',
   gradient: 'gradient',
   grow: 'grow',
+  // `rainbow` and `sinewave` were in MILIASTRY_INTERNAL_TAGS but missing
+  // here, so a miliastry-target export looked the tag name up, found
+  // nothing, and emitted the children alone — deleting the effect from
+  // the document it was meant to preserve.
+  rainbow: 'rainbow',
+  sinewave: 'sinewave',
   align: 'align',
   tables: 'tables',
   table_row: 'row',
@@ -113,6 +119,38 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   style_tag: 'style',
 }
 
+
+/**
+ * Whether a parsed attribute actually carries a value worth re-emitting.
+ *
+ * The parser stores an empty string for the attribute of a bare tag, so a
+ * plain `[box]` arrives here with `rawTitle: ''` rather than `undefined`.
+ * The guards below used to test `!== undefined`, which an empty string
+ * passes — exporting `[box]` as `[box=]` and `[quote]` as `[quote=""]`.
+ * Both are corruption, not normalization: bare boxes and quotes are
+ * ordinary BBCode and must round-trip untouched.
+ */
+function hasAttrValue(value: unknown): boolean {
+  return value !== undefined && value !== null && String(value) !== ''
+}
+
+function normalizeColorToHex(color: string): string {
+  if (!color) return color
+  const trimmed = color.trim()
+  // Un hex ya es canónico: bajarlo a minúsculas reescribía `[color=#FF0000]`
+  // del autor en cada exportación, y `Analysis/RoundTrip` fija lo contrario.
+  if (trimmed.startsWith('#')) return trimmed
+
+  const rgbMatch = trimmed.match(/^rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i)
+  if (rgbMatch) {
+    const r = parseInt(rgbMatch[1], 10).toString(16).padStart(2, '0')
+    const g = parseInt(rgbMatch[2], 10).toString(16).padStart(2, '0')
+    const b = parseInt(rgbMatch[3], 10).toString(16).padStart(2, '0')
+    return `#${r}${g}${b}`.toLowerCase()
+  }
+
+  return trimmed
+}
 
 export class BBCodeExporter extends Visitor<string> {
   private registry: TagRegistry
@@ -151,6 +189,11 @@ export class BBCodeExporter extends Visitor<string> {
   }
 
   private exportNode(node: RedNode): string {
+    // Un cierre que no cerró nada no vuelve al source. Escribirlo hacía que el
+    // siguiente parseo lo leyera otra vez como etiqueta viva, y el documento no
+    // convergía al reexportarlo.
+    if (node.kind === 'discarded_tag') return ''
+
     const tagDef = this.registry.getByKind(node.kind)
 
     // Text nodes
@@ -163,7 +206,7 @@ export class BBCodeExporter extends Visitor<string> {
         if (style.fontStyle === 'italic') out = `[i]${out}[/i]`
         if (style.textDecoration === 'underline') out = `[u]${out}[/u]`
         if (style.textDecoration === 'line-through') out = `[s]${out}[/s]`
-        if (style.color) out = `[color=${style.color}]${out}[/color]`
+        if (style.color) out = `[color=${normalizeColorToHex(style.color)}]${out}[/color]`
         if (style.fontSize) out = `[size=${style.fontSize}]${out}[/size]`
         // Se pueden seguir sumando estilos dinámicos
       }
@@ -253,23 +296,32 @@ export class BBCodeExporter extends Visitor<string> {
           }
           if (parts.length > 0) return `=${parts[0]}`
         }
-      } else if (node.kind === 'font_size' && node.metadata.size !== undefined) {
+      } else if (node.kind === 'font_size' && hasAttrValue(node.metadata.size)) {
         return `=${node.metadata.size}`
-      } else if (node.kind === 'color' && node.metadata.color !== undefined) {
-        return `=${node.metadata.color}`
-      } else if (node.kind === 'font' && node.metadata.font !== undefined) {
+      } else if (node.kind === 'color' && hasAttrValue(node.metadata.color)) {
+        return `=${normalizeColorToHex(node.metadata.color as string)}`
+      } else if (node.kind === 'font' && hasAttrValue(node.metadata.font)) {
         return `=${node.metadata.font}`
       } else if (node.kind === 'url' && node.metadata.href !== undefined) {
         return `=${node.metadata.href}`
-      } else if (node.kind === 'email' && node.metadata.href !== undefined) {
-        return `=${(node.metadata.href as string).replace('mailto:', '')}`
-      } else if (node.kind === 'quote' && node.metadata.source !== undefined) {
+      } else if (node.kind === 'email' && hasAttrValue(node.metadata.href)) {
+        // The parser prefixes the address with `mailto:`, so a bare `[email]`
+        // arrives as exactly that prefix and nothing else — test the address.
+        const address = (node.metadata.href as string).replace('mailto:', '')
+        return address === '' ? '' : `=${address}`
+      } else if (node.kind === 'quote' && hasAttrValue(node.metadata.source)) {
         return `="${node.metadata.source}"`
-      } else if ((node.kind === 'box' || node.kind === 'boxw' || node.kind === 'spoilerbox') && (node.metadata.rawTitle !== undefined || node.metadata.title !== undefined)) {
-        const titleVal = node.metadata.rawTitle !== undefined ? node.metadata.rawTitle : node.metadata.title
+      } else if (node.kind === 'box' || node.kind === 'boxw' || node.kind === 'spoilerbox') {
+        // `rawTitle` is the source spelling; `title` is the parsed one, which
+        // falls back to a synthetic "Box"/"Spoiler" when the tag is bare. Only
+        // the raw form can be trusted to reproduce the input, so it wins.
+        const raw = node.metadata.rawTitle
+        const titleVal = String((raw !== undefined ? raw : node.metadata.title) ?? '')
         // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
         // a añadir aquí para que el round-trip no pierda el sufijo.
         const color = node.metadata.color as string | undefined
+        // A bare `[box]` has neither, and must stay bare.
+        if (titleVal === '' && !color) return ''
         return `=${titleVal}${color ? `:${color}` : ''}`
       } else if ((node.kind === 'notice' || node.kind === 'wnotice') && node.metadata.color !== undefined) {
         return `=${node.metadata.color}`
@@ -309,7 +361,9 @@ export class BBCodeExporter extends Visitor<string> {
     // Fallback: check node text for attribute info
     const text = node.text || ''
     if (text.startsWith('=') || text.startsWith(' ')) {
-      // The text is exactly the attributes string (e.g. "=50" or " min=50 max=200")
+      if (node.kind === 'color' && text.startsWith('=')) {
+        return `=${normalizeColorToHex(text.slice(1))}`
+      }
       return text
     }
 

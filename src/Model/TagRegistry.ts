@@ -20,7 +20,10 @@ import type { RedNode } from '../Syntax/RedNode'
 import { GreenNode } from '../Syntax/GreenNode'
 import type { RenderNode } from '../RenderPipeline/RenderTree'
 import type { Validator } from '../Semantic/SemanticAnalyzer'
-import { mixMultiple, ease, clamp, hslToHex, type Easing } from '../Utils/color'
+import {
+  evaluateEffect,
+  type EffectKind, type EffectParams, type EffectSpan, type StyledSegment,
+} from '../Utils/EffectMath'
 
 // ─── Tag Handler ───────────────────────────────────────────────
 
@@ -107,19 +110,6 @@ function extractTextContent(node: RedNode): string {
   return node.children.map(extractTextContent).join('')
 }
 
-/** Split text by unit: 'character', 'word', or 'line' */
-function splitByUnit(text: string, unit: string): string[] {
-  if (!text) return []
-  switch (unit) {
-    case 'word':
-      return text.split(/(\s+)/).filter(s => s.length > 0)
-    case 'line':
-      return text.split('\n')
-    default: // 'character'
-      return [...text]
-  }
-}
-
 /** Escape [ and ] inside BBCode content so they're not parsed as tags */
 function escapeBracket(ch: string): string {
   // BBCode has no standard escape. For internal tags produced by TextStudio,
@@ -128,109 +118,37 @@ function escapeBracket(ch: string): string {
   return ch.replace(/\[/g, '\\[').replace(/\]/g, '\\]')
 }
 
-// ─── Effect segment math — one source of truth per effect ─────
+// ─── Effect segments ──────────────────────────────────────────
 //
-// Each effect (gradient, sinewave, grow, rainbow) serializes two ways: to
-// osu!-compatible BBCode (`toBBCode`) and to a RenderNode tree
-// (`toRenderNode`). Both used to carry their own copy of the per-segment
-// math — t-progression, easing, color mixing, wave sizing — differing only in
-// presentation, which is exactly how the two drift apart. The math now lives
-// in ONE `*Segments` function per effect; the handlers are thin presenters.
-//
-// Note this is deliberately NOT the same algorithm as `HTMLRenderer`'s own
-// `renderGradient`: the preview paints a smooth CSS `linear-gradient` with
-// `background-clip: text`, while these segments reproduce the DISCRETE
-// per-chunk colors that the exported `[color=…]` BBCode will actually have.
+// The maths lives in `Utils/EffectMath`, not here. It used to live in
+// this file, in four `*Segments` functions, while Text Studio kept its
+// own copy and the HTML renderer kept a third — so the same document
+// exported one way, previewed another, and lost every parameter the
+// studio grew. These handlers now only read the node and present the
+// result.
 
-/**
- * A run of text with the style its effect computed. `color` and `size` are
- * mutually exclusive; neither set means the run passes through unstyled
- * (whitespace between sized words).
- */
-interface StyledSegment {
-  text: string
-  color?: string
-  size?: number
-}
-
-/**
- * Effect progression t ∈ [0,1] for segment `i` of `count`, honoring the
- * document-wide fields (`globalOffset`/`documentLength`) that let one logical
- * effect span several nodes. `single` is the t for a one-segment run — the
- * effects legitimately disagree on it (gradient/rainbow use 0, grow 0.5).
- */
-function progressAt(i: number, count: number, node: RedNode, single: number): number {
-  const globalOffset = (node.metadata?.globalOffset as number) || 0
-  const documentLength = (node.metadata?.documentLength as number) || count
-  if (documentLength > 1) return (globalOffset + i) / (documentLength - 1)
-  return count > 1 ? i / (count - 1) : single
-}
-
-function gradientSegments(node: RedNode): StyledSegment[] {
-  const colors = (node.metadata?.colors as string[]) || ['#FF0000', '#00FF00']
-  const unit = (node.metadata?.unit as string) || 'character'
-  const easing = (node.metadata?.easing as Easing) || 'linear'
-  const text = extractTextContent(node)
-  if (!text) return []
-  const parts = splitByUnit(text, unit)
-  return parts.map((seg, i) => ({
-    text: seg,
-    color: mixMultiple(colors, ease(clamp(progressAt(i, parts.length, node, 0)), easing)),
-  }))
-}
-
-function sinewaveSegments(node: RedNode): StyledSegment[] {
-  const min = (node.metadata?.min as number) ?? 20
-  const max = (node.metadata?.max as number) ?? 80
-  const freq = (node.metadata?.freq as number) ?? 0.4
-  const step = (node.metadata?.step as string) ?? 'char'
-  const text = extractTextContent(node)
-  if (!text) return []
-  const amplitude = (max - min) / 2
-  const center = min + amplitude
-
-  if (step === 'word') {
-    let wordIndex = 0
-    return text.split(/(\s+)/).map(chunk => {
-      if (chunk.trim() === '') return { text: chunk }
-      const size = Math.round(center + Math.sin(wordIndex * freq) * amplitude)
-      wordIndex++
-      return { text: chunk, size }
-    })
+/** Effect parameters carried on a node, plus its span in a longer effect. */
+function effectParamsOf(node: RedNode): { params: EffectParams; span: EffectSpan } {
+  const meta = (node.metadata ?? {}) as Record<string, unknown>
+  const params: EffectParams = {}
+  for (const [key, value] of Object.entries(meta)) {
+    if (key === 'globalOffset' || key === 'documentLength') continue
+    ;(params as Record<string, unknown>)[key] = value
   }
-
-  return [...text].map((ch, i) => ({
-    text: ch,
-    size: Math.round(center + Math.sin(i * freq) * amplitude),
-  }))
+  return {
+    params,
+    span: {
+      globalOffset: meta.globalOffset as number | undefined,
+      documentLength: meta.documentLength as number | undefined,
+    },
+  }
 }
 
-function growSegments(node: RedNode): StyledSegment[] {
-  const min = (node.metadata?.min as number) ?? 50
-  const max = (node.metadata?.max as number) ?? 200
-  const cycles = (node.metadata?.cycles as number) ?? 1
+function effectSegments(node: RedNode, kind: EffectKind): StyledSegment[] {
   const text = extractTextContent(node)
   if (!text) return []
-  const chars = [...text]
-  return chars.map((ch, i) => {
-    const sine = Math.sin(progressAt(i, chars.length, node, 0.5) * cycles * Math.PI * 2)
-    const normalized = (sine + 1) / 2
-    return { text: ch, size: Math.round(min + (max - min) * normalized) }
-  })
-}
-
-function rainbowSegments(node: RedNode): StyledSegment[] {
-  const saturation = ((node.metadata?.saturation as number) ?? 80) / 100
-  const lightness = ((node.metadata?.lightness as number) ?? 60) / 100
-  const spread = (node.metadata?.spread as number) ?? 300
-  const offset = (node.metadata?.offset as number) ?? 0
-  const text = extractTextContent(node)
-  if (!text) return []
-  const chars = [...text]
-  return chars.map((ch, i) => ({
-    text: ch,
-    color: hslToHex(offset + progressAt(i, chars.length, node, 0) * spread, saturation, lightness),
-  }))
+  const { params, span } = effectParamsOf(node)
+  return evaluateEffect(text, kind, params, span)
 }
 
 /** Present styled segments as osu!-compatible BBCode. */
@@ -409,10 +327,10 @@ export class TagRegistry {
         isSelfClosing: false,
         canHaveChildren: true,
         toBBCode: (ctx) => {
-          const segments = gradientSegments(ctx.node)
+          const segments = effectSegments(ctx.node, 'gradient')
           return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
         },
-        toRenderNode: (ctx) => segmentsToRenderNode('gradient', gradientSegments(ctx.node)),
+        toRenderNode: (ctx) => segmentsToRenderNode('gradient', effectSegments(ctx.node, 'gradient')),
       },
       {
         name: 'sinewave',
@@ -423,10 +341,10 @@ export class TagRegistry {
         isSelfClosing: false,
         canHaveChildren: true,
         toBBCode: (ctx) => {
-          const segments = sinewaveSegments(ctx.node)
+          const segments = effectSegments(ctx.node, 'sinewave')
           return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
         },
-        toRenderNode: (ctx) => segmentsToRenderNode('sinewave', sinewaveSegments(ctx.node)),
+        toRenderNode: (ctx) => segmentsToRenderNode('sinewave', effectSegments(ctx.node, 'sinewave')),
       },
       {
         name: 'grow',
@@ -437,10 +355,10 @@ export class TagRegistry {
         isSelfClosing: false,
         canHaveChildren: true,
         toBBCode: (ctx) => {
-          const segments = growSegments(ctx.node)
+          const segments = effectSegments(ctx.node, 'grow')
           return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
         },
-        toRenderNode: (ctx) => segmentsToRenderNode('grow', growSegments(ctx.node)),
+        toRenderNode: (ctx) => segmentsToRenderNode('grow', effectSegments(ctx.node, 'grow')),
       },
       {
         name: 'rainbow',
@@ -451,10 +369,10 @@ export class TagRegistry {
         isSelfClosing: false,
         canHaveChildren: true,
         toBBCode: (ctx) => {
-          const segments = rainbowSegments(ctx.node)
+          const segments = effectSegments(ctx.node, 'rainbow')
           return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
         },
-        toRenderNode: (ctx) => segmentsToRenderNode('rainbow', rainbowSegments(ctx.node)),
+        toRenderNode: (ctx) => segmentsToRenderNode('rainbow', effectSegments(ctx.node, 'rainbow')),
       },
 
       // ── Layout ──

@@ -21,19 +21,33 @@ export function solveCubicBezierY(x: number, x1: number, y1: number, x2: number,
   return 3 * Math.pow(1 - t, 2) * t * y1 + 3 * (1 - t) * Math.pow(t, 2) * y2 + Math.pow(t, 3);
 }
 
+/**
+ * Set by EffectMath at module load. ColorMath cannot import it directly —
+ * EffectMath depends on ColorMath — and `ease` is the only place that
+ * needs it, so the dependency is injected rather than inverted.
+ */
+type ExpressionFn = (vars: Record<string, number>) => number
+let compileExpressionRef: ((src: string) => ExpressionFn | null) | null = null
+
+/** @internal Wire the expression compiler into `ease`. */
+export function __setExpressionCompiler(fn: (src: string) => ExpressionFn | null): void {
+  compileExpressionRef = fn
+}
+
 // Bezier easing approximation or simple evaluation
 export function ease(t: number, easing: Easing, center: number = 0.5, power: number = 2): number {
   t = Math.max(0, Math.min(1, t))
-  
+  if (typeof easing !== 'string' || easing === 'linear') return t
+
   if (easing.startsWith('expr(')) {
-    // to be fixed, dont touch or use it
-    const expr = easing.slice(5, -1);
-    try {
-      const evaluate = new Function('x', `with(Math) { return ${expr}; }`);
-      return Number(evaluate(t)) || 0;
-    } catch (e) {
-      return t;
-    }
+    // `easing` can arrive straight from a BBCode attribute, so the body is
+    // compiled through the validating evaluator in EffectMath rather than
+    // handed to `new Function` as-is. A rejected expression is the
+    // identity, which degrades the effect instead of the document.
+    const fn = compileExpressionRef?.(easing.slice(5, -1))
+    if (!fn) return t
+    const out = fn({ u: t, t, x: t, i: 0, n: 1, line: 0, lines: 1, col: 0, cols: 1, word: 0, words: 1, rnd: 0 })
+    return Number.isFinite(out) ? out : t
   }
 
   if (easing.startsWith('bezier')) {
@@ -47,11 +61,14 @@ export function ease(t: number, easing: Easing, center: number = 0.5, power: num
     }
   }
   switch (easing) {
-    case "easeIn": 
+    case "easeIn":
+    case "ease-in":
     case "half-parabola": return Math.pow(t, power)
-    case "easeOut": return t * (2 - t)
-    case "easeInOut": 
-    case "easeIO": 
+    case "easeOut":
+    case "ease-out": return t * (2 - t)
+    case "easeInOut":
+    case "ease-in-out":
+    case "easeIO":
       return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
     case "parabola": 
       if (center <= 0) return Math.pow(t, power);
@@ -75,20 +92,38 @@ export function hslToHex(h: number, s: number, l: number): string {
   return `#${f(0)}${f(8)}${f(4)}`
 }
 
+/**
+ * A hex colour token to RGB.
+ *
+ * Accepts `#rgb`, `#rgba`, `#rrggbb` and `#rrggbbaa`, hash optional.
+ * Anything else returns black instead of `NaN`: these strings come from
+ * BBCode attributes and from a text field the user is mid-way through
+ * typing, and a `NaN` channel propagates into `#NaNNaNNaN`, corrupting
+ * the whole gradient rather than the one bad stop.
+ */
 export function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace("#", "")
-  if (h.length === 3) {
+  const h = (hex ?? "").trim().replace(/^#/, "")
+  if (/^[0-9a-fA-F]{3,4}$/.test(h)) {
     return [
       parseInt(h[0] + h[0], 16),
       parseInt(h[1] + h[1], 16),
       parseInt(h[2] + h[2], 16),
     ]
   }
-  return [
-    parseInt(h.slice(0, 2), 16),
-    parseInt(h.slice(2, 4), 16),
-    parseInt(h.slice(4, 6), 16),
-  ]
+  if (/^[0-9a-fA-F]{6,8}$/.test(h)) {
+    return [
+      parseInt(h.slice(0, 2), 16),
+      parseInt(h.slice(2, 4), 16),
+      parseInt(h.slice(4, 6), 16),
+    ]
+  }
+  return [0, 0, 0]
+}
+
+/** True when a token is a hex colour `hexToRgb` can read exactly. */
+export function isHexColor(value: string): boolean {
+  const h = (value ?? "").trim().replace(/^#/, "")
+  return /^[0-9a-fA-F]+$/.test(h) && [3, 4, 6, 8].includes(h.length)
 }
 
 export function hexToHsl(hex: string): [number, number, number] {
@@ -138,22 +173,34 @@ export interface ColorStop {
   position: number; // 0 to 1
 }
 
-export function mixMultipleStops(stops: ColorStop[], weight: number): string {
+/**
+ * Sample a stop list at `weight`.
+ *
+ * `perceptual` interpolates in OKLab instead of sRGB. The difference
+ * shows wherever two stops differ in hue: an sRGB ramp from blue to
+ * yellow dips through a desaturated grey at the midpoint, while OKLab
+ * holds chroma. Two conversions per character, so it stays opt-in.
+ */
+export function mixMultipleStops(stops: ColorStop[], weight: number, perceptual = false): string {
   if (stops.length === 0) return "#FFFFFF";
   if (stops.length === 1) return stops[0].color;
   weight = Math.max(0, Math.min(1, weight || 0));
-  
+
   let i = 0;
   while (i < stops.length - 1 && stops[i + 1].position <= weight) {
     i++;
   }
-  
+
   if (i >= stops.length - 1) return stops[stops.length - 1].color;
   if (weight <= stops[i].position) return stops[i].color;
-  
+
   const range = stops[i + 1].position - stops[i].position;
-  const frac = (weight - stops[i].position) / range;
-  return mixHex(stops[i].color, stops[i + 1].color, frac);
+  // Coincident stops are a hard colour break, not a zero-width ramp:
+  // dividing by the gap would yield Infinity.
+  const frac = range <= 0 ? 1 : (weight - stops[i].position) / range;
+  return perceptual
+    ? mixHexOklab(stops[i].color, stops[i + 1].color, frac)
+    : mixHex(stops[i].color, stops[i + 1].color, frac);
 }
 
 // ═══════════════════════════════════════════════════════════════

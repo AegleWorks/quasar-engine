@@ -3,6 +3,38 @@ import { RedNode } from '../Syntax/RedNode';
 import type { NodeKind } from '../Types/core';
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode';
 
+/**
+ * The colour exactly as the author wrote it in the `style` attribute.
+ *
+ * `el.style.color` goes through CSSOM, which re-spells the value: `#FFE6F0`
+ * comes back lowercased. Re-serialising a block then rewrote every hex in it,
+ * a change the author never made.
+ */
+function rawStyleValue(el: HTMLElement, prop: string): string {
+  const attr = el.getAttribute('style')
+  if (!attr) return ''
+  const match = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'i').exec(attr)
+  return match ? match[1].trim() : ''
+}
+
+function normalizeColorToHex(color: string): string {
+  if (!color) return color;
+  const trimmed = color.trim();
+  // Se respeta la caja que escribió el autor: pasarlo a minúsculas convertía
+  // `[color=#FF00AA]` en `[color=#ff00aa]` en cada ida y vuelta por el lienzo.
+  if (trimmed.startsWith('#')) return trimmed;
+
+  const rgbMatch = trimmed.match(/^rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
+  if (rgbMatch) {
+    const r = parseInt(rgbMatch[1], 10).toString(16).padStart(2, '0');
+    const g = parseInt(rgbMatch[2], 10).toString(16).padStart(2, '0');
+    const b = parseInt(rgbMatch[3], 10).toString(16).padStart(2, '0');
+    return `#${r}${g}${b}`.toLowerCase();
+  }
+
+  return trimmed;
+}
+
 function domToGreenTree(root: HTMLElement): GreenNode {
   let currentOffset = 0;
 
@@ -44,25 +76,74 @@ function domToGreenTree(root: HTMLElement): GreenNode {
       
       switch (tag) {
         case 'b':
-        case 'strong': kind = 'bold'; break;
+        case 'strong': {
+          // El renderer envuelve las entidades en `<strong><a>`; sin mirar la
+          // marca volvían desazucaradas como `[b][url=…]…[/url][/b]`.
+          const entity = el.getAttribute('data-entity');
+          if (entity === 'profile' || entity === 'guild' || entity === 'map') {
+            kind = entity;
+            const label = el.textContent || '';
+            if (label) {
+              children.push(greenLeaf('text', label));
+              currentOffset += label.length;
+            }
+            // `[profile=5458323]ElMick33[/profile]` lleva el id en el atributo y
+            // el nombre en el contenido; sin el primero volvía como `[profile]`.
+            const valor = el.getAttribute('data-entity-value') || '';
+            return greenNode(kind, valor ? `=${valor}` : '', children);
+          }
+          kind = 'bold';
+          break;
+        }
         case 'i':
         case 'em': kind = 'italic'; break;
         case 'u': kind = 'underline'; break;
         case 's':
         case 'strike':
         case 'del': kind = 'strikethrough'; break;
-        case 'a': 
-          kind = 'url'; 
-          text = `=${el.getAttribute('href') || ''}`;
+        case 'a': {
+          const rawHref = el.getAttribute('href') || '';
+          if (rawHref.startsWith('mailto:')) {
+            // `[email]` guarda la dirección en el hijo de texto y sólo el prefijo
+            // en el atributo; el exporter reconstruye el resto.
+            kind = 'email';
+            text = '=mailto:';
+          } else {
+            kind = 'url';
+            text = `=${rawHref}`;
+          }
           break;
-        case 'img': 
+        }
+        case 'img': {
+          // El parser de BBCode deja la URL en un hijo de texto y el modificador
+          // en el atributo. Copiando esa forma el exporter la vuelve a emitir;
+          // cuando la URL vivía sólo en `text` salía `[img][/img]`.
           kind = 'image';
-          text = el.getAttribute('src') || '';
+          const imgAttr = el.getAttribute('data-img-attr') || '';
+          text = imgAttr ? `=${imgAttr}` : '';
+          const imgSrc = el.getAttribute('src') || '';
+          if (imgSrc) {
+            children.push(greenLeaf('text', imgSrc));
+            currentOffset += imgSrc.length;
+          }
           break;
+        }
         case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
           kind = 'heading';
-          const level = parseInt(tag.charAt(1));
-          text = `=${level}`;
+          // Un `[heading]` pelado se pinta como h2 por convención del renderer;
+          // devolverlo como `[heading=2]` reescribía el source del autor.
+          text = el.hasAttribute('data-bare-level') ? '' : `=${parseInt(tag.charAt(1))}`;
+          break;
+        case 'font':
+          if (el.getAttribute('color')) {
+            kind = 'color';
+            text = `=${normalizeColorToHex(el.getAttribute('color') || '')}`;
+          } else if (el.getAttribute('size')) {
+            kind = 'font_size';
+            text = `=${el.getAttribute('size') || ''}`;
+          } else {
+            kind = 'group';
+          }
           break;
         case 'br':
           kind = 'spacing'; 
@@ -70,9 +151,21 @@ function domToGreenTree(root: HTMLElement): GreenNode {
           currentOffset += 1;
           break;
         case 'div':
+        case 'p': {
+          // Un aviso de medio vacío vuelve a ser su etiqueta, no la frase que
+          // el renderer puso en su sitio. El atributo lleva el nombre BBCode;
+          // aquí hace falta el `NodeKind`, que no siempre coincide.
+          const vacio = el.getAttribute('data-bb-empty');
+          if (vacio) {
+            const KIND_DE_TAG: Record<string, string> = { img: 'image', youtube: 'video', imagemap: 'imagemap' };
+            return greenNode(KIND_DE_TAG[vacio] ?? vacio, '', []);
+          }
           if (el.classList.contains('notice')) kind = 'notice';
+          else if (el.classList.contains('bb-empty-line') || el.classList.contains('bbcode-para')) {
+            const hasText = (el.textContent || '').replace(/\u200B/g, '').trim().length > 0;
+            kind = hasText ? 'paragraph' : 'empty_line';
+          }
           else if (el.classList.contains('bbcode-sp')) kind = 'spacing';
-          else if (el.classList.contains('bbcode-para')) kind = 'empty_line';
           else if (el.classList.contains('bbcode-imagemap') || el.classList.contains('imagemap-container')) {
             kind = 'imagemap';
             const img = el.querySelector('img');
@@ -101,41 +194,56 @@ function domToGreenTree(root: HTMLElement): GreenNode {
           else if (el.style.textAlign === 'left') kind = 'left';
           else kind = 'group';
           break;
+        }
         case 'span':
-          if (el.classList.contains('spoiler')) kind = 'spoiler';
+          if (el.classList.contains('bb-empty-line')) {
+            const hasText = (el.textContent || '').replace(/\u200B/g, '').trim().length > 0;
+            kind = hasText ? 'paragraph' : 'empty_line';
+          }
+          else if (el.classList.contains('spoiler')) kind = 'spoiler';
           else if (el.classList.contains('aesthetic')) kind = 'aesthetic';
-          else if (el.style.color) { kind = 'color'; text = `=${el.style.color}`; }
-          else if (el.style.fontSize) { kind = 'font_size'; text = `=${el.style.fontSize.replace('%', '')}`; }
-          // If it's just a text wrapper generated by HTMLRenderer, we should just unwrap it
-          else if (el.classList.contains('bb-text')) {
-             // We can use a transparent group or a specialized inline node, 
-             // but flattening it is best. We can use a temporary kind that gets flattened,
-             // or just use 'group' but wait, 'group' is block-like.
-             // Actually, if we just set it to 'text_wrapper', we can filter it out, but for now 
-             // let's just make it a 'group' but ideally we shouldn't create a node at all.
-             // Wait, the simplest fix is to not create a node for bb-text and just append its children!
-             kind = 'bb_text_wrapper'; 
+          else if (el.style.color) { kind = 'color'; text = `=${normalizeColorToHex(rawStyleValue(el, 'color') || el.style.color)}`; }
+          else if (el.style.fontSize) { kind = 'font_size'; text = `=${(rawStyleValue(el, 'font-size') || el.style.fontSize).replace('%', '')}`; }
+          else if (el.classList.contains('bb-text') || el.classList.contains('bb-paragraph')) {
+            kind = 'bb_text_wrapper'; 
           }
           else kind = 'group';
           break;
         case 'iframe':
           if (el.classList.contains('bb-youtube') || el.hasAttribute('data-youtube')) {
-            kind = 'youtube';
-            text = `=${el.getAttribute('data-youtube') || (el as HTMLIFrameElement).src.split('/embed/')[1]?.split('?')[0] || ''}`;
+            // El parser produce `video`, no `youtube`, y con el id en un hijo de
+            // texto. Emitir otra forma hacía que el exporter no encontrara el tag.
+            kind = 'video';
+            const videoId = el.getAttribute('data-youtube')
+              || (el as HTMLIFrameElement).src.split('/embed/')[1]?.split('?')[0]
+              || '';
+            if (videoId) {
+              children.push(greenLeaf('text', videoId));
+              currentOffset += videoId.length;
+            }
           } else {
             kind = 'group';
           }
           break;
-        case 'audio':
+        case 'audio': {
           kind = 'audio';
-          text = `=${el.getAttribute('src') || ''}`;
+          const audioSrc = el.getAttribute('src') || '';
+          if (audioSrc) {
+            children.push(greenLeaf('text', audioSrc));
+            currentOffset += audioSrc.length;
+          }
           break;
-        case 'details':
+        }
+        case 'details': {
           kind = el.classList.contains('box') ? 'box' : 'spoilerbox';
-          const summary = el.querySelector('summary');
-          if (summary) text = `=${summary.textContent || ''}`;
+          // `data-bare-title` dice que el texto del summary lo puso el renderer.
+          // Leerlo como título del autor devolvía `[box=Box]` desde un `[box]`.
+          if (!el.hasAttribute('data-bare-title')) {
+            const summary = el.querySelector('summary');
+            if (summary) text = `=${summary.textContent || ''}`;
+          }
           break;
-        case 'p':
+        }
         case 'section':
           kind = 'group';
           break;
@@ -154,6 +262,8 @@ function domToGreenTree(root: HTMLElement): GreenNode {
             const strong = firstElem.querySelector('strong');
             if (strong && strong.textContent && strong.textContent.endsWith(' wrote:')) {
               const author = strong.textContent.slice(0, -7);
+              // Clave `source`: es la que lee `BBCodeExporter.getTagAttributes`,
+              // que además vuelve a poner las comillas de `[quote="Nombre Largo"]`.
               text = `=${author}`;
               (firstElem as any).__quasar_extracted = true;
             }
@@ -162,7 +272,16 @@ function domToGreenTree(root: HTMLElement): GreenNode {
         case 'pre':
           kind = 'code';
           // Extract raw text as a child text node (DocumentEngine expects code content in children)
-          const codeText = el.textContent || '';
+          let codeText = el.textContent || '';
+          const padAttr = el.getAttribute('data-code-pad');
+          if (padAttr) {
+            try {
+              const [lead, trail] = (JSON.parse(padAttr) as string).split('\u0000');
+              codeText = `${lead}${codeText}${trail}`;
+            } catch {
+              // Atributo corrupto: mejor el contenido pelado que perder el bloque.
+            }
+          }
           children.push(greenLeaf('text', codeText));
           currentOffset += codeText.length;
           break;
@@ -213,21 +332,43 @@ function domToGreenTree(root: HTMLElement): GreenNode {
   const normalizedRoot: GreenNode[] = [];
   let currentParagraph: GreenNode[] = [];
 
+  /**
+   * Separa dos nodos de raíz con un solo salto.
+   *
+   * Nunca inventa una línea en blanco: una línea vacía del documento sólo
+   * existe si el autor la escribió, y el lienzo no puede añadir ninguna por su
+   * cuenta al traducir de vuelta.
+   */
+  const pushSeparator = () => {
+    if (normalizedRoot.length === 0) return;
+    const prev = normalizedRoot[normalizedRoot.length - 1];
+    if (prev.kind === 'empty_line' || prev.kind === 'spacing') return;
+    normalizedRoot.push(greenLeaf('spacing', '\n'));
+  };
+
   const flushParagraph = () => {
     if (currentParagraph.length > 0) {
+      pushSeparator();
       normalizedRoot.push(greenNode('paragraph', '', currentParagraph));
       currentParagraph = [];
     }
   };
 
   for (const child of rootChildren) {
-    // If it's a completely empty whitespace text node (0 newlines), ignore it
     if (child.kind === 'text' && child.text.trim() === '') {
+      // Un espacio suelto entre dos tags inline (`[s]a[/s] [spoiler]b[/spoiler]`)
+      // es contenido del autor y se conserva; el resto es sangría del HTML.
+      const isInlineGap = !child.text.includes('\n') && currentParagraph.length > 0;
+      if (!isInlineGap) continue;
+      currentParagraph.push(child);
       continue;
     }
 
-    if (isBlockKind(child.kind as NodeKind) || child.kind === 'empty_line') {
+    if (isBlockKind(child.kind as NodeKind) || child.kind === 'empty_line' || child.kind === 'paragraph') {
       flushParagraph();
+      if (child.kind !== 'empty_line' && child.kind !== 'spacing') {
+        pushSeparator();
+      }
       normalizedRoot.push(child);
     } else {
       currentParagraph.push(child);
@@ -253,20 +394,27 @@ export function greenToRedNode(green: GreenNode, parent?: RedNode | null): RedNo
   let metadata: Record<string, unknown> = {};
   if (green.kind === 'heading' && green.text.startsWith('=')) {
     metadata = { level: parseInt(green.text.slice(1)) || 1 };
-  } else if (green.kind === 'url' && green.text.startsWith('=')) {
+  } else if ((green.kind === 'url' || green.kind === 'email') && green.text.startsWith('=')) {
     metadata = { href: green.text.slice(1) };
   } else if (green.kind === 'color' && green.text.startsWith('=')) {
     metadata = { color: green.text.slice(1) };
   } else if (green.kind === 'font_size' && green.text.startsWith('=')) {
     metadata = { size: green.text.slice(1) };
   } else if (green.kind === 'quote' && green.text.startsWith('=')) {
-    metadata = { author: green.text.slice(1) };
+    metadata = { source: green.text.slice(1) };
   } else if ((green.kind === 'box' || green.kind === 'spoilerbox') && green.text.startsWith('=')) {
     metadata = { title: green.text.slice(1) };
   } else if (green.kind === 'image') {
-    metadata = { src: green.text };
-  } else if ((green.kind === 'youtube' || green.kind === 'audio') && green.text.startsWith('=')) {
-    metadata = green.kind === 'youtube' ? { videoId: green.text.slice(1) } : { src: green.text.slice(1) };
+    const src = green.children.map(c => (c as GreenNode).text || '').join('');
+    metadata = green.text.startsWith('=')
+      ? { src, imgAttr: green.text.slice(1) }
+      : { src };
+  } else if (green.kind === 'video' || green.kind === 'audio') {
+    const value = green.children.map(c => (c as GreenNode).text || '').join('');
+    metadata = green.kind === 'video' ? { videoId: value } : { src: value };
+  } else if (green.kind === 'profile' || green.kind === 'guild' || green.kind === 'map') {
+    const key = green.kind === 'profile' ? 'username' : green.kind === 'guild' ? 'tag' : 'id';
+    metadata = { [key]: green.text.startsWith('=') ? green.text.slice(1) : '' };
   } else if (green.kind === 'list') {
     metadata = { ordered: green.text === '=1' };
   }

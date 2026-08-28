@@ -94,6 +94,20 @@ export type NodeKind =
   | 'rainbow'
   | 'spacing'
   | 'empty_line'
+  /**
+   * Una etiqueta de cierre que no cerró nada y que no debe verse.
+   *
+   * Nace cuando un cierre llega tarde: su etiqueta ya se cerró sola porque un
+   * cierre anterior pasó por encima de ella (ver `Parser.ts`, modo legacy).
+   * osu! tira esos cierres, así que el renderer los omite.
+   *
+   * Existe como nodo, y no como texto, por dos razones. Conserva su rango, que
+   * es lo que necesita el parser incremental para saber a qué nodo pertenece
+   * cada carácter. Y el exportador puede saltárselo: escrito como texto volvía
+   * a salir por el otro lado convertido en etiqueta viva, y el documento no
+   * era estable al reexportarlo.
+   */
+  | 'discarded_tag'
   | 'group'
   | 'wnotice'
   | 'align'

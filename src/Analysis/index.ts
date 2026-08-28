@@ -41,9 +41,15 @@ export { RainbowAnalyzer } from './Passes/Analysis/RainbowAnalyzer'
 export type { RainbowModel, RainbowDiagnostics } from './Passes/Analysis/RainbowAnalyzer'
 export { WaveAnalyzer } from './Passes/Analysis/WaveAnalyzer'
 export type { WaveModel, WaveDiagnostics } from './Passes/Analysis/WaveAnalyzer'
+export { SymbolAnalyzer } from './Passes/Analysis/SymbolAnalyzer'
+export type { SymbolGlyph, SymbolRunModel } from './Passes/Analysis/SymbolAnalyzer'
+export { ColorUsageAnalyzer } from './Passes/Analysis/ColorUsageAnalyzer'
+export type { ColorUsageModel } from './Passes/Analysis/ColorUsageAnalyzer'
 
 // ── Decision Passes ───────────────────────────────────────────────
 export { DefaultDecision } from './Passes/Decision/DefaultDecision'
+export { PaletteRemapDecision } from './Passes/Decision/PaletteRemapDecision'
+export type { Palette, PaletteRemapOptions, RemapAction } from './Passes/Decision/PaletteRemapDecision'
 
 // ── Transform Passes ──────────────────────────────────────────────
 export { CollapseGradientTransform } from './Passes/Transform/CollapseGradientTransform'

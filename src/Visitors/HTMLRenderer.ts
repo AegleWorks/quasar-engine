@@ -14,6 +14,7 @@ import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree } from '../RenderPipeline/RenderTree'
 
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 
 export interface HTMLRendererOptions {
   /** 
@@ -203,6 +204,7 @@ export class HTMLRenderer extends Visitor<string> {
     'notice', 'wnotice', 'spoilerbox', 'box', 'boxw', 'list', 'list_item', 'quote', 'code', 'svg',
     'heading', 'center', 'right', 'left', 'align', 'imagemap', 'image', 'video', 'audio',
     'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll', 'container',
+    'spacing', 'empty_line',
   ])
 
   // ─── Main Entry ─────────────────────────────────────────
@@ -289,7 +291,15 @@ export class HTMLRenderer extends Visitor<string> {
       case 'center': return this.wrapBlock('div', node, 'style="text-align:center;"')
       case 'right': return this.wrapBlock('div', node, 'style="text-align:right;"')
       case 'left': return this.wrapBlock('div', node, 'style="text-align:left;"')
-      case 'heading': return this.wrapBlock('h2', node)
+      // Sigue siendo siempre `h2`, como antes: el nivel de BBCode no mapea al
+      // de HTML y un `[heading=9]` daría un `<h9>` inválido. `data-bare-level`
+      // sólo anota que el 2 lo puso el renderer, para que el camino de vuelta
+      // no escriba `[heading=2]` donde el autor había puesto `[heading]`.
+      case 'heading': return this.wrapBlock(
+        'h2',
+        node,
+        node.metadata?.level === undefined ? 'data-bare-level="1"' : '',
+      )
       case 'notice': return this.renderNotice(node, false)
       case 'wnotice': return this.renderNotice(node, true)
       case 'quote': return this.renderQuote(node)
@@ -363,14 +373,19 @@ export class HTMLRenderer extends Visitor<string> {
       case 'bubble': return this.wrapInline('span', node, 'class="bubble"')
       case 'flower': return this.wrapInline('span', node, 'class="flower"')
       case 'gradient': return this.renderGradient(node)
+      // These three had no case at all, so `[rainbow]Hi[/rainbow]` previewed
+      // as bare text while its export was a full colour sweep.
+      case 'rainbow': return this.renderEffectSegments(node, 'rainbow')
+      case 'grow': return this.renderEffectSegments(node, 'grow')
+      case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
       case 'spacing':
         if (this.options.osuBehaviour && this.isNextCodeBlock(node)) return '\n'
         if (this.isTrailingBlockBoundary(node)) return '\n'
-        return this.isPrevBlockBoundary(node) ? '\n' : '<br>'
+        return this.isPrevBlockBoundary(node) ? '\n' : `<br${this.idAttr(node)}>`
       case 'empty_line':
         if (this.options.osuBehaviour && this.isImmediateEmptyLineBeforeCode(node)) return '\n'
         if (this.isTrailingBlockBoundary(node)) return '\n'
-        return '<br>'
+        return `<div class="bb-empty-line"${this.idAttr(node)}><br></div>`
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un
       // elemento: sin él, la prosa suelta entre bloques no es clicable —
@@ -378,6 +393,9 @@ export class HTMLRenderer extends Visitor<string> {
       // Un `span` es inline, así que no altera el flujo del texto.
       case 'paragraph': return this.wrapInline('span', node, 'class="bb-paragraph"')
       case 'error': return this.renderError(node)
+      // osu! no muestra un cierre que no cerró nada; el nodo existe solo para
+      // que su rango siga perteneciendo a alguien.
+      case 'discarded_tag': return ''
       case 'text':
         return this.textWrap(node, this.escapeHtml(node.text || ''))
       default:
@@ -600,6 +618,12 @@ export class HTMLRenderer extends Visitor<string> {
 
   private renderLink(node: RedNode, kind: string): string {
     let href = String(node.metadata?.href ?? '') || this.extractValue(node)
+    // Un `[email]a@b.com[/email]` llega con href exactamente `mailto:` y la
+    // dirección en el hijo de texto. Sin completarlo aquí el href quedaba
+    // vacío y el round-trip devolvía `[url=mailto:]a@b.com[/url]`.
+    if (kind === 'email' && href === 'mailto:') {
+      href += node.children.map(c => c.text || '').join('')
+    }
     // Ensure the URL has a protocol for external links
     if (href && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('mailto:')) {
       href = 'https://' + href
@@ -617,26 +641,31 @@ export class HTMLRenderer extends Visitor<string> {
     const key = type === 'profile' ? 'username' : type === 'guild' ? 'tag' : 'id'
     const val = String(node.metadata?.[key] ?? '') || this.extractValue(node)
     const content = this.renderChildren(node) || val
+    // El converter HTML→BBCode ve `<strong><a>`, no la etiqueta original. Sin
+    // esta marca `[profile]peppy[/profile]` volvía como `[b][url=...]…[/url][/b]`,
+    // y sin el valor `[profile=5458323]` perdía el id y volvía como `[profile]`.
+    const entity = ` data-entity="${type}"` +
+      (val ? ` data-entity-value="${this.escapeHtml(val)}"` : '')
     if (this.options.entityLinkResolver) {
       const link = this.options.entityLinkResolver(type, val || content)
       if (link) {
         const ext = link.external ? ' target="_blank" rel="noopener noreferrer"' : ''
-        return `<strong><a${this.idAttr(node)} href="${this.escapeHtml(link.href)}"${ext}>${content}</a></strong>`
+        return `<strong${entity}><a${this.idAttr(node)} href="${this.escapeHtml(link.href)}"${ext}>${content}</a></strong>`
       }
     }
     if (type === 'profile') {
       const url = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
         ? `/u/${encodeURIComponent(val || content)}`
         : `https://osu.ppy.sh/users/${this.escapeHtml(val || content)}`
-      return `<strong><a${this.idAttr(node)} href="${url}" target="_blank" rel="noopener">${content}</a></strong>`
+      return `<strong${entity}><a${this.idAttr(node)} href="${url}" target="_blank" rel="noopener">${content}</a></strong>`
     }
     if (type === 'guild') {
-      return `<strong><a${this.idAttr(node)} href="/guilds/${encodeURIComponent(val || content)}">${content}</a></strong>`
+      return `<strong${entity}><a${this.idAttr(node)} href="/guilds/${encodeURIComponent(val || content)}">${content}</a></strong>`
     }
     if (type === 'map') {
-      return `<strong><a${this.idAttr(node)} href="/maps/${encodeURIComponent(val || content)}">${content}</a></strong>`
+      return `<strong${entity}><a${this.idAttr(node)} href="/maps/${encodeURIComponent(val || content)}">${content}</a></strong>`
     }
-    return `<strong><a${this.idAttr(node)} href="#">${content}</a></strong>`
+    return `<strong${entity}><a${this.idAttr(node)} href="#">${content}</a></strong>`
   }
 
   private parseImgAttr(v: string | null): { w?: number; h?: number; round?: boolean; shadow?: boolean; float?: boolean } {
@@ -650,9 +679,22 @@ export class HTMLRenderer extends Visitor<string> {
     return {}
   }
 
+  /**
+   * El aviso que ocupa el sitio de un medio que no se puede pintar.
+   *
+   * Lleva `data-bb-empty` con la etiqueta de origen porque el camino
+   * HTML→BBCode lee de vuelta lo que hay en el lienzo: sin la marca, el texto
+   * del aviso entraba al documento como contenido y se comía la etiqueta. En
+   * `docs/ai/hxovc.bbcode`, con cinco `[img][/img]` vacíos, cada edición del
+   * bloque convertía otro en la frase «[img] missing source URL».
+   */
+  private mediaError(tag: string, message: string): string {
+    return `<div class="media-error" data-bb-empty="${tag}">${message}</div>`
+  }
+
   private renderImage(node: RedNode): string {
     let src = String(node.metadata?.src ?? '') || this.extractValue(node) || ''
-    if (!src) return '<div class="media-error">[img] missing source URL</div>'
+    if (!src) return this.mediaError('img', '[img] missing source URL')
     if (this.options.mediaProxy) {
       src = this.options.mediaProxy(src)
     }
@@ -671,15 +713,21 @@ export class HTMLRenderer extends Visitor<string> {
       styles.push('max-width:100%', 'height:auto', 'display:inline-block')
     }
     const cls = imgAttr.round ? '' : ' class="bb-img"'
-    return `<img${this.idAttr(node)}${cls} src="${this.escapeHtml(src)}" alt="" style="${styles.join(';')};">`
+    // El modificador no se puede reconstruir desde el `style` resultante
+    // (`round` y `120x120` producen el mismo CSS), así que viaja literal.
+    const rawAttr = this.extractValue(node)
+    const attr = rawAttr ? ` data-img-attr="${this.escapeHtml(rawAttr)}"` : ''
+    return `<img${this.idAttr(node)}${cls}${attr} src="${this.escapeHtml(src)}" alt="" style="${styles.join(';')};">`
   }
 
   private renderVideo(node: RedNode): string {
     let id = String(node.metadata?.videoId ?? '') || this.extractValue(node) || ''
-    if (!id) return '<div class="media-error">[youtube] missing video ID</div>'
+    if (!id) return this.mediaError('youtube', '[youtube] missing video ID')
     const ytMatch = /(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([\w-]{11})/.exec(id)
     if (ytMatch) id = ytMatch[1]
-    return `<iframe${this.idAttr(node)} src="https://www.youtube.com/embed/${this.escapeHtml(id)}" frameborder="0" allowfullscreen></iframe>`
+    // `data-youtube` es lo que deja al converter HTML→BBCode reconocer este
+    // iframe. Sin él el vídeo volvía como un `group` vacío: se perdía entero.
+    return `<iframe${this.idAttr(node)} class="bb-youtube" data-youtube="${this.escapeHtml(id)}" src="https://www.youtube.com/embed/${this.escapeHtml(id)}" frameborder="0" allowfullscreen></iframe>`
   }
 
   private renderAudio(node: RedNode): string {
@@ -981,6 +1029,7 @@ export class HTMLRenderer extends Visitor<string> {
 
   private renderSpoilerbox(node: RedNode): string {
     const title = this.renderTitle(node, 'Spoiler')
+    const bare = this.bareTitleAttr(node)
     const content = this.renderChildren(node)
     const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
     const bodyCls = isLyne ? 'bb-box-body' : 'bbcode-box-body'
@@ -990,11 +1039,12 @@ export class HTMLRenderer extends Visitor<string> {
     // `--box-accent` colorea el acento del box (título + chevron, y el borde
     // en boxw) cuando el autor puso `[box=Title:#hex]`.
     const accent = this.boxAccentStyle(node)
-    return `<details${this.idAttr(node)}${accent}><summary><span class="bb-box-heading">${title}</span></summary><div class="${bodyCls}">${content}</div></details>`
+    return `<details${this.idAttr(node)}${bare}${accent}><summary><span class="bb-box-heading">${title}</span></summary><div class="${bodyCls}">${content}</div></details>`
   }
 
   private renderBox(node: RedNode): string {
     const title = this.renderTitle(node, 'Box')
+    const bare = this.bareTitleAttr(node)
     const content = this.renderChildren(node)
     const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
     const bodyCls = isLyne ? 'bb-box-body' : 'bbcode-box-body'
@@ -1006,7 +1056,20 @@ export class HTMLRenderer extends Visitor<string> {
     // (no `bb-box-title`) evita la regla legacy `.bbcode-preview .bb-box-title`
     // de la app, que pinta un fondo sobre el título.
     const accent = this.boxAccentStyle(node)
-    return `<details${this.idAttr(node)} class="${cls}"${accent}><summary><span class="bb-box-heading">${title}</span></summary><div class="${bodyCls}">${content}</div></details>`
+    return `<details${this.idAttr(node)} class="${cls}"${bare}${accent}><summary><span class="bb-box-heading">${title}</span></summary><div class="${bodyCls}">${content}</div></details>`
+  }
+
+  /**
+   * Marca un `[box]`/`[spoilerbox]` sin título propio.
+   *
+   * El `<summary>` siempre lleva texto ("Box", "Spoiler"), así que sin esta
+   * marca el camino HTML→BBCode leía ese relleno como si el autor lo hubiera
+   * escrito y devolvía `[box=Box]`.
+   */
+  private bareTitleAttr(node: RedNode): string {
+    const raw = node.metadata?.rawTitle
+    const hasOwnTitle = raw !== undefined ? String(raw) !== '' : node.metadata?.title !== undefined
+    return hasOwnTitle ? '' : ' data-bare-title="1"'
   }
 
   private renderTitle(node: RedNode, fallback: string): string {
@@ -1055,7 +1118,12 @@ export class HTMLRenderer extends Visitor<string> {
     const trailingMatch = content.match(/(?:[\r\n][\t ]*)+$/)
     if (trailingMatch) content = content.slice(0, -trailingMatch[0].length)
 
-    return `<pre${this.idAttr(node)}><code>${this.escapeHtml(content)}</code></pre>`
+    // Los saltos recortados arriba son de presentación: si no se anotan, el
+    // camino HTML→BBCode los da por inexistentes y reescribe el bloque del
+    // autor como `[code]…[/code]` en una sola línea.
+    const pad = `${leadingMatch ? leadingMatch[0] : ''}\u0000${trailingMatch ? trailingMatch[0] : ''}`
+    const padAttr = pad === '\u0000' ? '' : ` data-code-pad="${this.escapeHtml(JSON.stringify(pad))}"`
+    return `<pre${this.idAttr(node)}${padAttr}><code>${this.escapeHtml(content)}</code></pre>`
   }
 
   private renderSVG(node: RedNode): string {
@@ -1091,12 +1159,12 @@ export class HTMLRenderer extends Visitor<string> {
       .filter(Boolean)
 
     if (textLines.length === 0) {
-      return '<div class="media-error">[imagemap] missing image URL</div>'
+      return this.mediaError('imagemap', '[imagemap] missing image URL')
     }
 
     const imageUrl = textLines[0]
     if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
-      return `<div class="media-error">[imagemap] invalid image URL: ${this.escapeHtml(imageUrl)}</div>`
+      return this.mediaError('imagemap', `[imagemap] invalid image URL: ${this.escapeHtml(imageUrl)}`)
     }
 
     let areas = ''
@@ -1133,26 +1201,99 @@ export class HTMLRenderer extends Visitor<string> {
     return node.text || ''
   }
 
+  /**
+   * Effect parameters off a node, with every colour re-validated.
+   *
+   * `startsWith('#')` was NOT a filter: `#a" onmouseover="alert(1)` passes
+   * it. Every stop has to survive the full colour allowlist or be dropped,
+   * because these values end up inside a `style` attribute.
+   */
+  private effectParams(node: RedNode): EffectParams {
+    const meta = (node.metadata ?? {}) as Record<string, unknown>
+    const params: EffectParams = {}
+    for (const [key, value] of Object.entries(meta)) {
+      if (key === 'globalOffset' || key === 'documentLength') continue
+      ;(params as Record<string, unknown>)[key] = value
+    }
+
+    if (Array.isArray(params.colors)) {
+      params.colors = params.colors
+        .map(c => (typeof c === 'string' ? this.sanitizeColor(c) : null))
+        .filter((c): c is string => c !== null)
+      if (params.colors.length === 0) delete params.colors
+    }
+    if (Array.isArray(params.stops)) {
+      params.stops = params.stops
+        .filter(st => st && typeof st.color === 'string' && this.sanitizeColor(st.color) !== null)
+      if (params.stops.length === 0) delete params.stops
+    }
+    return params
+  }
+
+  /** Text inside an effect node, ignoring layout-only children. */
+  private effectText(node: RedNode): string {
+    return node.children
+      .filter(c => c.kind !== 'spacing' && c.kind !== 'empty_line')
+      .map(c => this.collectNodeText(c)).join('')
+  }
+
+  /**
+   * Paint an effect's computed segments as spans.
+   *
+   * Shared by rainbow, grow and any modulated gradient, so the preview
+   * shows exactly the colours and sizes the BBCode export will contain
+   * rather than an approximation of them.
+   */
+  private renderEffectSegments(node: RedNode, kind: EffectKind): string {
+    const text = this.effectText(node)
+    if (!text) return this.renderChildren(node)
+
+    const meta = (node.metadata ?? {}) as Record<string, unknown>
+    const segments = evaluateEffect(text, kind, this.effectParams(node), {
+      globalOffset: meta.globalOffset as number | undefined,
+      documentLength: meta.documentLength as number | undefined,
+    })
+
+    let out = ''
+    for (const seg of segments) {
+      const escaped = this.escapeHtml(seg.text)
+      if (seg.color) {
+        const safe = this.sanitizeColor(seg.color)
+        out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped
+      } else if (seg.size !== undefined) {
+        out += `<span style="font-size:${Math.max(10, Math.min(400, seg.size))}%">${escaped}</span>`
+      } else {
+        out += escaped
+      }
+    }
+    return `<span${this.idAttr(node)} class="bb-effect bb-${kind}">${out}</span>`
+  }
+
+  /**
+   * A gradient previews as a real CSS gradient when it is a plain
+   * left-to-right ramp, and as computed per-character spans otherwise.
+   *
+   * The CSS path is genuinely smoother — it interpolates per pixel rather
+   * than per glyph — but it can only express a linear sweep. A gradient
+   * with a waveform, a non-index axis or quantisation steps looked
+   * nothing like its own export while this was the only path.
+   */
   private renderGradient(node: RedNode): string {
-    // `startsWith('#')` was NOT a filter: `#a" onmouseover="alert(1)` passes it.
-    // Every stop must survive the full color allowlist or it is dropped.
-    const raw = (node.metadata?.colors as string[]) || []
-    const valid = raw
-      .map(c => (typeof c === 'string' ? this.sanitizeColor(c) : null))
-      .filter((c): c is string => c !== null)
-    const colors =
-      valid.length === 0 ? ['#FF0000', '#00FF00']
-      : valid.length === 1 ? [valid[0], valid[0]]
-      : valid
-    // Skip spacing/empty_line children so source formatting (newlines inside the tag)
-    // doesn't produce extra <br> in the preview. Both:
-    //   [gradient]Hello[/gradient]  and  [gradient]\nHello\n[/gradient]
-    // render identically.
+    const params = this.effectParams(node)
     const content = node.children
       .filter(c => c.kind !== 'spacing' && c.kind !== 'empty_line')
       .map(c => this.renderNode(c)).join('')
-    const gradientCss = `linear-gradient(to right, ${colors.join(', ')})`
-    return `<span${this.idAttr(node)} style="background: ${gradientCss}; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${content}</span>`
+
+    if (isPlainGradient(params)) {
+      const stops = params.stops && params.stops.length > 0
+        ? params.stops.map(st => `${st.color} ${(st.position * 100).toFixed(1)}%`)
+        : (params.colors ?? ['#FF0000', '#00FF00'])
+      const list = stops.length === 1 ? [stops[0], stops[0]] : stops
+      const gradientCss = `linear-gradient(to right, ${list.join(', ')})`
+      return `<span${this.idAttr(node)} style="background: ${gradientCss}; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${content}</span>`
+    }
+
+    return this.renderEffectSegments(node, 'gradient')
   }
 
   /**
@@ -1280,4 +1421,23 @@ export class HTMLRenderer extends Visitor<string> {
     }
     return out + text.slice(last)
   }
+}
+
+/**
+ * Whether a gradient is a plain left-to-right ramp.
+ *
+ * Only then can CSS express it. Anything with a waveform, a non-index
+ * axis, quantisation, inversion or per-word stepping has to be painted
+ * per character instead, or the preview and the export disagree.
+ */
+function isPlainGradient(params: EffectParams): boolean {
+  return (params.wave === undefined || params.wave === 'none')
+    && (params.axis === undefined || params.axis === 'index')
+    && (params.easing === undefined || params.easing === 'linear')
+    && (params.steps === undefined || params.steps < 2)
+    && !params.invert
+    && (params.unit === undefined || params.unit === 'character')
+    && (params.cycles === undefined || params.cycles === 1)
+    && (params.phase === undefined || params.phase === 0)
+    && (params.expression === undefined || params.expression === '')
 }

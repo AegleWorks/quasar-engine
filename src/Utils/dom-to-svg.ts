@@ -17,6 +17,8 @@ export interface DomToSVGOptions {
   includeBackground?: boolean
   /** Scale factor applied to all coordinates (default 1) */
   scale?: number
+  /** Maximum unscaled height in pixels to scan and render into the SVG (useful for thumbnails). Elements and lines below this cutoff are omitted. */
+  maxHeight?: number
 }
 
 export interface SVGLayerInfo {
@@ -51,7 +53,7 @@ export function domToSVGResult(
   root: HTMLElement,
   options: DomToSVGOptions = {},
 ): DomToSVGResult {
-  const { backgroundColor = "#0d0d0d", includeBackground = true, scale = 1 } = options
+  const { backgroundColor = "#0d0d0d", includeBackground = true, scale = 1, maxHeight } = options
 
   // OPTIMIZATION & FIX: Remove visual interaction artifacts before measuring.
   // We strip the cursor-highlight class synchronously so getComputedStyle reads the pure colors.
@@ -65,8 +67,9 @@ export function domToSVGResult(
   closedDetails.forEach(el => el.setAttribute('open', ''))
 
   const rootRect = root.getBoundingClientRect()
+  const unscaledH = maxHeight ? Math.min(rootRect.height, maxHeight) : rootRect.height
   const W = Math.ceil(rootRect.width * scale)
-  const H = Math.ceil(rootRect.height * scale)
+  const H = Math.ceil(unscaledH * scale)
 
   if (W < 4 || H < 4) {
     // RESTORE on error
@@ -78,7 +81,7 @@ export function domToSVGResult(
   }
 
   try {
-    const state: WalkState = { rootRect, scale, parts: [], layerCount: 0, layersList: [] }
+    const state: WalkState = { rootRect, scale, parts: [], layerCount: 0, layersList: [], maxHeight }
 
     const fontFamilies = collectFontFamilies(root)
 
@@ -141,6 +144,7 @@ interface WalkState {
   parts: string[]
   layerCount: number
   layersList: SVGLayerInfo[]
+  maxHeight?: number
 }
 
 // ────────────────────────────────────────────────────────────
@@ -223,21 +227,24 @@ interface VisualLine {
  * text string on the first line's rect, we emit only the characters that
  * actually appear on each visual line.
  */
-function getVisualLines(textNode: Text): VisualLine[] {
+function getVisualLines(textNode: Text, maxHeight?: number, rootTop?: number): VisualLine[] {
   const text = textNode.textContent ?? ""
   if (!text.trim()) return [] // Skip purely empty/whitespace nodes
 
   const range = document.createRange()
   range.selectNode(textNode)
   const fullRects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0)
-  
+  if (fullRects.length === 0) return []
+
+  // If entire text node is below cutoff, skip immediately!
+  if (rootTop !== undefined && maxHeight !== undefined && fullRects[0].top - rootTop > maxHeight) {
+    return []
+  }
+
   // OPTIMIZATION 1: If the entire text node fits on a single line, return immediately!
   // This skips the expensive scan for 90% of text nodes (short inline elements).
   if (fullRects.length <= 1) {
-    if (fullRects.length === 1) {
-      return [{ text, rect: fullRects[0] }]
-    }
-    return []
+    return [{ text, rect: fullRects[0] }]
   }
 
   // OPTIMIZATION 2: Word-by-word scan instead of char-by-char for multi-line text.
@@ -266,6 +273,10 @@ function getVisualLines(textNode: Text): VisualLine[] {
 
     const tokenRect = rects[0]
     if (tokenRect.width === 0 && tokenRect.height === 0) continue
+
+    if (rootTop !== undefined && maxHeight !== undefined && tokenRect.top - rootTop > maxHeight) {
+      break
+    }
 
     if (!lineRect) {
       lineRect = tokenRect
@@ -336,7 +347,12 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
   if (opacityVal === 0) return
 
   const rect = el.getBoundingClientRect()
-  const { rootRect, scale } = state
+  const { rootRect, scale, maxHeight } = state
+
+  const unscaledTop = rect.top - rootRect.top
+  if (maxHeight !== undefined && unscaledTop > maxHeight) {
+    return
+  }
 
   const x = (rect.left - rootRect.left) * scale
   const y = (rect.top - rootRect.top) * scale
@@ -537,8 +553,8 @@ function walkTextNode(textNode: Text, state: WalkState, depth: number): void {
   const cs = window.getComputedStyle(parent)
   if (cs.display === "none" || cs.visibility === "hidden") return
 
-  // Get correctly-split visual lines via character-scan
-  const lines = getVisualLines(textNode)
+  // Get correctly-split visual lines via character-scan (capped at maxHeight)
+  const lines = getVisualLines(textNode, state.maxHeight, state.rootRect.top)
   if (lines.length === 0) return
 
   const { rootRect, scale } = state

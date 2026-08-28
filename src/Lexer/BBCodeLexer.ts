@@ -56,6 +56,28 @@ export type BBCodeToken =
   | BBCodeTextToken
   | BBCodeNewlineToken
 
+// ─── Raw blocks ────────────────────────────────────────────────
+
+/**
+ * Tags whose content is strictly literal: no inner tags, no newline tokens.
+ *
+ * Exported because the lexer is the ONLY authority on this. Consumers that
+ * have to reproduce the rule — a syntax highlighter deciding where to stop
+ * tokenising, an editor deciding whether to indent an inserted body — used to
+ * carry their own copy of `['code', 'c']`, which is a second lexer waiting to
+ * disagree with this one. Adding a raw tag here now reaches them.
+ */
+export const BBCODE_RAW_TAGS: readonly string[] = Object.freeze(['code', 'c'])
+
+/**
+ * Set lookup instead of the two `===` it replaces.
+ *
+ * This branch runs once per OPENING TAG, not per character — 760 times on the
+ * reference document — so it is not on the per-character hot path the rest of
+ * this file is tuned around. Correctness of the shared list wins here.
+ */
+const RAW_TAG_SET: ReadonlySet<string> = new Set(BBCODE_RAW_TAGS)
+
 // ─── Tag name validation ───────────────────────────────────────
 //
 // Tag names used to be handled with two regexes: one tested CHARACTER BY
@@ -295,9 +317,9 @@ export function scanBBCode(source: string): BBCodeToken[] {
           })
           pos = closeBracket + 1
 
-          // ── RAW BLOCK HANDLING (code, c) ──
-          // Contents of code blocks are strictly literal. No inner tags or newline tokens.
-          if (tagName === 'code' || tagName === 'c') {
+          // ── RAW BLOCK HANDLING (see BBCODE_RAW_TAGS) ──
+          // Contents of raw blocks are strictly literal. No inner tags or newline tokens.
+          if (RAW_TAG_SET.has(tagName)) {
             const endTag = `[/${tagName}]`
             const closeIdx = lowerOf().indexOf(endTag, pos)
             

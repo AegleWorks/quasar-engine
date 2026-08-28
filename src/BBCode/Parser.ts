@@ -82,6 +82,21 @@ export function parseTokensToGreen(
   const normalizeParagraphs = options.normalizeParagraphs ?? true;
   const extraTags = options.extraTags;
   const root: GreenNode[] = []
+  /**
+   * Etiquetas que un cierre mal emparejado cerró por su cuenta y cuyo `[/tag]`
+   * todavía está por llegar.
+   *
+   * Cuando `[/notice]` cierra un `[box]` que quedaba dentro, el `[/box]` que
+   * viene después ya no tiene a quién cerrar. osu! lo tira; subir por la pila a
+   * buscar otro `[box]` cierra uno que el autor no quería cerrar y saca del
+   * contenedor a todo lo que sigue. En `docs/ai/NyuPenyu` eso aplanaba 43 cajas
+   * anidadas a 9 y hacía la página un 78% más alta de lo que osu! muestra.
+   *
+   * La marca se consume al usarla y se borra si la etiqueta se vuelve a abrir,
+   * porque entonces el cierre sí es suyo.
+   */
+  const autoClosed = new Set<string>()
+
   const stack: {
     /** The literal tag name. Closing matches on THIS, not on `kind`: `[centre]`
      *  and `[center]` share a kind but do not close each other, and that is
@@ -223,6 +238,7 @@ export function parseTokensToGreen(
         if (stack.length > 0 && stack[stack.length - 1].tag === '*') {
           addToParent(closeFrame(stack.pop()!, 0))
         }
+        autoClosed.delete(tok.tag)
         stack.push({
           tag: tok.tag,
           kind: openKind,
@@ -252,6 +268,7 @@ export function parseTokensToGreen(
       }
 
       // Push onto the stack — children will be added later.
+      autoClosed.delete(tok.tag)
       stack.push({
         tag: tok.tag,
         kind: openKind,
@@ -283,6 +300,18 @@ export function parseTokensToGreen(
           const errMsg = `Syntax Error: Expected /${expected}, got /${tok.tag}`
           addToParent(createNode('error', errMsg, [createLeaf('text', text)]))
         }
+      } else if (autoClosed.has(tok.tag)) {
+        // Este cierre llega tarde: su etiqueta ya se cerró sola cuando un
+        // cierre anterior pasó por encima de ella. No puede reclamar un
+        // ancestro del mismo nombre — hacerlo cerraba el contenedor de fuera
+        // y expulsaba de él a todo el resto del documento.
+        //
+        // Se conserva como nodo `discarded_tag`, que guarda su rango pero no
+        // se ve ni se exporta. Como texto volvía a salir del exportador
+        // convertido en etiqueta viva, y el documento dejaba de ser estable al
+        // reexportarlo (lo cazó `Fuzzer`).
+        autoClosed.delete(tok.tag)
+        addToParent(createLeaf('discarded_tag', source.slice(tok.start, tok.end)))
       } else {
         // LEGACY MODE: Walk backwards, auto-close inner tags, ignore orphaned closing tags.
         let found = -1
@@ -300,13 +329,18 @@ export function parseTokensToGreen(
           // trailing width of 0. This used to hand them `tok.end`, which made
           // `[b][i]x[/b]` produce an `italic` and a `bold` both ending at 10,
           // overlapping on the four characters of `[/b]`.
+          const autoClosedHere: string[] = []
           while (stack.length - 1 > found) {
             const inner = stack.pop()!
+            autoClosedHere.push(inner.tag)
             stack[stack.length - 1].children.push(closeFrame(inner, 0))
           }
 
           // Close the matched tag itself — this one does own the delimiter.
           addToParent(closeFrame(stack.pop()!, closeWidth))
+          // Las etiquetas que se cerraron solas quedan pendientes en el nivel
+          // que ha quedado abierto tras cerrar esta.
+          for (const tag of autoClosedHere) autoClosed.add(tag)
         } else {
           // Orphaned closing tag: no matching opener anywhere on the stack.
           //
@@ -351,7 +385,10 @@ export function parseTokensToGreen(
   for (const child of root) {
     // GreenNode.kind is a widened `string`; the kind vocabulary is shared with
     // NodeKind and every value reaching here came from tagToNodeKind().
-    if (isBlockKind(child.kind as NodeKind) || child.kind === 'empty_line') {
+    // `discarded_tag` viaja suelto igual que `empty_line`: es un tramo de
+    // fuente que no se ve, y envolverlo en un párrafo dejaba un `<span>` vacío
+    // en el render por cada cierre descartado.
+    if (isBlockKind(child.kind as NodeKind) || child.kind === 'empty_line' || child.kind === 'discarded_tag') {
       flushParagraph()
       normalizedRoot.push(child)
     } else {

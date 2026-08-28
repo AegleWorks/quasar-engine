@@ -185,7 +185,7 @@ const NOT_A_WRITTEN_TAG = new Set<NodeKind>([
  * That single rule covers both shapes: `[b]x` (never closed) and `[b][i]x[/b]`
  * (where `[i]` is auto-closed by the legacy nesting rules).
  */
-function isUnclosedTag(node: RedNode, source: string): boolean {
+export function isUnclosedTag(node: RedNode, source: string): boolean {
   if (NOT_A_WRITTEN_TAG.has(node.kind)) return false
 
   const name = openingTagName(node, source)
@@ -204,7 +204,7 @@ function isUnclosedTag(node: RedNode, source: string): boolean {
  *
  * Returns null for nodes that do not correspond to a written tag.
  */
-function openingTagName(node: RedNode, source: string): string | null {
+export function openingTagName(node: RedNode, source: string): string | null {
   const { start } = node.range
   if (start < 0 || start >= source.length || source.charCodeAt(start) !== 0x5b /* [ */) return null
   OPENING_TAG_RE.lastIndex = start
