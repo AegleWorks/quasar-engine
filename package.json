@@ -40,9 +40,7 @@
     "dist",
     "src"
   ],
-  "dependencies": {},
   "devDependencies": {
-    "@miliastry/quasar-studio": "*",
     "@types/node": "^22",
     "tsup": "^8.5.1",
     "typescript": "^7.0.2"
