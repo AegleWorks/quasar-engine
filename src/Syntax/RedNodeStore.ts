@@ -145,9 +145,17 @@ export class RedNodeStore {
 
   /**
    * Check if a GreenNode already has a canonical RedNode.
+   *
+   * Mirrors `getOrCreate`'s discriminator, including the identity check. A
+   * present hash entry only proves *some* structure registered under this
+   * 32-bit hash; if it is a different green, `getOrCreate` counts a collision
+   * and builds an unregistered node, so answering `true` here would be the
+   * opposite of the truth for any caller deciding whether canonicalization has
+   * already happened.
    */
   has(green: GreenNode): boolean {
-    return this.canonicals.has(green._hash.toString())
+    const existing = this.canonicals.get(green._hash.toString())
+    return existing !== undefined && existing.green === green
   }
 
   /**

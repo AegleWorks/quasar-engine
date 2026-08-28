@@ -71,7 +71,10 @@ export class Pipeline {
           break
 
         case 'decision': {
-          const report = this.buildReport(allContributions, analysisPassCount, start)
+          // `elapsedMs` is a duration, not a timestamp: a decision pass that
+          // budgets work by time would otherwise read the pipeline's absolute
+          // origin (millions of ms into the page's life) and see no budget left.
+          const report = this.buildReport(allContributions, analysisPassCount, performance.now() - start)
           latestPlan = this.runDecision(entry.pass as DecisionPass, report, context)
           break
         }

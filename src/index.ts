@@ -251,6 +251,8 @@ export type {
 // NOTE: `ExportTarget` from Analysis is intentionally omitted to avoid
 // naming collision with the existing `ExportTarget` from Visitors/BBCodeExporter.
 // Consumers who need the Analysis export target can import directly:
-// `import { ExportTarget } from '@miliastry/quasar/Analysis/Contracts/PipelineContext'`
+// `import { ExportTarget } from '@miliastry/quasar/src/Analysis/Contracts/PipelineContext'`
+// The `src/` segment is not optional: `./src/*` is the subpath the exports map
+// actually publishes, and the deep specifier without it resolves to nothing.
 
 

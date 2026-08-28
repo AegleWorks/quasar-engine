@@ -14,6 +14,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
@@ -177,7 +178,10 @@ describe.skipIf(!PROFILE)('compiler path profiling (QUASAR_PROFILE=1)', () => {
       )
     }
 
-    const outPath = join(__dirname, '..', '..', 'bench-report.txt')
+    // The OS temp directory, not the package root: a profiling run is a
+    // throwaway measurement, and dropping its artifact next to package.json
+    // leaves an untracked file that is easy to commit by accident.
+    const outPath = join(tmpdir(), 'quasar-bench-report.txt')
     writeFileSync(outPath, reportLines.join('\n') + '\n')
     report(`\nReport written to ${outPath}`)
   },

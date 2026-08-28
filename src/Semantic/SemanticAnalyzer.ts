@@ -149,9 +149,6 @@ const DEPRECATED_KINDS = new Set<NodeKind>(
   Object.values(DEPRECATED_TAGS).map(entry => entry.kind),
 )
 
-/** Matches anything shaped like a BBCode tag. */
-const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*-]+(?:=[^\]]*)?\]/
-
 /**
  * Reads the tag name at the start of a node's range: `[quote="x"]` → `quote`.
  *
@@ -162,15 +159,41 @@ const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*-]+(?:=[^\]]*)?\]/
 const OPENING_TAG_RE = /\[\/?([a-zA-Z0-9_*-]+)/y
 
 /**
- * Kinds that are not written tags, so no closing-tag rule applies to them.
+ * Kinds the grammar gives no content slot at all.
  *
- * The check below reads the source at a node's boundaries, and several nodes
- * can share an offset — a `paragraph` wrapping `[b]x` starts at the same `[` as
- * the `bold` inside it, and would otherwise be judged as an unclosed `[b]`.
- * `list_item` is here because `[*]` has no closing form in BBCode at all.
+ * Lyne's `[hr]` and `[separator=stars]` are emitted by the parser as a single
+ * leaf spanning `[`..`]`. There is no inner range for content to occupy and no
+ * closing form to write, now or ever. Two validators have to know that, and
+ * both were getting it wrong in the same way — describing the tag's definition
+ * as if it were something the author had done:
+ *
+ *   `empty-tag`     every `[hr]` is contentless; saying so is noise, not a hint
+ *   `unclosed-tag`  worse than noise — `repairNesting` shares the
+ *                   `isUnclosedTag` predicate, so the "repair" wrote a
+ *                   `[/separator]` into the author's source, which osu!/Lyne
+ *                   then render as literal text
+ *
+ * Deliberately narrower than "void". `list_item` also has no closing form, but
+ * `[*]` does have a content slot, so an empty one is a real (if minor)
+ * observation and stays reportable as `empty-tag`.
  */
-const NOT_A_WRITTEN_TAG = new Set<NodeKind>([
+const CONTENTLESS_BY_NATURE = new Set<NodeKind>(['separator'])
+
+/**
+ * Kinds no closing tag is ever expected for, held in one set because the check
+ * below runs per node and one lookup is cheaper than two.
+ *
+ * Two reasons land a kind here. Most are not written tags at all: the check
+ * reads the source at a node's boundaries, and several nodes can share an
+ * offset — a `paragraph` wrapping `[b]x` starts at the same `[` as the `bold`
+ * inside it, and would otherwise be judged as an unclosed `[b]`.
+ *
+ * The rest are written but have no closing form: `list_item`, because `[*]`
+ * has none in BBCode at all, and whatever {@link CONTENTLESS_BY_NATURE} holds.
+ */
+const NO_CLOSING_TAG_EXPECTED = new Set<NodeKind>([
   'document', 'paragraph', 'group', 'text', 'spacing', 'empty_line', 'list_item', 'error',
+  ...CONTENTLESS_BY_NATURE,
 ])
 
 /**
@@ -186,7 +209,7 @@ const NOT_A_WRITTEN_TAG = new Set<NodeKind>([
  * (where `[i]` is auto-closed by the legacy nesting rules).
  */
 export function isUnclosedTag(node: RedNode, source: string): boolean {
-  if (NOT_A_WRITTEN_TAG.has(node.kind)) return false
+  if (NO_CLOSING_TAG_EXPECTED.has(node.kind)) return false
 
   const name = openingTagName(node, source)
   if (!name || name === '*') return false
@@ -397,7 +420,12 @@ export class SemanticAnalyzer {
     })
 
     // Empty tag validator
-    // Excludes structural kinds that are intentionally contentless (empty_line, spacing)
+    //
+    // Excludes structural kinds that are intentionally contentless
+    // (empty_line, spacing), and the kinds that cannot hold content at all —
+    // see CONTENTLESS_BY_NATURE. Note that only the bare `[hr]` / `[separator]`
+    // reached here anyway: with an attribute, `[separator=stars]` carries
+    // `=stars` as its text and failed the `text === ''` test by accident.
     this.register({
       code: 'empty-tag',
       severity: 'hint',
@@ -407,7 +435,8 @@ export class SemanticAnalyzer {
           node.text === '' &&
           node.kind !== 'text' &&
           node.kind !== 'empty_line' &&
-          node.kind !== 'spacing'
+          node.kind !== 'spacing' &&
+          !CONTENTLESS_BY_NATURE.has(node.kind)
         ) {
           return createDiagnostic(
             'empty-tag',

@@ -252,18 +252,18 @@ export class GreenNodePool {
   }
 }
 
-/** Convenience helper for interning green leaves */
+/**
+ * Convenience helper for interning green leaves, over the shared singleton.
+ *
+ * The internal-node twin of this helper used to sit alongside it and was
+ * removed: nothing imported it, and it could not have worked if anything had.
+ * `GreenNodePool.instance` is built with the default `'leaves'` mode, and
+ * `internNode` returns a fresh `GreenNode` unconditionally in that mode — so
+ * the one thing the helper existed for, structural sharing of internal nodes,
+ * was unreachable through the only pool it could reach. Interning internal
+ * nodes is done by passing a `GreenNodePool.create('full')` to the parser,
+ * which is what `BBCodeDocumentModel` does per document.
+ */
 export function internGreenLeaf(kind: string, text: string, width = text.length): GreenNode {
   return GreenNodePool.instance.internLeaf(kind, text, width)
-}
-
-/** Convenience helper for interning green nodes */
-export function internGreenNode(
-  kind: string,
-  text: string,
-  children: GreenNode[],
-  leadingWidth = 0,
-  trailingWidth = 0,
-): GreenNode {
-  return GreenNodePool.instance.internNode(kind, text, children, leadingWidth, trailingWidth)
 }

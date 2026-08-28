@@ -1836,7 +1836,9 @@ El archivo `src/index.ts` exporta 52 símbolos públicos. Aquí están agrupados
 
 ### Patrones de Test
 
-Los tests usan `vitest` con el setup `vitest.setup.ts` (vacío). Ejemplo de patrón de test:
+Los tests usan `vitest`, ejecutado desde la raíz del monorepo: la configuración
+(`vitest.config.ts`, con `environment: 'jsdom'`, los alias `@miliastry/*` y el
+setup `vitest.setup.ts`) vive allí, no en este paquete. Ejemplo de patrón de test:
 
 ```typescript
 describe('RedNode', () => {

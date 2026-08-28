@@ -6,11 +6,14 @@
  * modificar el renderer HTML.
  *
  * Uso:
- *   // Importar como CSS directo (soportado por Next.js, Vite, Webpack):
- *   import 'MiliastryPlatform/DocumentEngine/Visuals/osu.css'
+ *   // Desde la FUENTE, que es como lo consume el monorepo (Next.js, Vite,
+ *   // Webpack): esta ruta funciona sin haber compilado nada.
+ *   import '@miliastry/quasar/src/Visuals/osu.css'
  *
- *   // O desde un componente React:
- *   import 'MiliastryPlatform/DocumentEngine/Visuals/osu.css'
+ *   // Desde el paquete PUBLICADO. Solo resuelve tras `npm run build`, que es
+ *   // lo que copia los CSS a dist/Visuals (ver scripts/copy-css.mjs).
+ *   import '@miliastry/quasar/Visuals/osu.css'
+ *
  *   // Luego en el JSX: <div className="bbcode-preview" ...
  *
  * Para cambiar de tema visual, solo cambia el import del CSS.

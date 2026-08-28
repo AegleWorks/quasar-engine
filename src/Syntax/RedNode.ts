@@ -175,6 +175,22 @@ export class RedNode {
     }
     node._range.start += delta
     node._range.end += delta
+    RedNode.shiftDescendants(node, delta)
+  }
+
+  /**
+   * Push `delta` into every red node that lives under `node` — its title nodes
+   * as well as its children.
+   *
+   * The title subtree of a rich `[box=[b]heading[/b]]` is stored in
+   * `metadata.titleNodes`, never appended to `children`, so a loop over
+   * `children` alone leaves it at pre-edit offsets. That is not cosmetic:
+   * `findNodeAtOffset` consults `metadata.titleNodes` BEFORE `children`, so a
+   * stale title range mis-resolves caret, hover and selection inside the
+   * heading. Both shift paths — the recursive one and `materialize`'s ancestor
+   * loop — route through here so they cannot drift apart again.
+   */
+  private static shiftDescendants(node: RedNode, delta: number): void {
     const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
     if (titleNodes) {
       for (let i = 0; i < titleNodes.length; i++) {
@@ -223,9 +239,7 @@ export class RedNode {
       ancestor._lazyShift = 0
       ancestor._range.start += delta
       ancestor._range.end += delta
-      for (let c = 0; c < ancestor.children.length; c++) {
-        RedNode.applyShift(ancestor.children[c], delta)
-      }
+      RedNode.shiftDescendants(ancestor, delta)
     }
   }
 

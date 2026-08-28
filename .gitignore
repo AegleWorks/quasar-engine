@@ -5,5 +5,10 @@ build/
 .DS_Store
 Thumbs.db
 *.tgz
+
+# Belt for the opt-in profiling harness (QUASAR_PROFILE=1). It writes to the
+# OS temp directory now; this catches any run from an older checkout.
+bench-report.txt
+
 !scripts/
 !scripts/copy-css.mjs
