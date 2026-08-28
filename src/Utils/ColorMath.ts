@@ -287,6 +287,10 @@ export function perceptualDistance(hex1: string, hex2: string): number {
   return Math.sqrt(dL * dL + da * da + db * db)
 }
 
+function clampByte(val: number): number {
+  return Math.max(0, Math.min(255, Math.round(val)))
+}
+
 /**
  * Mix two hex colours in OKLab space for perceptually uniform interpolation.
  */
@@ -314,10 +318,10 @@ export function mixHexOklab(color1: string, color2: string, weight: number): str
   const gLin = l * -1.2684380046 + m *  2.6097574011 + s * -0.3413193965
   const bLin = l * -0.0041960863 + m * -0.7034186147 + s *  1.7076147010
 
-  // Linear sRGB → gamma-corrected sRGB → hex
-  const r255 = Math.round(linearToSrgb(rLin) * 255)
-  const g255 = Math.round(linearToSrgb(gLin) * 255)
-  const b255 = Math.round(linearToSrgb(bLin) * 255)
+  // Linear sRGB → gamma-corrected sRGB → hex (with gamut clamping)
+  const r255 = clampByte(linearToSrgb(rLin) * 255)
+  const g255 = clampByte(linearToSrgb(gLin) * 255)
+  const b255 = clampByte(linearToSrgb(bLin) * 255)
 
   return `#${r255.toString(16).padStart(2, '0')}${g255.toString(16).padStart(2, '0')}${b255.toString(16).padStart(2, '0')}`
 }
