@@ -147,4 +147,15 @@ describe('plugin tags — full pipeline', () => {
       expect(reuse.redRoot!.green).toBe(reuse.greenRoot)
     }
   })
+
+  it('renders linked images with bb-link-img class', () => {
+    const bbcode = '[url=https://hxovc.s-ul.eu/kM7BjiJY][img]https://hxovc.s-ul.eu/4DgUcASq[/img][/url]'
+    const model = new BBCodeDocumentModel({ source: bbcode })
+    const renderer = new HTMLRenderer()
+    const html = renderer.render(model.redRoot!)
+
+    expect(html).toContain('class="bb-link-img"')
+    expect(html).toContain('href="https://hxovc.s-ul.eu/kM7BjiJY"')
+    expect(html).toContain('src="https://hxovc.s-ul.eu/4DgUcASq"')
+  })
 })

@@ -190,12 +190,28 @@ export {
   effectiveAxis, mergeStyledSegments, normalizeHex,
   parseColorStops, stringifyColorStops, parseEffectParams, stringifyEffectParams,
   evaluateEffect, GRADIENT_DEFAULTS, RAINBOW_DEFAULTS, GROW_DEFAULTS, NEUTRAL_SIZE,
+  PAINT_DEFAULTS, SPATIAL_DEFAULTS,
+  // ── Placeable geometry, masks and paint grids ──
+  SPATIAL_AXES, DEFAULT_CELL_ASPECT, DEFAULT_SPATIAL, spatialPoint,
+  MASK_SHAPES, DEFAULT_MASK, maskValue, maskDistance,
+  spatialFromParams, maskFromParams, gridFromParams,
+  PAINT_MAX_COLORS, parsePaintGrid, samplePaintGrid,
+  stringifyPaintCells, stringifyPaintPalette,
 } from './Utils/EffectMath'
 export type {
   WaveKind, WaveOptions, BlendMode, ExpressionVars, CompiledExpression,
   CharSample, SampleTable, RangeScope, SampleContext, Axis,
   EffectParams, EffectUnit, EffectKind, EffectSpan, StyledSegment,
+  SpatialOptions, SpatialPoint, MaskShape, MaskOptions, PaintGrid,
 } from './Utils/EffectMath'
+
+// ── Tag Vocabulary ──
+export {
+  attributeVocabularyFor, allAttributeVocabularies,
+  EFFECT_TYPES, ANIM_TYPES, CONTAINER_TYPES,
+  SEPARATOR_VARIANTS, TABLE_FLAGS, IMG_MODIFIERS,
+} from './Utils/TagVocabulary'
+export type { AttributeVocabulary, VocabularySyntax } from './Utils/TagVocabulary'
 
 // ── Analysis Framework ──
 export {
@@ -255,4 +271,13 @@ export type {
 // The `src/` segment is not optional: `./src/*` is the subpath the exports map
 // actually publishes, and the deep specifier without it resolves to nothing.
 
-
+// Semántica de atributos de etiqueta, compartida con quien pinte BBCode
+// fuera del HTMLRenderer (los presets del lienzo, por ejemplo).
+export {
+  nodeAttrValue,
+  parseImgAttr,
+  sanitizeColor,
+  sanitizeFontSize,
+  sanitizeFontFamily,
+} from './Syntax/nodeAttr'
+export type { ImgAttr } from './Syntax/nodeAttr'

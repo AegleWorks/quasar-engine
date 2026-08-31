@@ -121,6 +121,7 @@ export class TiptapExporter extends Visitor<string> {
       case 'rainbow':
       case 'grow':
       case 'sinewave':
+      case 'paint':
         return { type: 'miliastryEffect', attrs: { effect: node.kind, ...node.metadata } }
     }
     return null

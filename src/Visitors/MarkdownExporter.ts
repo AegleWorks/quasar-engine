@@ -7,6 +7,7 @@
  */
 
 import { RedNode } from '../Syntax/RedNode'
+import { nodeAttrValue } from '../Syntax/nodeAttr'
 import { Visitor } from './Visitor'
 
 export class MarkdownExporter extends Visitor<string> {
@@ -139,18 +140,17 @@ export class MarkdownExporter extends Visitor<string> {
   /**
    * Read a BBCode tag's `=VALUE` attribute.
    */
+  /**
+   * El atributo del nodo, o `undefined` si no lleva.
+   *
+   * El recorte lo hace `nodeAttrValue`, el mismo lector del `HTMLRenderer`;
+   * aquí sólo se cambia el contrato del caso vacío. Este exportador encadena
+   * `metadata ?? atributo ?? contenido`, así que necesita un `undefined`
+   * explícito donde `nodeAttrValue` devuelve el texto crudo — es la única
+   * diferencia, y por eso no se llama directamente.
+   */
   private extractValue(node: RedNode): string | undefined {
-    const text = node.text || ''
-    const eqIdx = text.indexOf('=')
-    if (eqIdx < 0) return undefined
-
-    let value = text.slice(eqIdx + 1)
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
-    }
-    return value || undefined
+    if (!(node.text || '').includes('=')) return undefined
+    return nodeAttrValue(node) || undefined
   }
 }

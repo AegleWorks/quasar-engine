@@ -33,6 +33,28 @@
   color: #94C8EA;
   border-bottom: 1px solid rgba(126,184,224,0.7);
 }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(img),
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(.bb-img),
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(svg),
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a.bb-link-img {
+  border-bottom: none !important;
+  text-decoration: none !important;
+  display: inline-block;
+  vertical-align: middle;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(img):hover,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(.bb-img):hover,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(svg):hover,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a.bb-link-img:hover {
+  border-bottom: none !important;
+  text-decoration: none !important;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a img,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a .bb-img {
+  vertical-align: middle;
+  border: none;
+  text-decoration: none;
+}
 
 /* ─── Headings ───────────────────────────────────────── */
 

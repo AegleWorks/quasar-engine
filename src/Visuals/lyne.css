@@ -55,6 +55,41 @@
   border-bottom-color: var(--color-accent, #2EE6E2) !important;
 }
 
+.bbcode-preview-lyne a:has(img),
+.bbcode-preview-lyne a:has(.bb-img),
+.bbcode-preview-lyne a:has(svg),
+.bbcode-preview-lyne a.bb-link-img,
+.bbcode-preview.theme-lyne a:has(img),
+.bbcode-preview.theme-lyne a:has(.bb-img),
+.bbcode-preview.theme-lyne a:has(svg),
+.bbcode-preview.theme-lyne a.bb-link-img {
+  border-bottom: none !important;
+  text-decoration: none !important;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.bbcode-preview-lyne a:has(img):hover,
+.bbcode-preview-lyne a:has(.bb-img):hover,
+.bbcode-preview-lyne a:has(svg):hover,
+.bbcode-preview-lyne a.bb-link-img:hover,
+.bbcode-preview.theme-lyne a:has(img):hover,
+.bbcode-preview.theme-lyne a:has(.bb-img):hover,
+.bbcode-preview.theme-lyne a:has(svg):hover,
+.bbcode-preview.theme-lyne a.bb-link-img:hover {
+  border-bottom: none !important;
+  text-decoration: none !important;
+}
+
+.bbcode-preview-lyne a img,
+.bbcode-preview-lyne a .bb-img,
+.bbcode-preview.theme-lyne a img,
+.bbcode-preview.theme-lyne a .bb-img {
+  vertical-align: middle;
+  border: none;
+  text-decoration: none;
+}
+
 /* Forum @mentions — inherit the accent link look, slightly bolder so they
    read as handles rather than plain links. */
 .bbcode-preview-lyne a.bb-mention,

@@ -74,6 +74,7 @@ const MILIASTRY_TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
   'grow': 'grow',
   'sinewave': 'sinewave',
   'rainbow': 'rainbow',
+  'paint': 'paint',
   'svg': 'svg',
   'group': 'group',
 }
@@ -440,6 +441,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
     case 'rainbow':
     case 'grow':
     case 'sinewave':
+    case 'paint':
       // One grammar for every effect tag. `[gradient=#a,#b]` still parses
       // as a bare colour list; `[gradient=#a,#b;easing=easeInOut;axis=line]`
       // adds the modulation Text Studio configures. Before this, everything

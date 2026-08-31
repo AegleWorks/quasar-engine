@@ -605,6 +605,20 @@ export interface CharSample {
   line: number
   /** Running index among non-whitespace characters within the line. -1 for spaces. */
   col: number
+  /**
+   * Visual column: every character on the line counted, spaces included.
+   *
+   * `col` deliberately skips whitespace so a gradient does not spend a
+   * step of its ramp on a space — the right rule for a ramp, and the
+   * wrong one for a picture. In ASCII art the spaces ARE the layout, so
+   * `"  \u2588\u2588"` has its blocks at visual columns 2 and 3 while `col`
+   * calls them 0 and 1. A spatial effect that read `col` would shear
+   * every line left by its own indentation.
+   *
+   * Both coordinates therefore exist side by side: `col` for ramps,
+   * `rawCol` for geometry.
+   */
+  rawCol: number
   /** Zero-based word number, document-wide. -1 for spaces. */
   word: number
 }
@@ -618,6 +632,10 @@ export interface SampleTable {
   lineCount: number
   /** Non-whitespace character count per line. */
   lineLengths: number[]
+  /** Every-character length per line, for geometry. */
+  rawLineLengths: number[]
+  /** The widest line, in visual columns. The grid's width. */
+  maxCols: number
   wordCount: number
 }
 
@@ -626,6 +644,8 @@ const EMPTY_TABLE: SampleTable = {
   count: 0,
   lineCount: 0,
   lineLengths: [],
+  rawLineLengths: [],
+  maxCols: 0,
   wordCount: 0,
 }
 
@@ -643,28 +663,37 @@ export function buildSampleTable(plainText: string): SampleTable {
   const chars = Array.from(plainText)
   const samples: CharSample[] = new Array(chars.length)
   const lineLengths: number[] = []
+  const rawLineLengths: number[] = []
 
   let index = 0
   let line = 0
   let col = 0
+  let rawCol = 0
   let word = -1
   let inWord = false
+  let maxCols = 0
 
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i]
 
     if (ch === '\n') {
       lineLengths.push(col)
-      samples[i] = { offset: i, isSpace: true, index: -1, line, col: -1, word: -1 }
+      rawLineLengths.push(rawCol)
+      if (rawCol > maxCols) maxCols = rawCol
+      // The break itself sits one past the line's last character, which
+      // is where a mask's right edge belongs.
+      samples[i] = { offset: i, isSpace: true, index: -1, line, col: -1, rawCol, word: -1 }
       line++
       col = 0
+      rawCol = 0
       inWord = false
       continue
     }
 
     const isSpace = ch.trim().length === 0
     if (isSpace) {
-      samples[i] = { offset: i, isSpace: true, index: -1, line, col: -1, word: -1 }
+      samples[i] = { offset: i, isSpace: true, index: -1, line, col: -1, rawCol, word: -1 }
+      rawCol++
       inWord = false
       continue
     }
@@ -674,18 +703,23 @@ export function buildSampleTable(plainText: string): SampleTable {
       inWord = true
     }
 
-    samples[i] = { offset: i, isSpace: false, index, line, col, word }
+    samples[i] = { offset: i, isSpace: false, index, line, col, rawCol, word }
     index++
     col++
+    rawCol++
   }
 
   lineLengths.push(col)
+  rawLineLengths.push(rawCol)
+  if (rawCol > maxCols) maxCols = rawCol
 
   return {
     samples,
     count: index,
     lineCount: lineLengths.length,
     lineLengths,
+    rawLineLengths,
+    maxCols,
     wordCount: word + 1,
   }
 }
@@ -714,6 +748,19 @@ export interface RangeScope {
   localCol: Int32Array
   /** Local word number per offset, `-1` for whitespace and out-of-range. */
   localWord: Int32Array
+  /**
+   * Visual column per offset, spaces counted, `-1` out of range.
+   *
+   * Unlike `localCol` this is NOT re-based per line: it keeps the
+   * document's own column so a range starting mid-line still sits where
+   * the reader sees it. `rawColMin`/`rawColMax` carry the bounding box
+   * that turns it into a [0,1] coordinate.
+   */
+  localRawCol: Int32Array
+  /** Left edge of the range's painted bounding box, in visual columns. */
+  rawColMin: number
+  /** Right edge of that box. Equal to `rawColMin` for a single column. */
+  rawColMax: number
   lineCount: number
   lineLengths: number[]
   wordCount: number
@@ -736,12 +783,14 @@ export function buildRangeScope(table: SampleTable, start: number, end: number):
   const localLine = new Int32Array(len).fill(-1)
   const localCol = new Int32Array(len).fill(-1)
   const localWord = new Int32Array(len).fill(-1)
+  const localRawCol = new Int32Array(len).fill(-1)
   const lineLengths: number[] = []
 
   if (len === 0) {
     return {
       start: s, end: e, count: 0,
       localIndex, localLine, localCol, localWord,
+      localRawCol, rawColMin: 0, rawColMax: 0,
       lineCount: 0, lineLengths: [], wordCount: 0,
     }
   }
@@ -757,11 +806,18 @@ export function buildRangeScope(table: SampleTable, start: number, end: number):
   let index = 0
   let word = -1
   let inWord = false
+  // The bounding box is measured over PAINTED characters only. Measuring
+  // it over every offset would let a line's trailing spaces stretch the
+  // box to the right of anything the reader can see, and a shape centred
+  // in that box would sit off-centre on the page.
+  let rawColMin = Number.POSITIVE_INFINITY
+  let rawColMax = Number.NEGATIVE_INFINITY
 
   for (let i = 0; i < len; i++) {
     const sample = table.samples[s + i]
     const line = sample.line - baseLine
     localLine[i] = line
+    localRawCol[i] = sample.rawCol
 
     if (sample.isSpace) {
       inWord = false
@@ -774,7 +830,12 @@ export function buildRangeScope(table: SampleTable, start: number, end: number):
     localWord[i] = word
     lineLengths[line]++
     index++
+
+    if (sample.rawCol < rawColMin) rawColMin = sample.rawCol
+    if (sample.rawCol > rawColMax) rawColMax = sample.rawCol
   }
+
+  if (!Number.isFinite(rawColMin)) { rawColMin = 0; rawColMax = 0 }
 
   return {
     start: s,
@@ -784,6 +845,9 @@ export function buildRangeScope(table: SampleTable, start: number, end: number):
     localLine,
     localCol,
     localWord,
+    localRawCol,
+    rawColMin,
+    rawColMax,
     lineCount: lineLengths.length,
     lineLengths,
     wordCount: word + 1,
@@ -811,10 +875,18 @@ export type Axis =
   | 'angular'
   | 'random'
   | 'wave'
+  // ── Placeable, aspect-corrected. See SpatialOptions. ──
+  | 'spot'
+  | 'sweep'
+  | 'linear'
 
 export const AXES: readonly Axis[] = [
   'index', 'word', 'line', 'column', 'diagonal', 'radial', 'angular', 'random', 'wave',
+  'spot', 'sweep', 'linear',
 ]
+
+/** Axes that read an origin, an angle and a radius. */
+export const SPATIAL_AXES: ReadonlySet<Axis> = new Set<Axis>(['spot', 'sweep', 'linear'])
 
 /** Everything a layer needs to place one character. */
 export interface SampleContext {
@@ -830,14 +902,123 @@ function norm(value: number, count: number): number {
   return clamp01(value / (count - 1))
 }
 
+// ── Page geometry ──────────────────────────────────────────────
+//
+// The axes above collapse a character to one number and stop. A shape
+// cannot: a circle needs to know that the box it sits in is forty
+// characters wide and six lines tall, and that a character cell is about
+// twice as tall as it is wide. Without that second fact a circle renders
+// as a flat oval, because forty columns and forty rows are not the same
+// distance on the page.
+
+/**
+ * Width ÷ height of one character cell.
+ *
+ * Monospace faces cluster around 0.5–0.6; this is the middle of that
+ * range and the value every shape assumes unless the document says
+ * otherwise.
+ */
+export const DEFAULT_CELL_ASPECT = 0.55
+
+/** Where a placeable effect sits and how far it reaches. */
+export interface SpatialOptions {
+  /** Origin across the box, 0 = left edge, 1 = right edge. */
+  originX: number
+  /** Origin down the box, 0 = top, 1 = bottom. */
+  originY: number
+  /** Rotation of `linear` and `sweep`, in degrees, clockwise from east. */
+  angle: number
+  /** Reach of `spot` and `linear`, in units of the box's longer side. */
+  radius: number
+  /** Width ÷ height of a character cell. */
+  aspect: number
+}
+
+export const DEFAULT_SPATIAL: SpatialOptions = {
+  originX: 0.5,
+  originY: 0.5,
+  angle: 0,
+  radius: 0.5,
+  aspect: DEFAULT_CELL_ASPECT,
+}
+
+/**
+ * A character's place on the page, in a square-ish coordinate system.
+ *
+ * `x`/`y` are the plain [0,1] fractions across the range's painted
+ * bounding box. `w`/`h` are that box's physical proportions, normalised
+ * so the longer side is 1 — multiplying the fractions by them is what
+ * makes a circle round instead of an oval.
+ *
+ * A single-line range has no vertical extent, so every character reports
+ * `y = 0.5`: the text is one line tall and sits at its own middle. The
+ * same holds for `x` in a single-column range.
+ */
+export interface SpatialPoint {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export function spatialPoint(ctx: SampleContext, cellAspect = DEFAULT_CELL_ASPECT): SpatialPoint {
+  const { scope, sample } = ctx
+  const rel = sample.offset - scope.start
+
+  const colSpan = scope.rawColMax - scope.rawColMin
+  const rowSpan = scope.lineCount - 1
+
+  const rawCol = rel >= 0 && rel < scope.localRawCol.length && scope.localRawCol[rel] >= 0
+    ? scope.localRawCol[rel]
+    : scope.rawColMin
+  const line = rel >= 0 && rel < scope.localLine.length && scope.localLine[rel] >= 0
+    ? scope.localLine[rel]
+    : 0
+
+  const x = colSpan > 0 ? clamp01((rawCol - scope.rawColMin) / colSpan) : 0.5
+  const y = rowSpan > 0 ? clamp01(line / rowSpan) : 0.5
+
+  // Cell counts, not spans: a box one column wide is still one column of
+  // physical width, and dividing by a zero span would make it infinitely
+  // flat.
+  const aspect = Number.isFinite(cellAspect) && cellAspect > 0 ? cellAspect : DEFAULT_CELL_ASPECT
+  const pw = (colSpan + 1) * aspect
+  const ph = rowSpan + 1
+  const longer = Math.max(pw, ph)
+
+  return { x, y, w: pw / longer, h: ph / longer }
+}
+
+/** A character's offset from an origin, in the square-ish space. */
+function offsetFromOrigin(pt: SpatialPoint, ox: number, oy: number): [number, number] {
+  return [(pt.x - ox) * pt.w, (pt.y - oy) * pt.h]
+}
+
+function rotate(px: number, py: number, degrees: number): [number, number] {
+  if (!degrees) return [px, py]
+  const r = (degrees * Math.PI) / 180
+  const c = Math.cos(r)
+  const s = Math.sin(r)
+  return [px * c + py * s, -px * s + py * c]
+}
+
 /**
  * Project a character onto the [0,1] axis a layer reads.
  *
  * `radial` and `angular` treat the range as a rectangle of lines by
  * columns, which is what makes a multi-line block behave like a canvas
- * rather than a single ribbon of text.
+ * rather than a single ribbon of text. They are centred and uncorrected,
+ * and stay that way: documents written against them must keep rendering
+ * identically. `spot`, `sweep` and `linear` are their placeable,
+ * aspect-corrected successors — same idea, with an origin the author
+ * chooses and a circle that comes out round.
  */
-export function axisValue(axis: Axis, ctx: SampleContext, seed = 0): number {
+export function axisValue(
+  axis: Axis,
+  ctx: SampleContext,
+  seed = 0,
+  geo: Partial<SpatialOptions> = DEFAULT_SPATIAL,
+): number {
   const { sample, scope } = ctx
   const rel = sample.offset - scope.start
   if (rel < 0 || rel >= scope.localIndex.length) return 0
@@ -880,9 +1061,275 @@ export function axisValue(axis: Axis, ctx: SampleContext, seed = 0): number {
       const x = norm(col, lineLen)
       return line % 2 === 0 ? x : 1 - x
     }
+
+    case 'spot': {
+      // Distance from a chosen point. `radius` is the reach: at the
+      // radius the ramp has run out, beyond it it stays at its end.
+      const pt = spatialPoint(ctx, geo.aspect ?? DEFAULT_SPATIAL.aspect)
+      const [px, py] = offsetFromOrigin(
+        pt, geo.originX ?? DEFAULT_SPATIAL.originX, geo.originY ?? DEFAULT_SPATIAL.originY,
+      )
+      const radius = geo.radius ?? DEFAULT_SPATIAL.radius
+      if (!(radius > 0)) return 0
+      return clamp01(Math.hypot(px, py) / radius)
+    }
+
+    case 'sweep': {
+      // Angle around a chosen point, so a ramp can spin about a word in
+      // the middle of a paragraph rather than about the paragraph.
+      const pt = spatialPoint(ctx, geo.aspect ?? DEFAULT_SPATIAL.aspect)
+      const [px, py] = offsetFromOrigin(
+        pt, geo.originX ?? DEFAULT_SPATIAL.originX, geo.originY ?? DEFAULT_SPATIAL.originY,
+      )
+      if (px === 0 && py === 0) return 0
+      const a = Math.atan2(py, px) - ((geo.angle ?? DEFAULT_SPATIAL.angle) * Math.PI) / 180
+      let turns = a / (Math.PI * 2)
+      turns -= Math.floor(turns)
+      return clamp01(turns)
+    }
+
+    case 'linear': {
+      // A ramp along an arbitrary direction. `radius` is its half-length,
+      // so the origin sits at the ramp's midpoint (0.5) and the ends land
+      // one radius away on each side.
+      const pt = spatialPoint(ctx, geo.aspect ?? DEFAULT_SPATIAL.aspect)
+      const [ox, oy] = offsetFromOrigin(
+        pt, geo.originX ?? DEFAULT_SPATIAL.originX, geo.originY ?? DEFAULT_SPATIAL.originY,
+      )
+      const [px] = rotate(ox, oy, geo.angle ?? DEFAULT_SPATIAL.angle)
+      const radius = geo.radius ?? DEFAULT_SPATIAL.radius
+      if (!(radius > 0)) return px >= 0 ? 1 : 0
+      return clamp01(0.5 + px / (radius * 2))
+    }
+
     default:
       return norm(ctx.local, scope.count)
   }
+}
+
+// ── Masks ──────────────────────────────────────────────────────
+//
+// An axis says WHAT COLOUR a character gets. A mask says WHETHER IT GETS
+// ONE AT ALL, and how strongly.
+//
+// That second question is what a layer stack could not answer before.
+// `opacity` was a scalar, so a layer applied everywhere at one strength:
+// three gradients over one paragraph each repainted the whole paragraph,
+// and the last one won. Making the weight a function of position is the
+// entire feature — a gradient in the top-left corner is a gradient whose
+// mask is a circle in the top-left corner, and every shape below is one
+// more way of writing that function.
+//
+// The shapes are signed distance fields: negative inside, zero on the
+// edge, positive outside. Distance rather than a boolean is what makes
+// `feather` a single line of maths instead of a special case per shape.
+
+export type MaskShape =
+  | 'none'
+  | 'circle'
+  | 'ellipse'
+  | 'square'
+  | 'rect'
+  | 'diamond'
+  | 'triangle'
+  | 'star'
+  | 'ring'
+  | 'half'
+
+export const MASK_SHAPES: readonly MaskShape[] = [
+  'none', 'circle', 'ellipse', 'square', 'rect', 'diamond', 'triangle',
+  'star', 'ring', 'half',
+]
+
+/** Placement and form of one layer's mask. */
+export interface MaskOptions {
+  shape: MaskShape
+  /** Centre across the box, 0 = left edge, 1 = right edge. */
+  x: number
+  /** Centre down the box, 0 = top, 1 = bottom. */
+  y: number
+  /** Half-width, in units of the box's longer side. */
+  width: number
+  /** Half-height. Read only by `ellipse` and `rect`. */
+  height: number
+  /** Rotation in degrees, clockwise. */
+  rotate: number
+  /**
+   * Width of the soft edge, in the same units as `width`.
+   *
+   * Zero gives a hard cut — the right choice for block art, where a
+   * half-lit character reads as a mistake. Anything above it fades, which
+   * is what stops a circle over prose from looking stamped on.
+   */
+  feather: number
+  /** Keep what falls OUTSIDE the shape instead of inside. */
+  invert: boolean
+  /** Points, for `star`. */
+  points: number
+  /** Spike depth for `star` (0 = thin, 1 = polygon); thickness for `ring`. */
+  inner: number
+  /** Width ÷ height of a character cell. */
+  aspect: number
+}
+
+export const DEFAULT_MASK: MaskOptions = {
+  shape: 'none',
+  x: 0.5,
+  y: 0.5,
+  width: 0.5,
+  height: 0.5,
+  rotate: 0,
+  feather: 0,
+  invert: false,
+  points: 5,
+  inner: 0.45,
+  aspect: DEFAULT_CELL_ASPECT,
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  if (edge1 <= edge0) return x < edge0 ? 0 : 1
+  const t = clamp01((x - edge0) / (edge1 - edge0))
+  return t * t * (3 - 2 * t)
+}
+
+/** Positive modulo, which `%` is not. */
+function pmod(a: number, b: number): number {
+  return ((a % b) + b) % b
+}
+
+function sdBox(px: number, py: number, bx: number, by: number): number {
+  const dx = Math.abs(px) - bx
+  const dy = Math.abs(py) - by
+  const outside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0))
+  return outside + Math.min(Math.max(dx, dy), 0)
+}
+
+function sdRhombus(px: number, py: number, bx: number, by: number): number {
+  const ax = Math.abs(px)
+  const ay = Math.abs(py)
+  const denom = bx * bx + by * by
+  if (denom === 0) return Math.hypot(ax, ay)
+  // ndot(b - 2p, b) / dot(b, b)
+  const h = Math.max(-1, Math.min(1, ((bx - 2 * ax) * bx - (by - 2 * ay) * by) / denom))
+  const d = Math.hypot(ax - 0.5 * bx * (1 - h), ay - 0.5 * by * (1 + h))
+  return d * Math.sign(ax * by + ay * bx - bx * by)
+}
+
+function sdEquilateralTriangle(px: number, py: number, r: number): number {
+  if (!(r > 0)) return Math.hypot(px, py)
+  const k = Math.sqrt(3)
+  let x = Math.abs(px) - r
+  let y = py + r / k
+  if (x + k * y > 0) {
+    const nx = (x - k * y) / 2
+    const ny = (-k * x - y) / 2
+    x = nx
+    y = ny
+  }
+  x -= Math.max(-2 * r, Math.min(0, x))
+  return -Math.hypot(x, y) * Math.sign(y)
+}
+
+function sdStar(px: number, py: number, r: number, n: number, m: number): number {
+  if (!(r > 0)) return Math.hypot(px, py)
+  const an = Math.PI / n
+  const en = Math.PI / m
+  const acsX = Math.cos(an)
+  const acsY = Math.sin(an)
+  const ecsX = Math.cos(en)
+  const ecsY = Math.sin(en)
+
+  // Fold the plane into one wedge, so one wedge's maths covers every point.
+  const bn = pmod(Math.atan2(px, py), 2 * an) - an
+  const len = Math.hypot(px, py)
+  let qx = len * Math.cos(bn) - r * acsX
+  let qy = len * Math.abs(Math.sin(bn)) - r * acsY
+
+  const reach = ecsY !== 0 ? (r * acsY) / ecsY : 0
+  const t = Math.max(0, Math.min(reach, -(qx * ecsX + qy * ecsY)))
+  qx += ecsX * t
+  qy += ecsY * t
+
+  return Math.hypot(qx, qy) * Math.sign(qx)
+}
+
+/**
+ * Signed distance from a character to a shape's edge, negative inside.
+ *
+ * Exported so a preview can draw the outline from the same maths that
+ * decides which characters the shape covers. Two implementations of a
+ * shape is two shapes.
+ */
+export function maskDistance(ctx: SampleContext, opts: Partial<MaskOptions> = {}): number {
+  const shape = opts.shape ?? DEFAULT_MASK.shape
+  if (shape === 'none') return -1
+
+  const pt = spatialPoint(ctx, opts.aspect ?? DEFAULT_MASK.aspect)
+  const [ox, oy] = offsetFromOrigin(pt, opts.x ?? DEFAULT_MASK.x, opts.y ?? DEFAULT_MASK.y)
+  const [px, py] = rotate(ox, oy, opts.rotate ?? DEFAULT_MASK.rotate)
+
+  const w = Math.max(0, opts.width ?? DEFAULT_MASK.width)
+  const h = Math.max(0, opts.height ?? DEFAULT_MASK.height)
+
+  switch (shape) {
+    case 'circle':
+      return Math.hypot(px, py) - w
+    case 'ellipse': {
+      if (w <= 0 || h <= 0) return Math.hypot(px, py)
+      // Scale to a unit circle, then back by the smaller semi-axis. Exact
+      // for a circle and a close enough approximation elsewhere — the
+      // value only ever feeds a feather ramp.
+      const k = Math.hypot(px / w, py / h)
+      return (k - 1) * Math.min(w, h)
+    }
+    case 'square':
+      return sdBox(px, py, w, w)
+    case 'rect':
+      return sdBox(px, py, w, h)
+    case 'diamond':
+      return sdRhombus(px, py, w, h)
+    case 'triangle':
+      // Screen y grows downward; the SDF is written for y growing up, so
+      // the sign flip is what keeps the triangle pointing at the sky.
+      return sdEquilateralTriangle(px, -py, w)
+    case 'star': {
+      const n = Math.max(3, Math.round(opts.points ?? DEFAULT_MASK.points))
+      const inner = clamp01(opts.inner ?? DEFAULT_MASK.inner)
+      // IQ's parameter runs [2, n]: 2 is a thin spike, n a plain polygon.
+      const m = 2 + inner * (n - 2)
+      return sdStar(px, -py, w, n, m)
+    }
+    case 'ring': {
+      const thickness = Math.max(1e-6, clamp01(opts.inner ?? DEFAULT_MASK.inner) * w)
+      return Math.abs(Math.hypot(px, py) - w) - thickness
+    }
+    case 'half':
+      return px
+    default:
+      return -1
+  }
+}
+
+/**
+ * How strongly a mask covers one character, in [0,1].
+ *
+ * 1 is fully inside, 0 fully outside. A layer multiplies its opacity by
+ * this, so a masked layer composites exactly like an unmasked one at
+ * reduced strength — no separate code path, and stacking three masked
+ * layers is the same operation as stacking three plain ones.
+ */
+export function maskValue(ctx: SampleContext, opts: Partial<MaskOptions> = {}): number {
+  const shape = opts.shape ?? DEFAULT_MASK.shape
+  if (shape === 'none') return 1
+
+  const d = maskDistance(ctx, opts)
+  const feather = Math.max(0, opts.feather ?? DEFAULT_MASK.feather)
+
+  const coverage = feather > 0
+    ? 1 - smoothstep(-feather / 2, feather / 2, d)
+    : (d <= 0 ? 1 : 0)
+
+  return (opts.invert ?? DEFAULT_MASK.invert) ? 1 - coverage : coverage
 }
 
 /** Build the variable bag an `expr()` waveform sees for one character. */
@@ -904,6 +1351,159 @@ export function expressionVars(ctx: SampleContext, u: number, seed: number) {
     words: scope.wordCount,
     rnd: randAt(seed, sample.offset),
   }
+}
+
+// ── Paint grids ────────────────────────────────────────────────
+//
+// Colouring text from an image, without moving a character.
+//
+// The obvious implementation — keep the image, sample it at render time
+// — cannot work here: a BBCode tag is text, and a document has to survive
+// a copy-paste into a forum post. So the image is reduced ONCE, at author
+// time, to a small indexed grid: a palette of at most 63 colours and one
+// character per cell naming which one. That grid is short enough to live
+// in an attribute, and reopening the document gives back an editable
+// layer rather than a wall of frozen `[color]` tags.
+//
+// It is a quantiser, not a compressor. Text has one colour per character
+// and a paragraph is maybe eighty columns wide, so the detail an image
+// can actually deliver is already far below what a photograph holds.
+// Reducing to a palette up front is not a loss — it is the resolution the
+// medium has.
+
+/**
+ * Cell alphabet. Index 0 (`'0'`) means "paint nothing here", so a grid can
+ * have holes and the text keeps its own colour there.
+ *
+ * Every character is safe inside a BBCode attribute: no `;` (the
+ * parameter separator), no `=` (the key separator), no `,` (the colour
+ * list separator) and no bracket.
+ */
+const PAINT_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.'
+
+/** Palette entries a grid can name, the transparent slot excluded. */
+export const PAINT_MAX_COLORS = PAINT_ALPHABET.length - 1
+
+const PAINT_INDEX = new Map<string, number>(
+  Array.from(PAINT_ALPHABET).map((ch, i) => [ch, i]),
+)
+
+/** An image reduced to something a tag can carry. */
+export interface PaintGrid {
+  cols: number
+  rows: number
+  /** Hex colours, `#RRGGBB`. At most `PAINT_MAX_COLORS` of them. */
+  palette: string[]
+  /** `rows * cols` indices into `palette`; `-1` paints nothing. */
+  cells: Int16Array
+}
+
+/** Serialise a grid's cells to the alphabet. */
+export function stringifyPaintCells(grid: PaintGrid): string {
+  const out: string[] = new Array(grid.cells.length)
+  for (let i = 0; i < grid.cells.length; i++) {
+    const idx = grid.cells[i]
+    out[i] = idx < 0 || idx >= grid.palette.length ? PAINT_ALPHABET[0] : PAINT_ALPHABET[idx + 1]
+  }
+  return out.join('')
+}
+
+/**
+ * Read a grid back from its parts.
+ *
+ * Returns `null` rather than a partial grid when the cell count does not
+ * match `cols * rows`: a grid off by one cell is sheared diagonally
+ * across the whole paragraph, which is far worse than not painting.
+ */
+export function parsePaintGrid(
+  cols: number,
+  rows: number,
+  paletteStr: string,
+  cellsStr: string,
+): PaintGrid | null {
+  const c = Math.round(cols)
+  const r = Math.round(rows)
+  if (!Number.isFinite(c) || !Number.isFinite(r) || c <= 0 || r <= 0) return null
+  if (!cellsStr || cellsStr.length !== c * r) return null
+
+  const palette = paletteStr
+    .split(',')
+    .map(p => p.trim())
+    .filter(Boolean)
+    .map(p => normalizeHex(p.startsWith('#') ? p : `#${p}`))
+  if (palette.length === 0) return null
+
+  const cells = new Int16Array(c * r)
+  for (let i = 0; i < cells.length; i++) {
+    const idx = PAINT_INDEX.get(cellsStr[i])
+    cells[i] = idx === undefined || idx === 0 ? -1 : idx - 1
+  }
+
+  return { cols: c, rows: r, palette, cells }
+}
+
+/** Serialise a palette to the attribute form, `#` stripped. */
+export function stringifyPaintPalette(palette: readonly string[]): string {
+  return palette.map(c => normalizeHex(c).replace('#', '')).join(',')
+}
+
+function paintCellAt(grid: PaintGrid, cx: number, cy: number): string | undefined {
+  const x = cx < 0 ? 0 : cx >= grid.cols ? grid.cols - 1 : cx
+  const y = cy < 0 ? 0 : cy >= grid.rows ? grid.rows - 1 : cy
+  const idx = grid.cells[y * grid.cols + x]
+  return idx < 0 ? undefined : grid.palette[idx]
+}
+
+/**
+ * The colour a grid paints at a point of the box, or `undefined` for a
+ * hole.
+ *
+ * `smooth` interpolates between the four surrounding cells, which is what
+ * you want over prose — the grid is coarser than the text and hard cells
+ * read as banding. It is the wrong choice for block art, where the grid
+ * and the characters line up one to one and any interpolation invents
+ * colours that belong to neither neighbour, so it defaults off.
+ */
+export function samplePaintGrid(
+  grid: PaintGrid,
+  x: number,
+  y: number,
+  smooth = false,
+  perceptual = false,
+): string | undefined {
+  const gx = clamp01(x) * (grid.cols - 1)
+  const gy = clamp01(y) * (grid.rows - 1)
+
+  if (!smooth) {
+    return paintCellAt(grid, Math.round(gx), Math.round(gy))
+  }
+
+  const x0 = Math.floor(gx)
+  const y0 = Math.floor(gy)
+  const fx = gx - x0
+  const fy = gy - y0
+
+  const c00 = paintCellAt(grid, x0, y0)
+  const c10 = paintCellAt(grid, x0 + 1, y0)
+  const c01 = paintCellAt(grid, x0, y0 + 1)
+  const c11 = paintCellAt(grid, x0 + 1, y0 + 1)
+
+  // A hole next to a colour stays a hole rather than half-fading into it:
+  // partial transparency is not expressible in a `[color]` tag, so the
+  // honest answer at the edge of a hole is the neighbour's colour.
+  const top = c00 === undefined ? c10 : c10 === undefined ? c00 : mixStop(c00, c10, fx, perceptual)
+  const bottom = c01 === undefined ? c11 : c11 === undefined ? c01 : mixStop(c01, c11, fx, perceptual)
+  if (top === undefined) return bottom
+  if (bottom === undefined) return top
+  return mixStop(top, bottom, fy, perceptual)
+}
+
+function mixStop(a: string, b: string, t: number, perceptual: boolean): string {
+  return mixMultipleStops(
+    [{ color: a, position: 0 }, { color: b, position: 1 }],
+    clamp01(t),
+    perceptual,
+  )
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -965,6 +1565,52 @@ export interface EffectParams {
   freq?: number
   step?: 'char' | 'word'
 
+  // ── Placement (spot / sweep / linear) ──
+  originX?: number
+  originY?: number
+  /** Degrees, clockwise from east. */
+  angle?: number
+  /** Reach, in units of the box's longer side. */
+  radius?: number
+  /** Width \u00f7 height of a character cell. */
+  aspect?: number
+
+  // ── Mask ──
+  maskShape?: MaskShape
+  maskX?: number
+  maskY?: number
+  maskWidth?: number
+  maskHeight?: number
+  maskRotate?: number
+  maskFeather?: number
+  maskInvert?: boolean
+  maskPoints?: number
+  maskInner?: number
+
+  // ── Paint grid (the `image` effect) ──
+  gridCols?: number
+  gridRows?: number
+  /** Comma-separated hex colours, `#` stripped. */
+  palette?: string
+  /** One character per cell, in the paint alphabet. */
+  cells?: string
+  /** Interpolate between cells instead of snapping to the nearest. */
+  smooth?: boolean
+
+  /**
+   * The colour underneath, so a partial weight has something to fade to.
+   *
+   * A colour tag paints; unlike a studio layer it has nothing to
+   * composite against, which is why `opacity` was never expressible
+   * natively. A mask makes the weight vary per character, so the question
+   * stops being avoidable: carrying the base colour is what lets a
+   * feathered edge and a partial opacity survive as one tag instead of
+   * expanding to one `[color]` per letter.
+   *
+   * Absent, a partial weight falls back to a hard cut at half strength.
+   */
+  baseColor?: string
+
   /**
    * Position of this tag's text inside a longer effect, in visible
    * characters. Set when one logical effect is split across several tags
@@ -1022,6 +1668,27 @@ const PARAM_KEYS = {
   max: 'max',
   freq: 'freq',
   step: 'step',
+  originX: 'ox',
+  originY: 'oy',
+  angle: 'ang',
+  radius: 'rad',
+  aspect: 'asp',
+  maskShape: 'mask',
+  maskX: 'mx',
+  maskY: 'my',
+  maskWidth: 'mw',
+  maskHeight: 'mh',
+  maskRotate: 'mrot',
+  maskFeather: 'mfea',
+  maskInvert: 'minv',
+  maskPoints: 'mpts',
+  maskInner: 'mrat',
+  gridCols: 'cols',
+  gridRows: 'rows',
+  palette: 'pal',
+  cells: 'map',
+  smooth: 'smooth',
+  baseColor: 'base',
   globalOffset: 'at',
   documentLength: 'of',
 } as const
@@ -1034,8 +1701,11 @@ const NUMERIC_PARAMS = new Set([
   'cycles', 'phase', 'parabolaCenter', 'parabolaPower', 'steps', 'octaves',
   'seed', 'opacity', 'saturation', 'lightness', 'spread', 'offset', 'min', 'max',
   'freq', 'globalOffset', 'documentLength',
+  'originX', 'originY', 'angle', 'radius', 'aspect',
+  'maskX', 'maskY', 'maskWidth', 'maskHeight', 'maskRotate', 'maskFeather',
+  'maskPoints', 'maskInner', 'gridCols', 'gridRows',
 ])
-const BOOLEAN_PARAMS = new Set(['invert', 'preserveSL', 'perceptual'])
+const BOOLEAN_PARAMS = new Set(['invert', 'preserveSL', 'perceptual', 'maskInvert', 'smooth'])
 
 const stopCache = new Map<string, ColorStop[]>()
 const STOP_CACHE_LIMIT = 256
@@ -1199,7 +1869,7 @@ export interface StyledSegment {
 }
 
 /** Which effect a set of parameters describes. */
-export type EffectKind = 'gradient' | 'rainbow' | 'grow' | 'sinewave'
+export type EffectKind = 'gradient' | 'rainbow' | 'grow' | 'sinewave' | 'paint'
 
 /** The size a character has with no size effect on it, in percent. */
 export const NEUTRAL_SIZE = 100
@@ -1226,6 +1896,26 @@ const EFFECT_DEFAULTS = {
   unit: 'character' as EffectUnit,
   opacity: 1,
   perceptual: false,
+  // Placement and mask belong to every effect kind, not to one of them: a
+  // rainbow can be a star in the corner exactly as a gradient can. They
+  // live in the shared defaults so `stringifyEffectParams` omits them
+  // when untouched — otherwise every tag ever written would grow fifteen
+  // attributes restating the defaults.
+  originX: DEFAULT_SPATIAL.originX,
+  originY: DEFAULT_SPATIAL.originY,
+  angle: DEFAULT_SPATIAL.angle,
+  radius: DEFAULT_SPATIAL.radius,
+  aspect: DEFAULT_SPATIAL.aspect,
+  maskShape: DEFAULT_MASK.shape,
+  maskX: DEFAULT_MASK.x,
+  maskY: DEFAULT_MASK.y,
+  maskWidth: DEFAULT_MASK.width,
+  maskHeight: DEFAULT_MASK.height,
+  maskRotate: DEFAULT_MASK.rotate,
+  maskFeather: DEFAULT_MASK.feather,
+  maskInvert: DEFAULT_MASK.invert,
+  maskPoints: DEFAULT_MASK.points,
+  maskInner: DEFAULT_MASK.inner,
 }
 
 export const GRADIENT_DEFAULTS: Partial<EffectParams> = { ...EFFECT_DEFAULTS }
@@ -1234,6 +1924,70 @@ export const RAINBOW_DEFAULTS: Partial<EffectParams> = {
 }
 export const GROW_DEFAULTS: Partial<EffectParams> = {
   ...EFFECT_DEFAULTS, wave: 'sine', min: 50, max: 200,
+}
+export const PAINT_DEFAULTS: Partial<EffectParams> = {
+  ...EFFECT_DEFAULTS, smooth: false,
+}
+
+/**
+ * The placement and mask subset of the shared defaults.
+ *
+ * Every effect kind already carries these; this names them separately so
+ * a UI can reset just the placement without touching the modulation.
+ */
+export const SPATIAL_DEFAULTS: Partial<EffectParams> = {
+  originX: EFFECT_DEFAULTS.originX,
+  originY: EFFECT_DEFAULTS.originY,
+  angle: EFFECT_DEFAULTS.angle,
+  radius: EFFECT_DEFAULTS.radius,
+  aspect: EFFECT_DEFAULTS.aspect,
+  maskShape: EFFECT_DEFAULTS.maskShape,
+  maskX: EFFECT_DEFAULTS.maskX,
+  maskY: EFFECT_DEFAULTS.maskY,
+  maskWidth: EFFECT_DEFAULTS.maskWidth,
+  maskHeight: EFFECT_DEFAULTS.maskHeight,
+  maskRotate: EFFECT_DEFAULTS.maskRotate,
+  maskFeather: EFFECT_DEFAULTS.maskFeather,
+  maskInvert: EFFECT_DEFAULTS.maskInvert,
+  maskPoints: EFFECT_DEFAULTS.maskPoints,
+  maskInner: EFFECT_DEFAULTS.maskInner,
+}
+
+/** Read a tag's placement parameters, filling in the defaults. */
+export function spatialFromParams(p: EffectParams): SpatialOptions {
+  return {
+    originX: p.originX ?? DEFAULT_SPATIAL.originX,
+    originY: p.originY ?? DEFAULT_SPATIAL.originY,
+    angle: p.angle ?? DEFAULT_SPATIAL.angle,
+    radius: p.radius ?? DEFAULT_SPATIAL.radius,
+    aspect: p.aspect ?? DEFAULT_SPATIAL.aspect,
+  }
+}
+
+/** Read a tag's mask parameters, filling in the defaults. */
+export function maskFromParams(p: EffectParams): MaskOptions {
+  return {
+    shape: p.maskShape ?? DEFAULT_MASK.shape,
+    x: p.maskX ?? DEFAULT_MASK.x,
+    y: p.maskY ?? DEFAULT_MASK.y,
+    width: p.maskWidth ?? DEFAULT_MASK.width,
+    height: p.maskHeight ?? DEFAULT_MASK.height,
+    rotate: p.maskRotate ?? DEFAULT_MASK.rotate,
+    feather: p.maskFeather ?? DEFAULT_MASK.feather,
+    invert: p.maskInvert ?? DEFAULT_MASK.invert,
+    points: p.maskPoints ?? DEFAULT_MASK.points,
+    inner: p.maskInner ?? DEFAULT_MASK.inner,
+    // A mask and a placeable axis measure the same page, so they must
+    // agree about how wide a character is. One value, read twice.
+    aspect: p.aspect ?? DEFAULT_MASK.aspect,
+  }
+}
+
+/** Read a tag's paint grid, or `null` when it carries none. */
+export function gridFromParams(p: EffectParams): PaintGrid | null {
+  if (p.gridCols === undefined || p.gridRows === undefined) return null
+  if (!p.palette || !p.cells) return null
+  return parsePaintGrid(p.gridCols, p.gridRows, p.palette, p.cells)
 }
 
 /**
@@ -1265,6 +2019,7 @@ export function evaluateEffect(
   const defaults =
     kind === 'rainbow' ? RAINBOW_DEFAULTS :
     kind === 'grow' ? GROW_DEFAULTS :
+    kind === 'paint' ? PAINT_DEFAULTS :
     GRADIENT_DEFAULTS
   const p = { ...defaults, ...params } as Required<Pick<EffectParams,
     'axis' | 'wave' | 'cycles' | 'phase' | 'easing' | 'bezier' | 'parabolaCenter' |
@@ -1282,6 +2037,14 @@ export function evaluateEffect(
     ? `bezier(${p.bezier.join(',')})`
     : p.easing
 
+  // Placement, mask and grid are resolved once. They do not vary per
+  // character, and reading fifteen `??` fallbacks inside the loop cost
+  // more than every shape SDF put together.
+  const geo = spatialFromParams(p)
+  const maskOpts = maskFromParams(p)
+  const masked = maskOpts.shape !== 'none'
+  const grid = kind === 'paint' ? gridFromParams(p) : null
+
   // A document-wide span replaces the local index so several nodes read
   // as one continuous effect.
   // The span may arrive as node metadata (set by a tree transform) or in
@@ -1294,11 +2057,11 @@ export function evaluateEffect(
 
   const out: StyledSegment[] = []
   let groupKey: number | null = null
-  let pending: { text: string; value: number } | null = null
+  let pending: { text: string; value: number; weight: number; color?: string } | null = null
 
   const flush = () => {
     if (!pending) return
-    out.push(styleFor(kind, pending.text, pending.value, p, stops))
+    out.push(styleFor(kind, pending.text, pending.value, p, stops, pending.weight, pending.color))
     pending = null
   }
 
@@ -1321,9 +2084,34 @@ export function evaluateEffect(
     groupKey = key
 
     const ctx: SampleContext = { sample, scope, table, local: sample.index }
+
+    // A mask that excludes the character settles the question before any
+    // of the modulation runs: there is no colour to compute.
+    const weight = masked ? maskValue(ctx, maskOpts) : 1
+    if (weight <= 0) {
+      flush()
+      groupKey = null
+      out.push({ text: chars[i] })
+      continue
+    }
+
+    if (kind === 'paint') {
+      const pt = spatialPoint(ctx, geo.aspect)
+      const hex = grid
+        ? samplePaintGrid(grid, pt.x, pt.y, p.smooth === true, p.perceptual)
+        : undefined
+      if (hex === undefined) {
+        out.push({ text: chars[i] })
+        groupKey = null
+        continue
+      }
+      pending = { text: chars[i], value: 0, weight, color: hex }
+      continue
+    }
+
     let u = spanned
       ? clamp01((spanOffset + sample.index) / (spanLength - 1))
-      : axisValue(effectiveAxis(p.axis, p.unit), ctx, p.seed | 0)
+      : axisValue(effectiveAxis(p.axis, p.unit), ctx, p.seed | 0, geo)
     if (p.invert) u = 1 - u
 
     let v = waveform(p.wave, u, {
@@ -1344,7 +2132,7 @@ export function evaluateEffect(
       v = Math.round(clamp01(v) * (levels - 1)) / (levels - 1)
     }
 
-    pending = { text: chars[i], value: clamp01(v) }
+    pending = { text: chars[i], value: clamp01(v), weight }
   }
   flush()
 
@@ -1433,6 +2221,8 @@ function styleFor(
   v: number,
   p: EffectParams & { perceptual: boolean },
   stops: ColorStop[],
+  weight = 1,
+  directColor?: string,
 ): StyledSegment {
   if (kind === 'grow' || kind === 'sinewave') {
     const min = p.min ?? 50
@@ -1443,8 +2233,18 @@ function styleFor(
     // underneath that opacity performs on a colour, which is why it shares
     // the field — but a font size has no alpha, so the UI labels it
     // "strength" rather than pretending otherwise.
-    const strength = p.opacity ?? 1
+    //
+    // A mask multiplies into it, which is exactly right for a size: the
+    // neutral 100% IS what is underneath, so a half-covered character is
+    // half-grown with nothing extra to know.
+    const strength = (p.opacity ?? 1) * weight
     return { text, size: Math.round(NEUTRAL_SIZE + (size - NEUTRAL_SIZE) * strength) }
+  }
+
+  if (kind === 'paint') {
+    return directColor === undefined
+      ? { text }
+      : applyWeight(text, directColor, weight * (p.opacity ?? 1), p.baseColor)
   }
 
   if (kind === 'rainbow') {
@@ -1458,13 +2258,37 @@ function styleFor(
     } else {
       hue = offset + v * spread
     }
-    return {
+    return applyWeight(
       text,
-      color: normalizeHex(hslToHex(((hue % 360) + 360) % 360, p.saturation ?? 80, p.lightness ?? 60)),
-    }
+      hslToHex(((hue % 360) + 360) % 360, p.saturation ?? 80, p.lightness ?? 60),
+      weight * (p.opacity ?? 1),
+      p.baseColor,
+    )
   }
 
-  return { text, color: normalizeHex(mixMultipleStops(stops, v, p.perceptual)) }
+  return applyWeight(text, mixMultipleStops(stops, v, p.perceptual), weight * (p.opacity ?? 1), p.baseColor)
+}
+
+/**
+ * Composite one computed colour at a partial weight.
+ *
+ * With a known base the answer is a plain mix, and a feathered edge comes
+ * out smooth. Without one there is nothing to fade toward, so the weight
+ * becomes a threshold: past halfway the character takes the colour,
+ * before it the character keeps whatever it inherits. That is a visible
+ * step rather than a gradient, and it is the honest limit of a bare tag —
+ * the studio, which always knows the colour underneath, never reaches it.
+ */
+function applyWeight(
+  text: string,
+  hex: string,
+  weight: number,
+  baseColor?: string,
+): StyledSegment {
+  if (weight >= 1) return { text, color: normalizeHex(hex) }
+  if (weight <= 0) return { text }
+  if (baseColor) return { text, color: normalizeHex(mixHex(baseColor, hex, weight)) }
+  return weight >= 0.5 ? { text, color: normalizeHex(hex) } : { text }
 }
 
 /**

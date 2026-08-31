@@ -22,7 +22,7 @@ import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 export type ExportTarget = 'osu' | 'miliastry' | 'lyne'
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
-const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow'])
+const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow', 'paint'])
 
 /**
  * Tags que existen SOLO en Miliastry (registrados en el TagRegistry) y que
@@ -94,6 +94,7 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   grow: 'grow',
   rainbow: 'rainbow',
   sinewave: 'sinewave',
+  paint: 'paint',
   align: 'align',
   tables: 'tables',
   table_row: 'row',

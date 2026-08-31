@@ -9,6 +9,13 @@
  */
 
 import { RedNode } from '../Syntax/RedNode'
+import {
+  nodeAttrValue,
+  parseImgAttr,
+  sanitizeColor,
+  sanitizeFontFamily,
+  sanitizeFontSize,
+} from '../Syntax/nodeAttr'
 import { Visitor } from './Visitor'
 import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree } from '../RenderPipeline/RenderTree'
@@ -251,8 +258,8 @@ export class HTMLRenderer extends Visitor<string> {
       const style = node.metadata?.style as Record<string, string> | undefined
       if (style) {
         const inlineStyles = []
-        const color = style.color && this.sanitizeColor(style.color)
-        const fontSize = style.fontSize && this.sanitizeFontSize(style.fontSize)
+        const color = style.color && sanitizeColor(style.color)
+        const fontSize = style.fontSize && sanitizeFontSize(style.fontSize)
         if (color) inlineStyles.push(`color: ${color}`)
         if (fontSize) inlineStyles.push(`font-size: ${fontSize}%`)
         if (this.isCssKeyword(style.fontWeight)) inlineStyles.push(`font-weight: ${style.fontWeight}`)
@@ -378,6 +385,7 @@ export class HTMLRenderer extends Visitor<string> {
       case 'rainbow': return this.renderEffectSegments(node, 'rainbow')
       case 'grow': return this.renderEffectSegments(node, 'grow')
       case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
+      case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
         if (this.options.osuBehaviour && this.isNextCodeBlock(node)) return '\n'
         if (this.isTrailingBlockBoundary(node)) return '\n'
@@ -507,20 +515,8 @@ export class HTMLRenderer extends Visitor<string> {
   // half-escaped value still emits broken CSS, so we validate the shape and
   // drop anything that isn't a value we intended to support.
 
-  /** #rgb / #rgba / #rrggbb / #rrggbbaa, a bare CSS color keyword, or rgb()/hsl(). */
-  private static readonly CSS_COLOR_RE =
-    /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|[a-z]{3,20}|(?:rgb|hsl)a?\([0-9a-z.,%\s/+-]{1,64}\))$/i
-
-  /** Bare number — interpolated as a percentage. */
-  private static readonly CSS_SIZE_RE = /^\d{1,4}(?:\.\d{1,2})?$/
-
-  /** Font family list. Quotes are rejected outright; unquoted names are valid CSS. */
-  private static readonly CSS_FONT_RE = /^[A-Za-z0-9 ,_-]{1,120}$/
-
   /** Characters `escapeHtml` has to rewrite. Non-global on purpose: `test` must not carry `lastIndex`. */
   private static readonly HTML_ESCAPE_RE = /[&<>"']/
-
-  private static readonly BARE_HEX_RE = /^[0-9a-f]{3,8}$/i
 
   private static readonly NAMED_COLORS: Record<string, string> = {
     black: '#000000',
@@ -543,81 +539,30 @@ export class HTMLRenderer extends Visitor<string> {
     gold: '#FFD700',
   }
 
-  private sanitizeColor(raw: string): string | null {
-    let v = raw.trim()
-    if (!v) return null
-    if (HTMLRenderer.BARE_HEX_RE.test(v) && (v.length === 3 || v.length === 4 || v.length === 6 || v.length === 8)) {
-      v = '#' + v
-    }
-    return HTMLRenderer.CSS_COLOR_RE.test(v) ? v : null
-  }
-
-  private sanitizeFontSize(raw: string): string | null {
-    const v = raw.trim()
-    return HTMLRenderer.CSS_SIZE_RE.test(v) ? v : null
-  }
-
-  private sanitizeFontFamily(raw: string): string | null {
-    const v = raw.trim()
-    return HTMLRenderer.CSS_FONT_RE.test(v) ? v : null
-  }
-
   /** Keyword-or-number CSS values (font-weight, font-style, text-decoration). */
   private isCssKeyword(raw: string | undefined): boolean {
     return !!raw && /^[a-z]{2,20}(?: [a-z]{2,20})?$|^[1-9]00$/i.test(raw.trim())
   }
 
   /** Read a metadata field, falling back to the raw tag attribute. */
-  private metaOrAttr(node: RedNode, key: string): string {
-    const meta = node.metadata?.[key]
-    return (typeof meta === 'string' && meta) || this.extractValue(node)
-  }
 
   private colorStyle(node: RedNode): string {
-    const color = this.sanitizeColor(this.metaOrAttr(node, 'color'))
+    const color = sanitizeColor(nodeAttrValue(node, 'color'))
     return color ? `style="color:${color};"` : ''
   }
 
   private fontSizeStyle(node: RedNode): string {
-    const size = this.sanitizeFontSize(this.metaOrAttr(node, 'size'))
+    const size = sanitizeFontSize(nodeAttrValue(node, 'size'))
     return size ? `style="font-size:${size}%;"` : ''
   }
 
   private fontStyle(node: RedNode): string {
-    const font = this.sanitizeFontFamily(this.metaOrAttr(node, 'font'))
+    const font = sanitizeFontFamily(nodeAttrValue(node, 'font'))
     return font ? `style="font-family:${font};"` : ''
   }
 
-  /**
-   * Extract the attribute value from a BBCode tag node.
-   *
-   * BBCode attributes come in the format `=VALUE` (e.g. `=#61afef`, `="Author"`,
-   * `=https://osu.ppy.sh`). This strips the leading `=` and any surrounding quotes.
-   *
-   * For tags without attrs (like text nodes, img content), returns the node text as-is.
-   */
-  private extractValue(node: RedNode): string {
-    const text = node.text || ''
-    if (!text) return ''
-
-    const eqIdx = text.indexOf('=')
-    if (eqIdx >= 0) {
-      // Strip `=` prefix and surrounding quotes
-      let value = text.slice(eqIdx + 1)
-      // Remove surrounding quotes: "value" or 'value'
-      if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      return value
-    }
-
-    // No `=` prefix — return as-is (used for media content like img URLs)
-    return text
-  }
-
   private renderLink(node: RedNode, kind: string): string {
-    let href = String(node.metadata?.href ?? '') || this.extractValue(node)
+    let href = String(node.metadata?.href ?? '') || nodeAttrValue(node)
     // Un `[email]a@b.com[/email]` llega con href exactamente `mailto:` y la
     // dirección en el hijo de texto. Sin completarlo aquí el href quedaba
     // vacío y el round-trip devolvía `[url=mailto:]a@b.com[/url]`.
@@ -630,7 +575,9 @@ export class HTMLRenderer extends Visitor<string> {
     }
     const content = this.renderChildren(node) || href
     const h = href ? ` href="${this.escapeHtml(href)}"` : ''    
-    return `<a${this.idAttr(node)}${h} target="_blank" rel="noopener">${content}</a>`
+    const hasMediaChild = node.children.some(c => c.kind === 'image' || c.kind === 'svg' || c.kind === 'video')
+    const imgCls = hasMediaChild ? ' class="bb-link-img"' : ''
+    return `<a${this.idAttr(node)}${imgCls}${h} target="_blank" rel="noopener">${content}</a>`
   }
 
   private renderProfile(node: RedNode): string {
@@ -639,7 +586,7 @@ export class HTMLRenderer extends Visitor<string> {
 
   private renderEntity(node: RedNode, type: 'profile' | 'guild' | 'map'): string {
     const key = type === 'profile' ? 'username' : type === 'guild' ? 'tag' : 'id'
-    const val = String(node.metadata?.[key] ?? '') || this.extractValue(node)
+    const val = String(node.metadata?.[key] ?? '') || nodeAttrValue(node)
     const content = this.renderChildren(node) || val
     // El converter HTML→BBCode ve `<strong><a>`, no la etiqueta original. Sin
     // esta marca `[profile]peppy[/profile]` volvía como `[b][url=...]…[/url][/b]`,
@@ -668,17 +615,6 @@ export class HTMLRenderer extends Visitor<string> {
     return `<strong${entity}><a${this.idAttr(node)} href="#">${content}</a></strong>`
   }
 
-  private parseImgAttr(v: string | null): { w?: number; h?: number; round?: boolean; shadow?: boolean; float?: boolean } {
-    if (!v) return {}
-    const t = v.trim().toLowerCase()
-    if (t === 'round') return { round: true }
-    if (t === 'shadow') return { shadow: true }
-    if (t === 'float') return { float: true }
-    const m = /^(\d{1,4})x(\d{1,4})$/i.exec(t)
-    if (m) return { w: Math.min(2000, parseInt(m[1], 10)), h: Math.min(2000, parseInt(m[2], 10)) }
-    return {}
-  }
-
   /**
    * El aviso que ocupa el sitio de un medio que no se puede pintar.
    *
@@ -693,12 +629,12 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderImage(node: RedNode): string {
-    let src = String(node.metadata?.src ?? '') || this.extractValue(node) || ''
+    let src = String(node.metadata?.src ?? '') || nodeAttrValue(node) || ''
     if (!src) return this.mediaError('img', '[img] missing source URL')
     if (this.options.mediaProxy) {
       src = this.options.mediaProxy(src)
     }
-    const imgAttr = this.parseImgAttr(this.extractValue(node))
+    const imgAttr = parseImgAttr(nodeAttrValue(node))
     const styles: string[] = []
     if (imgAttr.w) styles.push(`width:${imgAttr.w}px`)
     if (imgAttr.h) styles.push(`height:${imgAttr.h}px`)
@@ -715,13 +651,13 @@ export class HTMLRenderer extends Visitor<string> {
     const cls = imgAttr.round ? '' : ' class="bb-img"'
     // El modificador no se puede reconstruir desde el `style` resultante
     // (`round` y `120x120` producen el mismo CSS), así que viaja literal.
-    const rawAttr = this.extractValue(node)
+    const rawAttr = nodeAttrValue(node)
     const attr = rawAttr ? ` data-img-attr="${this.escapeHtml(rawAttr)}"` : ''
     return `<img${this.idAttr(node)}${cls}${attr} src="${this.escapeHtml(src)}" alt="" style="${styles.join(';')};">`
   }
 
   private renderVideo(node: RedNode): string {
-    let id = String(node.metadata?.videoId ?? '') || this.extractValue(node) || ''
+    let id = String(node.metadata?.videoId ?? '') || nodeAttrValue(node) || ''
     if (!id) return this.mediaError('youtube', '[youtube] missing video ID')
     const ytMatch = /(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([\w-]{11})/.exec(id)
     if (ytMatch) id = ytMatch[1]
@@ -755,7 +691,7 @@ export class HTMLRenderer extends Visitor<string> {
   private renderNotice(node: RedNode, warning: boolean): string {
     const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne' || warning
     if (isLyne) {
-      const color = this.sanitizeColor(this.metaOrAttr(node, 'color'))
+      const color = sanitizeColor(nodeAttrValue(node, 'color'))
       const styleAttr = color
         ? ` style="background:${this.hexToRgba(color, 0.08)};border-color:${this.hexToRgba(color, 0.4)};border-left-color:${color};color:${this.hexToRgba(color, 0.85)};"`
         : ''
@@ -769,7 +705,7 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderTables(node: RedNode): string {
-    const variant = (String(node.metadata?.variant ?? '') || this.extractValue(node) || '').trim().toLowerCase()
+    const variant = (String(node.metadata?.variant ?? '') || nodeAttrValue(node) || '').trim().toLowerCase()
     const variants = new Set(variant.split(/[\s,]+/).filter(Boolean))
     const tableClasses = [
       'bb-table',
@@ -811,7 +747,7 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderColumns(node: RedNode): string {
-    const cols = parseInt(String(node.metadata?.columns ?? '') || this.extractValue(node) || '2', 10)
+    const cols = parseInt(String(node.metadata?.columns ?? '') || nodeAttrValue(node) || '2', 10)
     const numCols = Math.max(2, Math.min(4, isNaN(cols) ? 2 : cols))
     const content = this.renderChildren(node)
     // `[columns=2:#hex]`: con color se añade la superficie (borde + fondo
@@ -823,27 +759,27 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderSeparator(node: RedNode): string {
-    const variant = (String(node.metadata?.variant ?? '') || this.extractValue(node) || 'line').trim().toLowerCase()
+    const variant = (String(node.metadata?.variant ?? '') || nodeAttrValue(node) || 'line').trim().toLowerCase()
     if (variant === 'dots') return `<div${this.idAttr(node)} class="bb-separator">· · ·</div>`
     if (variant === 'stars') return `<div${this.idAttr(node)} class="bb-separator">✦ ✦ ✦</div>`
     return `<hr${this.idAttr(node)} class="bb-separator" />`
   }
 
   private renderScroll(node: RedNode): string {
-    const h = parseInt(String(node.metadata?.height ?? '') || this.extractValue(node) || '200', 10)
+    const h = parseInt(String(node.metadata?.height ?? '') || nodeAttrValue(node) || '200', 10)
     const maxH = Math.max(50, Math.min(2000, isNaN(h) ? 200 : h))
     const content = this.renderChildren(node)
     return `<div${this.idAttr(node)} class="bb-scroll" style="max-height:${maxH}px;">${content}</div>`
   }
 
   private renderAbbr(node: RedNode): string {
-    const title = String(node.metadata?.title ?? '') || this.extractValue(node)
+    const title = String(node.metadata?.title ?? '') || nodeAttrValue(node)
     const attr = title ? ` title="${this.escapeHtml(title)}"` : ''
     return this.wrapInline('abbr', node, attr)
   }
 
   private renderTooltip(node: RedNode): string {
-    const tip = String(node.metadata?.tip ?? '') || this.extractValue(node)
+    const tip = String(node.metadata?.tip ?? '') || nodeAttrValue(node)
     const attr = tip ? ` title="${this.escapeHtml(tip)}"` : ''
     return this.wrapInline('span', node, `class="bb-tooltip"${attr}`)
   }
@@ -858,16 +794,16 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderAlign(node: RedNode): string {
-    const alignVal = (String(node.metadata?.align ?? '') || this.extractValue(node) || 'center').trim().toLowerCase()
+    const alignVal = (String(node.metadata?.align ?? '') || nodeAttrValue(node) || 'center').trim().toLowerCase()
     const validAlign = alignVal === 'left' || alignVal === 'right' ? alignVal : 'center'
     return this.wrapBlock('div', node, `style="text-align:${validAlign};"`)
   }
 
   private renderEffect(node: RedNode): string {
-    const raw = (String(node.metadata?.effectType ?? '') || this.extractValue(node) || 'glow').toLowerCase().trim()
+    const raw = (String(node.metadata?.effectType ?? '') || nodeAttrValue(node) || 'glow').toLowerCase().trim()
     const effectType = raw.includes(':') ? raw.split(':')[0] : (raw.startsWith('#') ? 'glow' : raw)
-    const rawColor = String(node.metadata?.color ?? '') || (raw.includes(':') ? raw.split(':')[1] : (raw.startsWith('#') ? raw : this.extractValue(node)))
-    const color = this.sanitizeColor(rawColor)
+    const rawColor = String(node.metadata?.color ?? '') || (raw.includes(':') ? raw.split(':')[1] : (raw.startsWith('#') ? raw : nodeAttrValue(node)))
+    const color = sanitizeColor(rawColor)
     const content = this.renderChildren(node)
     const idAttr = this.idAttr(node)
 
@@ -900,7 +836,7 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderAnim(node: RedNode): string {
-    const raw = (String(node.metadata?.animType ?? '') || this.extractValue(node) || 'pulse').toLowerCase().trim()
+    const raw = (String(node.metadata?.animType ?? '') || nodeAttrValue(node) || 'pulse').toLowerCase().trim()
     const animType = raw.includes(':') ? raw.split(':')[0] : raw
     const content = this.renderChildren(node)
     const idAttr = this.idAttr(node)
@@ -928,7 +864,7 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderContainer(node: RedNode): string {
-    const raw = (String(node.metadata?.containerType ?? '') || this.extractValue(node) || 'stack').trim()
+    const raw = (String(node.metadata?.containerType ?? '') || nodeAttrValue(node) || 'stack').trim()
     const [type, ...params] = raw.split(':')
     const containerType = type.toLowerCase()
     const param = params.join(':')
@@ -952,7 +888,7 @@ export class HTMLRenderer extends Visitor<string> {
         return `<div${idAttr} class="bb-middle">${content}</div>`
       case 'square':
       case 'circle': {
-        const accent = this.sanitizeColor(param)
+        const accent = sanitizeColor(param)
         const border = accent ? this.hexToRgba(accent, 0.35) : ''
         const bg = accent ? this.hexToRgba(accent, 0.08) : ''
         const style = accent ? ` style="--square-accent:${accent};--square-border:${border};--square-bg:${bg};"` : ''
@@ -965,14 +901,14 @@ export class HTMLRenderer extends Visitor<string> {
         // del que el CSS deriva borde, tinte de fondo y —vía la clase
         // `bb-accented`— la paleta del contenido sin color propio. Sin color,
         // defaults y sin clase.
-        const accent = this.sanitizeColor(param)
+        const accent = sanitizeColor(param)
         const cls = accent ? ' bb-accented' : ''
         const style = accent ? ` style="--${containerType}-accent:${accent};"` : ''
         return `<div${idAttr} class="bb-cut-panel bb-${containerType}${cls}"${style}>${content}</div>`
       }
       case 'neon-box':
       case 'neonbox': {
-        const c = this.sanitizeColor(param || this.extractValue(node)) || 'var(--color-accent, #2EE6E2)'
+        const c = sanitizeColor(param || nodeAttrValue(node)) || 'var(--color-accent, #2EE6E2)'
         return `<div${idAttr} class="bb-cut-panel bb-neon-box" style="--neon-color:${c};border-color:${c};">${content}</div>`
       }
       default:
@@ -991,7 +927,7 @@ export class HTMLRenderer extends Visitor<string> {
   ])
 
   private renderStyleTag(node: RedNode): string {
-    const raw = (String(node.metadata?.style ?? '') || this.extractValue(node) || '').trim()
+    const raw = (String(node.metadata?.style ?? '') || nodeAttrValue(node) || '').trim()
     const content = this.renderChildren(node)
     const idAttr = this.idAttr(node)
     if (!raw) return `<span${idAttr}>${content}</span>`
@@ -1019,7 +955,7 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderQuote(node: RedNode): string {
-    const source = node.metadata?.source || this.extractValue(node)
+    const source = node.metadata?.source || nodeAttrValue(node)
     const content = this.renderChildren(node)
     if (source) {
       return `<blockquote${this.idAttr(node)}><div style="margin-bottom:8px"><strong>${this.escapeHtml(String(source))} wrote:</strong></div>${content}</blockquote>`
@@ -1077,7 +1013,7 @@ export class HTMLRenderer extends Visitor<string> {
     if (titleNodes && titleNodes.length > 0) {
       return titleNodes.map(c => this.renderNode(c)).join('')
     }
-    const title = node.metadata?.title ?? this.extractValue(node) ?? fallback
+    const title = node.metadata?.title ?? nodeAttrValue(node) ?? fallback
     return this.escapeHtml(String(title))
   }
 
@@ -1088,7 +1024,7 @@ export class HTMLRenderer extends Visitor<string> {
    * borde + fondo en columns). Devuelve '' si no hay color válido.
    */
   private boxAccentStyle(node: RedNode, suffix: 'box' | 'table' | 'columns' = 'box'): string {
-    const color = this.sanitizeColor(String(node.metadata?.color ?? ''))
+    const color = sanitizeColor(String(node.metadata?.color ?? ''))
     if (!color) return ''
     const border = this.hexToRgba(color, 0.35)
     const bg = this.hexToRgba(color, 0.08)
@@ -1097,7 +1033,7 @@ export class HTMLRenderer extends Visitor<string> {
 
   private renderList(node: RedNode): string {
     // Check for ordered list: [list=1], [list=a], or metadata
-    const attrs = this.extractValue(node)
+    const attrs = nodeAttrValue(node)
     const isOrdered = node.metadata?.ordered === true || attrs === '1' || attrs === 'a'
     const tag = isOrdered ? 'ol' : 'ul'
     const content = node.children.map(c => this.renderNode(c)).join('\n')
@@ -1218,23 +1154,43 @@ export class HTMLRenderer extends Visitor<string> {
 
     if (Array.isArray(params.colors)) {
       params.colors = params.colors
-        .map(c => (typeof c === 'string' ? this.sanitizeColor(c) : null))
+        .map(c => (typeof c === 'string' ? sanitizeColor(c) : null))
         .filter((c): c is string => c !== null)
       if (params.colors.length === 0) delete params.colors
     }
     if (Array.isArray(params.stops)) {
       params.stops = params.stops
-        .filter(st => st && typeof st.color === 'string' && this.sanitizeColor(st.color) !== null)
+        .filter(st => st && typeof st.color === 'string' && sanitizeColor(st.color) !== null)
       if (params.stops.length === 0) delete params.stops
     }
     return params
   }
 
   /** Text inside an effect node, ignoring layout-only children. */
+  /**
+   * The plain text an effect modulates, line breaks included.
+   *
+   * A break is a childless `spacing` leaf carrying no text, so collecting
+   * it naively contributes nothing and the effect sees one long line.
+   * Every two-dimensional axis then collapses: `line` reports zero for
+   * the whole block, `column` stretches one row across the paragraph, and
+   * `radial` measures a rectangle one line tall. The break was being
+   * dropped from the OUTPUT as well, so a multi-line effect previewed as
+   * a single run-on line.
+   *
+   * The document's own plain text spells a break `\n` — that is what
+   * `stripColorWrappers` and the studio's sampler both count — so this
+   * agrees with them rather than inventing a third answer.
+   */
   private effectText(node: RedNode): string {
-    return node.children
-      .filter(c => c.kind !== 'spacing' && c.kind !== 'empty_line')
-      .map(c => this.collectNodeText(c)).join('')
+    return node.children.map(c => this.effectChildText(c)).join('')
+  }
+
+  private effectChildText(node: RedNode): string {
+    if (node.kind === 'spacing' || node.kind === 'empty_line') return '\n'
+    if (node.kind === 'text') return node.text ?? ''
+    if (node.children.length === 0) return this.collectNodeText(node)
+    return node.children.map(c => this.effectChildText(c)).join('')
   }
 
   /**
@@ -1256,9 +1212,12 @@ export class HTMLRenderer extends Visitor<string> {
 
     let out = ''
     for (const seg of segments) {
-      const escaped = this.escapeHtml(seg.text)
+      // The break is markup, not text: escaping it would print a newline
+      // that HTML collapses to a space, which is how a painted block of
+      // ASCII art would arrive as one unreadable line.
+      const escaped = this.escapeHtml(seg.text).replace(/\n/g, '<br>')
       if (seg.color) {
-        const safe = this.sanitizeColor(seg.color)
+        const safe = sanitizeColor(seg.color)
         out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped
       } else if (seg.size !== undefined) {
         out += `<span style="font-size:${Math.max(10, Math.min(400, seg.size))}%">${escaped}</span>`

@@ -92,6 +92,7 @@ export type NodeKind =
   | 'grow'
   | 'sinewave'
   | 'rainbow'
+  | 'paint'
   | 'spacing'
   | 'empty_line'
   /**

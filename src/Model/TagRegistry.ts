@@ -104,9 +104,18 @@ export interface PropertyDefinition {
 
 // ─── Internal tag helpers (gradient/grow export) ──────────────
 
-/** Recursively extract plain text from a RedNode tree */
+/**
+ * Recursively extract plain text from a RedNode tree.
+ *
+ * A line break is a childless `spacing` leaf with no text of its own, so
+ * it has to be spelled out here or an effect spanning two lines is handed
+ * one line and exports without its break — silent data loss, and the
+ * reason every two-dimensional axis (`line`, `column`, `radial`) measured
+ * a block one line tall.
+ */
 function extractTextContent(node: RedNode): string {
   if (node.kind === 'text') return node.text
+  if (node.kind === 'spacing' || node.kind === 'empty_line') return '\n'
   return node.children.map(extractTextContent).join('')
 }
 
@@ -359,6 +368,24 @@ export class TagRegistry {
           return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
         },
         toRenderNode: (ctx) => segmentsToRenderNode('grow', effectSegments(ctx.node, 'grow')),
+      },
+      {
+        // Colour driven by a picture rather than a ramp: the tag carries a
+        // small indexed grid, and each character takes the colour of the
+        // cell it lands on. Nothing about the text changes — this is the
+        // one effect whose whole point is that the art keeps its shape.
+        name: 'paint',
+        kind: 'paint',
+        label: 'Paint',
+        category: 'text',
+        isInline: true,
+        isSelfClosing: false,
+        canHaveChildren: true,
+        toBBCode: (ctx) => {
+          const segments = effectSegments(ctx.node, 'paint')
+          return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
+        },
+        toRenderNode: (ctx) => segmentsToRenderNode('paint', effectSegments(ctx.node, 'paint')),
       },
       {
         name: 'rainbow',
