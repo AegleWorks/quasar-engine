@@ -92,6 +92,17 @@ export interface AnalyzerContext {
    * need cross-references still get it; everyone else stops paying for it.
    */
   readonly allNodes: Map<string, RedNode>
+  /**
+   * Openers whose `[/tag]` does exist but arrived too late, keyed by the
+   * opener's node id.
+   *
+   * A getter for the same reason `allNodes` is one, and asked for even more
+   * rarely: the only way to reach it is through a node that is already known
+   * to be unclosed, which on a healthy document never happens. Both validators
+   * that read it test `isUnclosedTag` first, so a document with no auto-closed
+   * tag never pays for the walk.
+   */
+  readonly crossings: ReadonlyMap<string, CrossedTags>
   /** Previously collected diagnostics */
   diagnostics: DiagnosticCollection
   /** Source text for position lookups */
@@ -216,6 +227,85 @@ export function isUnclosedTag(node: RedNode, source: string): boolean {
   if (!name || name === '*') return false
 
   return !endsWithClosingTag(source, node.range.end, name)
+}
+
+/**
+ * An opener the parser closed on the author's behalf, together with the
+ * `[/tag]` the author *did* write — just too late for it to count.
+ */
+export interface CrossedTags {
+  /** The tag name as written, lowercased. */
+  tag: string
+  /** Where its closing tag belongs: the offset the parser already closed it at. */
+  at: number
+  /** Where the ignored `[/tag]` sits in the source. */
+  closer: { start: number; end: number }
+}
+
+/** The whole text of a `discarded_tag` leaf: `[/box]` → `box`. */
+const DISCARDED_CLOSING_TAG = /^\[\/([a-zA-Z0-9_*-]+)\]$/
+
+/**
+ * Pairs every auto-closed opener with the stranded `[/tag]` that was meant for
+ * it, so crossed tags stop being reported as missing ones.
+ *
+ * The tree already holds both halves and nothing else has to be recomputed.
+ * When `[/centre]` arrives over an open `[notice][box]`, the parser closes both
+ * inner frames and records their names; the `[/box]` and `[/notice]` that
+ * follow find their name already spent and land as `discarded_tag` leaves,
+ * which keep their range precisely so this is answerable later.
+ *
+ * The pairing mirrors what the parser did rather than guessing at it. Its
+ * `autoClosed` is a Set keyed by name and consumed on use, so a stranded
+ * `[/tag]` belongs to the most recently opened frame of that name that was
+ * already closed by the time it appeared. `walk` is pre-order, so within one
+ * name the innermost frame is the last one collected — which is why the search
+ * runs backwards and stops at the first unclaimed match.
+ */
+function findCrossedTags(root: RedNode, source: string): Map<string, CrossedTags> {
+  const openers = new Map<string, { id: string; at: number }[]>()
+  const closers: { tag: string; start: number; end: number }[] = []
+
+  root.walk(node => {
+    if (node.kind === 'discarded_tag') {
+      const match = DISCARDED_CLOSING_TAG.exec(node.text)
+      if (match) {
+        closers.push({
+          tag: match[1].toLowerCase(),
+          start: node.range.start,
+          end: node.range.end,
+        })
+      }
+      return
+    }
+    if (!isUnclosedTag(node, source)) return
+    const tag = openingTagName(node, source)
+    if (!tag) return
+    const list = openers.get(tag)
+    if (list) list.push({ id: node.id, at: node.range.end })
+    else openers.set(tag, [{ id: node.id, at: node.range.end }])
+  })
+
+  const crossings = new Map<string, CrossedTags>()
+  for (const closer of closers) {
+    const candidates = openers.get(closer.tag)
+    if (candidates === undefined) continue
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const opener = candidates[i]
+      // A closer cannot belong to a frame that was still open when it arrived,
+      // nor to one another closer already claimed.
+      if (opener.at > closer.start) continue
+      if (crossings.has(opener.id)) continue
+      crossings.set(opener.id, {
+        tag: closer.tag,
+        at: opener.at,
+        closer: { start: closer.start, end: closer.end },
+      })
+      break
+    }
+  }
+
+  return crossings
 }
 
 /**
@@ -415,6 +505,7 @@ export class SemanticAnalyzer {
     // it — see the note on `AnalyzerContext.allNodes`. `root` is captured, so
     // the walk that builds it happens at most once per analyze.
     let allNodesCache: Map<string, RedNode> | null = null
+    let crossingsCache: Map<string, CrossedTags> | null = null
     const context: AnalyzerContext = {
       get allNodes(): Map<string, RedNode> {
         if (allNodesCache === null) {
@@ -422,6 +513,10 @@ export class SemanticAnalyzer {
           root.walk(node => { allNodesCache!.set(node.id, node) })
         }
         return allNodesCache
+      },
+      get crossings(): ReadonlyMap<string, CrossedTags> {
+        if (crossingsCache === null) crossingsCache = findCrossedTags(root, source)
+        return crossingsCache
       },
       diagnostics,
       source,
@@ -589,6 +684,9 @@ export class SemanticAnalyzer {
       severity: 'warning',
       validate: (node, ctx) => {
         if (!isUnclosedTag(node, ctx.source)) return null
+        // Its closing tag is not missing, it is misplaced. Reported — with a
+        // different repair — by `crossed-tags` below.
+        if (ctx.crossings.has(node.id)) return null
 
         const name = openingTagName(node, ctx.source)
 
@@ -609,6 +707,64 @@ export class SemanticAnalyzer {
           `Missing [/${name}] — the tag was closed automatically`,
           'warning',
           { nodeId: node.id, nodeKind: node.kind, range: node.range, fixes },
+        )
+      },
+    })
+
+    // Crossed tags validator
+    //
+    // `[centre][notice]x[/centre][/notice]` — the closers are all there, just
+    // in the wrong order. The parser resolves it the way osu! does and moves
+    // on, so without this the author is told two tags are *missing* while
+    // their `[/tag]`s sit in plain sight further down the document.
+    this.register({
+      code: 'crossed-tags',
+      severity: 'warning',
+      validate: (node, ctx) => {
+        // Cheap gate first: reaching `ctx.crossings` at all builds the pairing
+        // for the whole document, and only an auto-closed tag can be in it.
+        if (!isUnclosedTag(node, ctx.source)) return null
+
+        const crossing = ctx.crossings.get(node.id)
+        if (crossing === undefined) return null
+
+        // Deliberately NOT automatic, and this is the whole reason the repair
+        // is not just `repairNesting`'s edits handed over as a fix.
+        //
+        // Moving the closer is correct BBCode but it is not render-neutral:
+        // the whitespace that surrounded the stranded `[/tag]` stays where it
+        // was, and a newline that used to sit outside the container now sits
+        // inside it — or two newlines that were separated by the discarded tag
+        // become adjacent and turn into a blank line. Measured on
+        // `[centre][notice]hola\n[/centre]\n[/notice]`: one extra
+        // `bb-empty-line` in the output. Every other automatic fix in here is
+        // safe precisely because it only writes down a decision the parser had
+        // already taken; this one changes what the reader sees, so it is the
+        // author's call and it stays out of "fix all".
+        const fixes: DiagnosticFix[] = [{
+          description: `Move [/${crossing.tag}] to where the tag actually closes`,
+          isAutomatic: false,
+          operations: [
+            { kind: 'insert_text', position: crossing.at, text: `[/${crossing.tag}]` },
+            { kind: 'delete_range', range: { start: crossing.closer.start, end: crossing.closer.end } },
+          ],
+        }]
+
+        return createDiagnostic(
+          'crossed-tags',
+          `[/${crossing.tag}] is out of order — the tag was closed earlier and this closing tag is ignored`,
+          'warning',
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: node.range,
+            fixes,
+            related: [{
+              message: `The ignored [/${crossing.tag}]`,
+              range: { start: crossing.closer.start, end: crossing.closer.end },
+              nodeId: null,
+            }],
+          },
         )
       },
     })
