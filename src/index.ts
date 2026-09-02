@@ -37,10 +37,14 @@ export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
 
 // ── Semantic ──
 export { SemanticAnalyzer, type AnalyzeResult } from './Semantic/SemanticAnalyzer'
-export type { Diagnostic, DiagnosticSeverity, DiagnosticTag } from './Types/diagnostics'
+export type { Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticFix, FixOperation } from './Types/diagnostics'
 
 // ── Tag Registry ──
 export { TagRegistry, type TagDefinition, type TagHandler } from './Model/TagRegistry'
+// El texto plano de un subárbol. Se exporta porque fuera de Quasar nadie puede
+// reimplementarlo bien: `[code]` es literal y los saltos de línea son hojas
+// `spacing` sin texto propio, así que un recorrido ingenuo los pierde.
+export { extractTextContent } from './Model/TagRegistry'
 export { NodeFactory } from './Model/NodeFactory'
 
 // ── Incremental ──

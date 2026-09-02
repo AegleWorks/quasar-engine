@@ -113,7 +113,7 @@ export interface PropertyDefinition {
  * reason every two-dimensional axis (`line`, `column`, `radial`) measured
  * a block one line tall.
  */
-function extractTextContent(node: RedNode): string {
+export function extractTextContent(node: RedNode): string {
   if (node.kind === 'text') return node.text
   if (node.kind === 'spacing' || node.kind === 'empty_line') return '\n'
   return node.children.map(extractTextContent).join('')
