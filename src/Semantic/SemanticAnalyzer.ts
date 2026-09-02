@@ -112,6 +112,14 @@ export interface AnalyzerContext {
    * be in it, which is three integer compares per text node.
    */
   readonly unknownTags: ReadonlyMap<string, UnknownTag>
+  /**
+   * Closing tags no opener claims, node id → tag name.
+   *
+   * Same walk as `unknownTags`, cached together, because the two answers are
+   * two halves of one pairing: what is left over after every unknown opener
+   * has taken its closer is a `[/tag]` that closes nothing.
+   */
+  readonly orphanClosers: ReadonlyMap<string, string>
   /** Previously collected diagnostics */
   diagnostics: DiagnosticCollection
   /** Source text for position lookups */
@@ -414,9 +422,16 @@ const LITERAL_CLOSE = /^\[\/([a-zA-Z][a-zA-Z0-9_-]*)\]$/
  * because there the brackets are content the author typed on purpose — and
  * `nested-tags-in-code` already covers that case with the right message.
  */
-function findUnknownTags(root: RedNode, source: string): Map<string, UnknownTag> {
+interface LiteralTagScan {
+  /** Unknown openers the author closed, keyed by the OPENER's node id. */
+  paired: Map<string, UnknownTag>
+  /** Closing tags no opener claims, keyed by node id → the tag name. */
+  orphans: Map<string, string>
+}
+
+function findLiteralTags(root: RedNode, source: string): LiteralTagScan {
   const opens: { id: string; tag: string; start: number; end: number }[] = []
-  const closes: { tag: string; start: number; end: number; used: boolean }[] = []
+  const closes: { id: string; tag: string; start: number; end: number; used: boolean }[] = []
 
   const visit = (node: RedNode, inCode: boolean): void => {
     const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
@@ -439,7 +454,7 @@ function findUnknownTags(root: RedNode, source: string): Map<string, UnknownTag>
         } else {
           const close = LITERAL_CLOSE.exec(text)
           if (close) {
-            closes.push({ tag: close[1].toLowerCase(), start: node.range.start, end: node.range.end, used: false })
+            closes.push({ id: node.id, tag: close[1].toLowerCase(), start: node.range.start, end: node.range.end, used: false })
           }
         }
       }
@@ -448,15 +463,15 @@ function findUnknownTags(root: RedNode, source: string): Map<string, UnknownTag>
   }
   visit(root, false)
 
-  const unknown = new Map<string, UnknownTag>()
-  if (closes.length === 0) return unknown
+  const paired = new Map<string, UnknownTag>()
+  const orphans = new Map<string, string>()
 
   // `closes` is in document order, so the first unused match is the nearest.
   for (const open of opens) {
     for (const close of closes) {
       if (close.used || close.tag !== open.tag || close.start < open.end) continue
       close.used = true
-      unknown.set(open.id, {
+      paired.set(open.id, {
         tag: open.tag,
         opener: { start: open.start, end: open.end },
         closer: { start: close.start, end: close.end },
@@ -465,7 +480,14 @@ function findUnknownTags(root: RedNode, source: string): Map<string, UnknownTag>
     }
   }
 
-  return unknown
+  // Whatever no opener claimed closes nothing at all. Pairing has to run first:
+  // the `[/bold]` of `[bold]x[/bold]` is not an orphan, it is the evidence that
+  // made its opener a typo, and `unknown-tag` already reports the pair.
+  for (const close of closes) {
+    if (!close.used) orphans.set(close.id, close.tag)
+  }
+
+  return { paired, orphans }
 }
 
 /**
@@ -688,7 +710,11 @@ export class SemanticAnalyzer {
     // the walk that builds it happens at most once per analyze.
     let allNodesCache: Map<string, RedNode> | null = null
     let crossingsCache: Map<string, CrossedTags> | null = null
-    let unknownCache: Map<string, UnknownTag> | null = null
+    let literalTagCache: LiteralTagScan | null = null
+    const literalTags = (): LiteralTagScan => {
+      if (literalTagCache === null) literalTagCache = findLiteralTags(root, source)
+      return literalTagCache
+    }
     const context: AnalyzerContext = {
       get allNodes(): Map<string, RedNode> {
         if (allNodesCache === null) {
@@ -702,8 +728,10 @@ export class SemanticAnalyzer {
         return crossingsCache
       },
       get unknownTags(): ReadonlyMap<string, UnknownTag> {
-        if (unknownCache === null) unknownCache = findUnknownTags(root, source)
-        return unknownCache
+        return literalTags().paired
+      },
+      get orphanClosers(): ReadonlyMap<string, string> {
+        return literalTags().orphans
       },
       diagnostics,
       source,
@@ -816,6 +844,62 @@ export class SemanticAnalyzer {
               message: `Its closing [/${unknown.tag}]`,
               range: { start: unknown.closer.start, end: unknown.closer.end },
               nodeId: null,
+            }],
+          },
+        )
+      },
+    })
+
+    // Orphan closing tag validator
+    //
+    // A `[/tag]` with no opener anywhere. The parser keeps it as literal text
+    // so no character of the source belongs to nothing — which means it is
+    // PRINTED, and until now nothing said so: the checker reported a clean
+    // document while the preview showed `[/notice][/centre]` as body text.
+    // Found by opening the editor, not by any test or corpus sweep.
+    //
+    // osu! and Quasar genuinely disagree here — osu! discards the tag, Quasar
+    // shows it — and `Tests/OsuNestingFidelity.test.ts` pins that: deleting
+    // the orphans is what makes the visible text match the hand-verified
+    // oracle. So the message has to name both behaviours, or the author cannot
+    // tell whether the preview or their post is the one lying.
+    //
+    // In 53 real userpages these appear only in the deliberately broken ones:
+    // 12 across the three NyuPenyu files, 0 everywhere else.
+    this.register({
+      code: 'orphan-closing-tag',
+      severity: 'warning',
+      kinds: ['text'],
+      validate: (node, ctx) => {
+        const text = node.text
+        // Same cheap gate as `unknown-tag`, plus the slash: a closing tag is
+        // the only thing this can be.
+        if (
+          text.length < 4 ||
+          text.charCodeAt(0) !== 0x5b /* [ */ ||
+          text.charCodeAt(1) !== 0x2f /* / */ ||
+          text.charCodeAt(text.length - 1) !== 0x5d /* ] */
+        ) return null
+
+        const tag = ctx.orphanClosers.get(node.id)
+        if (tag === undefined) return null
+
+        return createDiagnostic(
+          'orphan-closing-tag',
+          `[/${tag}] closes nothing — osu! drops it, the preview shows it as text`,
+          'warning',
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: node.range,
+            // Manual, like the other two repairs that alter what is displayed.
+            // Deleting it is what osu! already does, so the published post does
+            // not move — but this preview does, and a `[/notice]` alone on its
+            // line leaves its newline behind exactly as `crossed-tags` does.
+            fixes: [{
+              description: `Delete [/${tag}]`,
+              isAutomatic: false,
+              operations: [{ kind: 'delete_range', range: { start: node.range.start, end: node.range.end } }],
             }],
           },
         )

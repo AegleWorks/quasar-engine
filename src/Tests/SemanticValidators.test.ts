@@ -105,7 +105,13 @@ describe('SemanticAnalyzer — built-in validators', () => {
 
     it('does not flag brackets in ordinary prose', () => {
       expect(codes('Combo de [90 misses] con teclado [Gateron]')).toEqual([])
-      expect(codes('hola[/b]')).toEqual([])
+    })
+
+    it('reports a closer with no opener as an orphan, never as unclosed', () => {
+      // `[/b]` is not prose — it is a closing tag, and the parser keeps it as
+      // literal text, so it is PRINTED. It was grouped with the prose case
+      // above while nothing reported it. See OrphanClosingTags.test.ts.
+      expect(codes('hola[/b]')).toEqual(['orphan-closing-tag'])
     })
   })
 
