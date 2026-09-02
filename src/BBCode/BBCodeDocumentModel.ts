@@ -87,6 +87,9 @@ export class BBCodeDocumentModel extends DocumentModel {
     })
     this._strictMode = options.strictMode ?? false
     this._dialect = options.dialect ?? options.mode ?? 'miliastry'
+    // The analyzer is built by `super()`, before this line could have run,
+    // so the dialect it suggests unknown-tag replacements from is set here.
+    this.semanticAnalyzer.dialect = this._dialect
     this._interner = options.interning ? GreenNodePool.create(options.interning) : null
     if (options.source) {
       this.rebuild(options.source)

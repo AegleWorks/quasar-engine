@@ -125,12 +125,16 @@ describe('SemanticAnalyzer — built-in validators', () => {
     expect(found.filter(d => d.severity === 'warning')).toEqual([])
   })
 
-  // NOTE: `unknown-tag` is deliberately still dormant. The parser renders
-  // unrecognised tags as literal text on purpose — `[Gateron]`, `[90 misses]`
-  // are ordinary prose, not typos — so warning on them would be pure noise.
-  // Reviving it is a product decision, tracked as roadmap point 15.
-  it('does not warn about unknown tags (parser renders them as text)', () => {
-    expect(codes('[unknowntag]hola[/unknowntag]')).toEqual([])
+  // NOTE: `unknown-tag` was dormant until the pairing rule made it usable.
+  // The parser renders unrecognised tags as literal text on purpose, so the
+  // measurement that kept it asleep — 4 false positives on one line of
+  // ordinary prose — still governs: a LONE `[Gateron]` must stay silent. What
+  // changed is that a CLOSED unknown tag is not prose. See UnknownTags.test.ts.
+  it('does not warn about unknown tags in prose (parser renders them as text)', () => {
     expect(codes('Combo de [90 misses] con teclado [Gateron]')).toEqual([])
+  })
+
+  it('does warn about an unknown tag the author closed', () => {
+    expect(codes('[unknowntag]hola[/unknowntag]')).toEqual(['unknown-tag'])
   })
 })

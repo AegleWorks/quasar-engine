@@ -36,7 +36,7 @@ export { TreeBuilder, type BuildResult } from './Syntax/TreeBuilder'
 export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
 
 // ── Semantic ──
-export { SemanticAnalyzer, type AnalyzeResult, type CrossedTags } from './Semantic/SemanticAnalyzer'
+export { SemanticAnalyzer, type AnalyzeResult, type CrossedTags, type UnknownTag } from './Semantic/SemanticAnalyzer'
 export type { Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticFix, FixOperation } from './Types/diagnostics'
 
 // ── Tag Registry ──

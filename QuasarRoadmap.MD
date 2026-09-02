@@ -812,12 +812,23 @@ Validado contra falsos positivos, que es el riesgo real de un validador nuevo: *
 generados con anidamiento siempre equilibrado, 0 avisos**. Y 0 diagnósticos sobre el documento real
 de 19.2 KB.
 
-#### `unknown-tag` — se queda dormido, a propósito
+#### `unknown-tag` — despertado con una regla de emparejado
 
-Medido antes de decidir: sobre el documento real marcaría **0** etiquetas; sobre una frase de prosa
-normal —`Combo de [90 misses] con teclado [Gateron Yellow]`— marcaría **4**, todas falsos positivos.
-El parser renderiza las etiquetas desconocidas como texto *a propósito*, así que avisar sería ruido.
-Documentado como dormido en `src/Tests/SemanticValidators.test.ts`.
+Se quedó dormido a propósito, y con razón medida: sobre una frase de prosa normal —`Combo de
+[90 misses] con teclado [Gateron Yellow]`— marcaba **4** etiquetas, todas falsos positivos. El
+parser renderiza las desconocidas como texto *a propósito*, así que avisar de todas era ruido.
+
+Lo que lo hace utilizable es exigir que la etiqueta **esté cerrada**. Nadie cierra un aparte entre
+corchetes: `[Gateron]` no lleva `[/Gateron]`. Sobre 53 userpages reales —que traen `[gb]`,
+`[insane]`, `[rm120]`, `[my]` y once más— la regla marca **0**; sobre `[bold]x[/bold]`, que hoy se
+publica como basura visible, marca 1 y propone `[b]`.
+
+La detección no lleva lista de nombres propia: el parser ya decidió qué es desconocido al emitir la
+etiqueta como texto literal, y la regla lee esa decisión, así que sigue siendo correcta en cualquier
+dialecto sin mantenimiento. La lista solo hace falta para la sugerencia, y la distancia de edición
+no basta —`bold` está a tres ediciones de `b`— así que se combina con una tabla corta de nombres que
+la gente escribe de más. Nunca propone una grafía deprecada. La corrección renombra apertura Y
+cierre, y es manual: convierte texto literal en formato, que es justo cambiar el render.
 
 #### Coste
 

@@ -11,6 +11,7 @@
  */
 
 import { RedNode } from '../Syntax/RedNode'
+import { getBBCodeTagNames, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import type { NodeKind } from '../Types/core'
 import type {
   Diagnostic,
@@ -103,6 +104,14 @@ export interface AnalyzerContext {
    * tag never pays for the walk.
    */
   readonly crossings: ReadonlyMap<string, CrossedTags>
+  /**
+   * Unknown tags that were written as a PAIR, keyed by the opener's node id.
+   *
+   * Same lazy contract as `crossings`, and reached through an even tighter
+   * gate: only a text leaf whose first and last characters are brackets can
+   * be in it, which is three integer compares per text node.
+   */
+  readonly unknownTags: ReadonlyMap<string, UnknownTag>
   /** Previously collected diagnostics */
   diagnostics: DiagnosticCollection
   /** Source text for position lookups */
@@ -369,6 +378,169 @@ function endsWithClosingTag(source: string, end: number, name: string): boolean 
 }
 
 /**
+ * An unknown tag the author wrote as a pair: `[bold]x[/bold]`.
+ *
+ * The pairing is the whole signal. An unknown tag becomes literal text on
+ * purpose — `[Gateron]` in prose has to stay visible, and a real corpus of 53
+ * userpages carries `[gb]`, `[insane]`, `[rm120]` and a dozen more of those —
+ * so a bare `[name]` is not evidence of anything. A `[name]` with a matching
+ * `[/name]` is: nobody closes a bracketed aside. That same corpus contains
+ * exactly ZERO of them, which is the false-positive budget this rule spends.
+ */
+export interface UnknownTag {
+  /** The name as written, lowercased. */
+  tag: string
+  /** The `[tag]` the parser refused, kept as literal text. */
+  opener: { start: number; end: number }
+  /** Its `[/tag]` — what makes this a misspelling rather than prose. */
+  closer: { start: number; end: number }
+}
+
+/** A text leaf that is exactly an opening tag: `[bold]` or `[bold=x]`. */
+const LITERAL_OPEN = /^\[([a-zA-Z][a-zA-Z0-9_-]*)(?:=[^\]]*)?\]$/
+/** A text leaf that is exactly a closing tag: `[/bold]`. */
+const LITERAL_CLOSE = /^\[\/([a-zA-Z][a-zA-Z0-9_-]*)\]$/
+
+/**
+ * Finds unknown tags the author closed, so the checker can stop being silent
+ * about them.
+ *
+ * Nothing here decides what a valid tag is, and that is deliberate: the parser
+ * already decided, by refusing the tag and emitting its text verbatim as a
+ * leaf. Reading that decision back keeps the rule correct in every dialect for
+ * free, where a name list of its own would drift the moment a tag is added.
+ *
+ * `[code]` is excluded by walking with the flag rather than testing the node,
+ * because there the brackets are content the author typed on purpose — and
+ * `nested-tags-in-code` already covers that case with the right message.
+ */
+function findUnknownTags(root: RedNode, source: string): Map<string, UnknownTag> {
+  const opens: { id: string; tag: string; start: number; end: number }[] = []
+  const closes: { tag: string; start: number; end: number; used: boolean }[] = []
+
+  const visit = (node: RedNode, inCode: boolean): void => {
+    const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
+    if (node.kind === 'text' && !code) {
+      const text = node.text
+      // Three integer compares before any regex: this runs on every text leaf
+      // of the document, and almost none of them are a bracketed tag.
+      if (
+        text.length >= 3 &&
+        text.charCodeAt(0) === 0x5b /* [ */ &&
+        text.charCodeAt(text.length - 1) === 0x5d /* ] */ &&
+        // A leaf whose text is not its own source span did not come from the
+        // BBCode parser — an HTML import, say — and its offsets would not
+        // point at the characters this reports.
+        source.slice(node.range.start, node.range.end) === text
+      ) {
+        const open = LITERAL_OPEN.exec(text)
+        if (open) {
+          opens.push({ id: node.id, tag: open[1].toLowerCase(), start: node.range.start, end: node.range.end })
+        } else {
+          const close = LITERAL_CLOSE.exec(text)
+          if (close) {
+            closes.push({ tag: close[1].toLowerCase(), start: node.range.start, end: node.range.end, used: false })
+          }
+        }
+      }
+    }
+    for (let i = 0; i < node.children.length; i++) visit(node.children[i], code)
+  }
+  visit(root, false)
+
+  const unknown = new Map<string, UnknownTag>()
+  if (closes.length === 0) return unknown
+
+  // `closes` is in document order, so the first unused match is the nearest.
+  for (const open of opens) {
+    for (const close of closes) {
+      if (close.used || close.tag !== open.tag || close.start < open.end) continue
+      close.used = true
+      unknown.set(open.id, {
+        tag: open.tag,
+        opener: { start: open.start, end: open.end },
+        closer: { start: close.start, end: close.end },
+      })
+      break
+    }
+  }
+
+  return unknown
+}
+
+/**
+ * Names people reach for that BBCode does not have.
+ *
+ * Edit distance cannot find these — `bold` is three edits away from `b` — and
+ * they are the most common way to end up with an unknown tag at all: writing
+ * the word for what you mean, when the format spells it with one letter.
+ */
+const COMMON_MISNOMERS: Record<string, string> = {
+  bold: 'b', strong: 'b',
+  italic: 'i', italics: 'i', em: 'i',
+  strikethrough: 's', strikeout: 's', del: 's',
+  underline: 'u',
+  link: 'url',
+  image: 'img', picture: 'img', pic: 'img',
+  video: 'youtube', yt: 'youtube',
+  header: 'heading', title: 'heading', h1: 'heading', h2: 'heading', h3: 'heading',
+  hide: 'spoiler',
+}
+
+/**
+ * Levenshtein distance, abandoned as soon as it cannot beat `limit`.
+ *
+ * Two rows rather than a matrix, and the early exit matters: this runs against
+ * every known tag name, and most of them are nowhere near the misspelling.
+ */
+function editDistance(a: string, b: string, limit: number): number {
+  let prev = new Array<number>(b.length + 1)
+  let curr = new Array<number>(b.length + 1)
+  for (let j = 0; j <= b.length; j++) prev[j] = j
+
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i
+    let rowBest = curr[0]
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+      if (curr[j] < rowBest) rowBest = curr[j]
+    }
+    if (rowBest >= limit) return limit
+    const swap = prev; prev = curr; curr = swap
+  }
+  return prev[b.length]
+}
+
+/**
+ * The tag the author probably meant, or null when guessing would be worse than
+ * saying nothing.
+ *
+ * Misnomers first, because they are exact. Then a typo within two edits, and
+ * only for names of four characters or more — under that, two edits reaches
+ * most of the one-letter tags from almost anything.
+ */
+function suggestTag(tag: string, known: readonly string[]): string | null {
+  const misnomer = COMMON_MISNOMERS[tag]
+  if (misnomer !== undefined && known.includes(misnomer)) return misnomer
+  if (tag.length < 4) return null
+
+  let best: string | null = null
+  let bestDistance = 3
+  for (const name of known) {
+    if (name.length < 3) continue
+    // Never propose a spelling that `deprecated-tag` would flag on the next
+    // pass. `[centr]` sits one edit from `center` AND from `centre`, and the
+    // sorted list offers the outdated one first.
+    if (name in DEPRECATED_TAGS) continue
+    if (Math.abs(name.length - tag.length) >= bestDistance) continue
+    const distance = editDistance(tag, name, bestDistance)
+    if (distance < bestDistance) { bestDistance = distance; best = name }
+  }
+  return best
+}
+
+/**
  * Schemes a BBCode link is allowed to carry.
  *
  * osu!'s renderer emits the href verbatim, so anything the browser will
@@ -457,6 +629,16 @@ export class SemanticAnalyzer {
   private _always: Validator[] = []
   private _byKind: Map<string, Validator[]> = new Map()
 
+  /**
+   * The dialect this analyzer validates against.
+   *
+   * Only the suggestion for an unknown tag reads it — detection never needs a
+   * name list, because the parser already refused the tag. `DocumentModel`
+   * builds the analyzer before a subclass knows its dialect, so this is set
+   * afterwards rather than taken by the constructor.
+   */
+  dialect: BBCodeDialect = 'miliastry'
+
   constructor() {
     this.registerBuiltinValidators()
   }
@@ -506,6 +688,7 @@ export class SemanticAnalyzer {
     // the walk that builds it happens at most once per analyze.
     let allNodesCache: Map<string, RedNode> | null = null
     let crossingsCache: Map<string, CrossedTags> | null = null
+    let unknownCache: Map<string, UnknownTag> | null = null
     const context: AnalyzerContext = {
       get allNodes(): Map<string, RedNode> {
         if (allNodesCache === null) {
@@ -517,6 +700,10 @@ export class SemanticAnalyzer {
       get crossings(): ReadonlyMap<string, CrossedTags> {
         if (crossingsCache === null) crossingsCache = findCrossedTags(root, source)
         return crossingsCache
+      },
+      get unknownTags(): ReadonlyMap<string, UnknownTag> {
+        if (unknownCache === null) unknownCache = findUnknownTags(root, source)
+        return unknownCache
       },
       diagnostics,
       source,
@@ -558,20 +745,80 @@ export class SemanticAnalyzer {
 
   private registerBuiltinValidators(): void {
     // Unknown tag validator
+    //
+    // This rule could not fire. It waited on `custom`, the kind
+    // `tagToNodeKind` returns for a tag it does not know — but `Parser` never
+    // lets one through: it intercepts `custom` and emits the tag's text as a
+    // literal leaf, on purpose, so `[Gateron]` in prose stays visible. No
+    // `custom` node has ever reached the analyzer from a BBCode parse, so
+    // `[bold]x[/bold]` rendered as visible garbage and the checker said
+    // nothing. The translation and the panel's rule label had shipped for it
+    // all along.
+    //
+    // It now reads the parser's decision back off the literal leaf, and fires
+    // only on a tag that was CLOSED. See {@link UnknownTag} for why the
+    // pairing is the entire rule.
     this.register({
       code: 'unknown-tag',
       severity: 'warning',
-      kinds: ['custom'],
-      validate: (node) => {
-        if (node.kind === 'custom' && node.green.isLeaf) {
-          return createDiagnostic(
-            'unknown-tag',
-            `Unknown BBCode tag: [${node.text}]`,
-            'warning',
-            { nodeId: node.id, nodeKind: node.kind, range: node.range },
-          )
-        }
-        return null
+      kinds: ['text'],
+      validate: (node, ctx) => {
+        const text = node.text
+        // Cheap enough to sit in front of the map: reaching `ctx.unknownTags`
+        // walks the document, and a text leaf that is not bracketed end to end
+        // can never be in it.
+        if (
+          text.length < 3 ||
+          text.charCodeAt(0) !== 0x5b /* [ */ ||
+          text.charCodeAt(text.length - 1) !== 0x5d /* ] */
+        ) return null
+
+        const unknown = ctx.unknownTags.get(node.id)
+        if (unknown === undefined) return null
+
+        const suggestion = suggestTag(unknown.tag, getBBCodeTagNames(this.dialect))
+
+        // Not automatic, and for the opposite reason to every other fix here:
+        // those are safe because they do not change the render, and this one
+        // exists precisely to change it. `[bold]x[/bold]` is literal text
+        // today and bold afterwards — which is what the author wanted, but it
+        // is a guess at their intent, so it is theirs to accept.
+        const fixes: DiagnosticFix[] | undefined = suggestion === null ? undefined : [{
+          description: `Replace [${unknown.tag}] with [${suggestion}]`,
+          isAutomatic: false,
+          operations: [
+            // Both ends, or the rename leaves an orphan `[/bold]` that osu!
+            // paints as literal text — the same half-repair `deprecated-tag`
+            // had to learn to avoid.
+            {
+              kind: 'replace_text',
+              range: { start: unknown.opener.start + 1, end: unknown.opener.start + 1 + unknown.tag.length },
+              newText: suggestion,
+            },
+            {
+              kind: 'replace_text',
+              range: { start: unknown.closer.start + 2, end: unknown.closer.start + 2 + unknown.tag.length },
+              newText: suggestion,
+            },
+          ],
+        }]
+
+        return createDiagnostic(
+          'unknown-tag',
+          `Unknown BBCode tag: [${unknown.tag}] — it renders as literal text`,
+          'warning',
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: node.range,
+            fixes,
+            related: [{
+              message: `Its closing [/${unknown.tag}]`,
+              range: { start: unknown.closer.start, end: unknown.closer.end },
+              nodeId: null,
+            }],
+          },
+        )
       },
     })
 
