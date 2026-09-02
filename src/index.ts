@@ -193,6 +193,7 @@ export {
   buildSampleTable, buildRangeScope, documentScope, axisValue, expressionVars, AXES,
   effectiveAxis, mergeStyledSegments, normalizeHex,
   parseColorStops, stringifyColorStops, parseEffectParams, stringifyEffectParams,
+  EFFECT_PARAM_KEYS, EFFECT_UNITS,
   evaluateEffect, GRADIENT_DEFAULTS, RAINBOW_DEFAULTS, GROW_DEFAULTS, NEUTRAL_SIZE,
   PAINT_DEFAULTS, SPATIAL_DEFAULTS,
   // ── Placeable geometry, masks and paint grids ──

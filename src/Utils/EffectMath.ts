@@ -1625,6 +1625,15 @@ export interface EffectParams {
 export type EffectUnit = 'character' | 'word' | 'line'
 
 /**
+ * The stepping units, as data.
+ *
+ * The type alone cannot be enumerated at runtime, so every UI that offered
+ * these had to retype them — and a tool that wants to *validate* `unit=`
+ * had nothing to validate against at all.
+ */
+export const EFFECT_UNITS: readonly EffectUnit[] = ['character', 'word', 'line']
+
+/**
  * The axis a layer actually reads, given its stepping unit.
  *
  * Stepping per word while measuring per character is almost never what
@@ -1642,7 +1651,21 @@ export function effectiveAxis(axis: Axis, unit: EffectUnit | undefined): Axis {
 }
 
 /** Short attribute keys, so a tag stays readable in a document. */
-const PARAM_KEYS = {
+/**
+ * The attribute key each parameter is written as, and the only place that
+ * mapping exists.
+ *
+ * Exported because it is the answer to "what can be spelled inside
+ * `[gradient=…]`" — the same question `TagVocabulary` answers for the tags
+ * whose attribute is a plain enum. A consumer that retyped `pc`, `oct` or
+ * `mrat` would be a second transcription of a grammar that already has
+ * exactly one, which is the drift this module was written to end.
+ *
+ * Note this says how a parameter is SPELLED, not which effect kinds read
+ * it: `sat` is rainbow's and `min` is grow's, and a caller that offers
+ * every key on every tag would be promising things the evaluator ignores.
+ */
+export const EFFECT_PARAM_KEYS = {
   axis: 'axis',
   wave: 'wave',
   cycles: 'cycles',
@@ -1693,8 +1716,8 @@ const PARAM_KEYS = {
   documentLength: 'of',
 } as const
 
-const KEY_TO_PARAM = new Map<string, keyof typeof PARAM_KEYS>(
-  Object.entries(PARAM_KEYS).map(([param, key]) => [key, param as keyof typeof PARAM_KEYS]),
+const KEY_TO_PARAM = new Map<string, keyof typeof EFFECT_PARAM_KEYS>(
+  Object.entries(EFFECT_PARAM_KEYS).map(([param, key]) => [key, param as keyof typeof EFFECT_PARAM_KEYS]),
 )
 
 const NUMERIC_PARAMS = new Set([
@@ -1825,7 +1848,7 @@ export function stringifyEffectParams(
     segments.push(params.colors.join(','))
   }
 
-  for (const [param, key] of Object.entries(PARAM_KEYS) as [keyof typeof PARAM_KEYS, string][]) {
+  for (const [param, key] of Object.entries(EFFECT_PARAM_KEYS) as [keyof typeof EFFECT_PARAM_KEYS, string][]) {
     const value = (params as Record<string, unknown>)[param]
     if (value === undefined || value === null || value === '') continue
     const fallback = (defaults as Record<string, unknown>)[param]
