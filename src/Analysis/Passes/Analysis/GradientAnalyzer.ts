@@ -82,6 +82,61 @@ export interface GradientDiagnostics {
 
 // ── Main Analyzer ─────────────────────────────────────────────────
 
+export interface CollapsibleGradient {
+  readonly range: { start: number; end: number }
+  readonly colors: string[]
+  readonly stops: GradientStop[]
+  readonly easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut'
+  readonly combinedText: string
+  readonly replacementText: string
+  readonly confidence: number
+  readonly colorCount: number
+}
+
+export function formatGradientTag(
+  stops: GradientStop[],
+  colors: string[],
+  easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut',
+  text: string,
+): string {
+  const effectiveStops = stops.length >= 2
+    ? stops
+    : [{ color: colors[0], position: 0 }, { color: colors[colors.length - 1], position: 1 }]
+
+  // Deduplicate consecutive identical colors
+  const filteredStops: GradientStop[] = []
+  for (const s of effectiveStops) {
+    if (
+      filteredStops.length === 0 ||
+      filteredStops[filteredStops.length - 1].color.toLowerCase() !== s.color.toLowerCase()
+    ) {
+      filteredStops.push(s)
+    }
+  }
+
+  const finalStops = filteredStops.length >= 2
+    ? filteredStops
+    : [{ color: colors[0], position: 0 }, { color: colors[colors.length - 1], position: 1 }]
+
+  const n = finalStops.length
+  const isEvenlySpaced = finalStops.every((s, i) => {
+    const expected = n <= 1 ? 0 : i / (n - 1)
+    return Math.abs(s.position - expected) < 0.04
+  })
+
+  let stopsStr: string
+  if (isEvenlySpaced) {
+    stopsStr = finalStops.map(s => s.color).join(',')
+  } else {
+    stopsStr = finalStops
+      .map(s => `${s.color} ${Math.round(s.position * 100)}%`)
+      .join(',')
+  }
+
+  const easingStr = easing !== 'linear' ? `;easing=${easing}` : ''
+  return `[gradient=${stopsStr}${easingStr}]${text}[/gradient]`
+}
+
 export class GradientAnalyzer implements AnalyzerPass {
   readonly id = 'gradient-analyzer'
 
@@ -89,6 +144,78 @@ export class GradientAnalyzer implements AnalyzerPass {
     const contributions: Contribution[] = []
     this.findGradients(tree, contributions)
     return contributions
+  }
+
+  findCollapsibleGradients(tree: GreenNode, minConfidence = 0.6): CollapsibleGradient[] {
+    const results: CollapsibleGradient[] = []
+    this.collectCollapsibleGradients(tree, results, 0, minConfidence)
+    return results
+  }
+
+  private collectCollapsibleGradients(
+    node: GreenNode,
+    sink: CollapsibleGradient[],
+    nodeStart: number = 0,
+    minConfidence: number = 0.6,
+  ): void {
+    const offsets = childOffsets(node, nodeStart)
+    if (node.children.length > 0) {
+      const children = node.children as GreenNode[]
+      const sequences = extractSequences(children, 'color', extractHex)
+
+      for (const seq of sequences) {
+        const colors = seq.values as string[]
+        if (colors.length < MIN_SEQUENCE_LENGTH) continue
+
+        let textLen = 0
+        const textChunks: string[] = []
+        for (let i = seq.startIdx; i < seq.endIdx; i++) {
+          const child = children[i]
+          if (child.kind === 'color') {
+            for (const textChild of child.children as GreenNode[]) {
+              if (textChild.kind === 'text') {
+                textLen += textChild.text.length
+                textChunks.push(textChild.text)
+              } else if (textChild.kind === 'spacing' || textChild.kind === 'empty_line') {
+                textChunks.push('\n')
+              }
+            }
+          } else if (child.kind === 'text') {
+            textChunks.push(child.text)
+          }
+        }
+
+        const combinedText = textChunks.join('')
+        const hasBreaks = checkFormattingBreaks(children, seq, 'color')
+        const { stops, easing } = this.detectStops(colors)
+        const diag = this.buildDiagnostics(colors, stops)
+        const { score: rawScore } = this.calculateRawScore(diag, hasBreaks)
+        const confidence = sigmoid(rawScore, SIGMOID_STEEPNESS)
+
+        if (confidence >= minConfidence && stops.length >= 2) {
+          const range = {
+            start: offsets[seq.startIdx],
+            end: offsets[seq.endIdx],
+          }
+          const replacementText = formatGradientTag(stops, colors, easing, combinedText)
+          sink.push({
+            range,
+            colors,
+            stops,
+            easing,
+            combinedText,
+            replacementText,
+            confidence,
+            colorCount: colors.length,
+          })
+        }
+      }
+    }
+
+    const kids = node.children as GreenNode[]
+    for (let i = 0; i < kids.length; i++) {
+      this.collectCollapsibleGradients(kids[i], sink, offsets[i], minConfidence)
+    }
   }
 
   // ── Sequence Detection ──────────────────────────────────────────
@@ -152,25 +279,91 @@ export class GradientAnalyzer implements AnalyzerPass {
    */
   private detectStops(colors: string[]): { stops: GradientStop[]; easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' } {
     const n = colors.length
-    const stops: GradientStop[] = [{ color: colors[0], position: 0 }]
-
-    const totalDist = perceptualDistance(colors[0], colors[n - 1])
-    const minStep = totalDist * 0.08  // At least 8% of total range
-    let accumulated = 0
-
-    for (let i = 1; i < n; i++) {
-      const dist = perceptualDistance(colors[i - 1], colors[i])
-      accumulated += dist
-      if (accumulated >= minStep && i < n - 1) {
-        stops.push({ color: colors[i], position: i / (n - 1) })
-        accumulated = 0
+    if (n <= 2) {
+      return {
+        stops: colors.map((c, i) => ({ color: c, position: n === 1 ? 0 : i / (n - 1) })),
+        easing: 'linear',
       }
     }
 
-    // Always include the last colour
-    if (stops[stops.length - 1].position < 1) {
-      stops.push({ color: colors[n - 1], position: 1 })
+    const oklab = colors.map(c => hexToOklab(c))
+    const rgb = colors.map(h => {
+      const [r, g, b] = hexToRgb(h)
+      return [r / 255, g / 255, b / 255]
+    })
+
+    const deltas: number[] = []
+    for (let i = 1; i < n; i++) {
+      deltas.push(perceptualDistance(colors[i - 1], colors[i]))
     }
+
+    // 1. Text Studio change-point detection (derivative jump between neighbours)
+    const detectedIndices = new Set<number>([0, n - 1])
+    const STOP_THRESHOLD = 0.08
+    for (let i = 1; i < n - 1; i++) {
+      const curr = deltas[i]
+      const prev = deltas[i - 1]
+      if (curr > prev * 1.5 && curr > STOP_THRESHOLD) {
+        detectedIndices.add(i)
+      }
+    }
+
+    // 2. Dual-space (RGB + OKLab) chord deviation (Douglas-Peucker)
+    // Avoids over-segmenting smooth linear ramps (which are straight lines in RGB or OKLab)
+    // while accurately capturing true inflection points / color turns.
+    function checkChord(startIdx: number, endIdx: number): void {
+      if (endIdx - startIdx <= 1) return
+
+      const aR = rgb[startIdx]
+      const bR = rgb[endIdx]
+      const abRLenSq = (bR[0] - aR[0]) ** 2 + (bR[1] - aR[1]) ** 2 + (bR[2] - aR[2]) ** 2
+
+      const aO = oklab[startIdx]
+      const bO = oklab[endIdx]
+      const abOLenSq = (bO[0] - aO[0]) ** 2 + (bO[1] - aO[1]) ** 2 + (bO[2] - aO[2]) ** 2
+
+      let maxDev = 0
+      let maxIdx = -1
+
+      for (let i = startIdx + 1; i < endIdx; i++) {
+        let dR = 0
+        if (abRLenSq > 1e-7) {
+          const tR = Math.max(0, Math.min(1, ((rgb[i][0] - aR[0]) * (bR[0] - aR[0]) + (rgb[i][1] - aR[1]) * (bR[1] - aR[1]) + (rgb[i][2] - aR[2]) * (bR[2] - aR[2])) / abRLenSq))
+          dR = Math.hypot(rgb[i][0] - (aR[0] + tR * (bR[0] - aR[0])), rgb[i][1] - (aR[1] + tR * (bR[1] - aR[1])), rgb[i][2] - (aR[2] + tR * (bR[2] - aR[2])))
+        } else {
+          dR = Math.hypot(rgb[i][0] - aR[0], rgb[i][1] - aR[1], rgb[i][2] - aR[2])
+        }
+
+        let dO = 0
+        if (abOLenSq > 1e-7) {
+          const tO = Math.max(0, Math.min(1, ((oklab[i][0] - aO[0]) * (bO[0] - aO[0]) + (oklab[i][1] - aO[1]) * (bO[1] - aO[1]) + (oklab[i][2] - aO[2]) * (bO[2] - aO[2])) / abOLenSq))
+          dO = Math.hypot(oklab[i][0] - (aO[0] + tO * (bO[0] - aO[0])), oklab[i][1] - (aO[1] + tO * (bO[1] - aO[1])), oklab[i][2] - (aO[2] + tO * (bO[2] - aO[2])))
+        } else {
+          dO = Math.hypot(oklab[i][0] - aO[0], oklab[i][1] - aO[1], oklab[i][2] - aO[2])
+        }
+
+        // Must deviate from linear in both sRGB and OKLab models to count as a genuine stop
+        const dev = Math.min(dR / 0.05, dO / 0.08)
+        if (dev > maxDev) {
+          maxDev = dev
+          maxIdx = i
+        }
+      }
+
+      if (maxDev > 1.0 && maxIdx !== -1) {
+        detectedIndices.add(maxIdx)
+        checkChord(startIdx, maxIdx)
+        checkChord(maxIdx, endIdx)
+      }
+    }
+
+    checkChord(0, n - 1)
+
+    const sortedIndices = Array.from(detectedIndices).sort((a, b) => a - b)
+    const stops: GradientStop[] = sortedIndices.map(idx => ({
+      color: colors[idx],
+      position: idx / (n - 1),
+    }))
 
     // Infer easing from change in perceptual distance across segments
     let easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' = 'linear'
@@ -290,3 +483,11 @@ export class GradientAnalyzer implements AnalyzerPass {
     return { score, featureScores }
   }
 }
+
+export function findCollapsibleGradients(
+  tree: GreenNode,
+  minConfidence = 0.6,
+): CollapsibleGradient[] {
+  return new GradientAnalyzer().findCollapsibleGradients(tree, minConfidence)
+}
+

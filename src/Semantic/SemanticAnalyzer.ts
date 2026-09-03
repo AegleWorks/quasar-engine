@@ -24,6 +24,7 @@ import {
   createDiagnostic,
   addDiagnostic,
 } from '../Types/diagnostics'
+import { findCollapsibleGradients, type CollapsibleGradient } from '../Analysis/Passes/Analysis/GradientAnalyzer'
 
 /**
  * Run one validator and file whatever it returns, both on the collection and on
@@ -120,6 +121,8 @@ export interface AnalyzerContext {
    * has taken its closer is a `[/tag]` that closes nothing.
    */
   readonly orphanClosers: ReadonlyMap<string, string>
+  /** Sequences of [color] tags that form a gradient, keyed by the first node's id */
+  readonly collapsibleGradients: ReadonlyMap<string, CollapsibleGradient>
   /** Previously collected diagnostics */
   diagnostics: DiagnosticCollection
   /** Source text for position lookups */
@@ -711,6 +714,7 @@ export class SemanticAnalyzer {
     let allNodesCache: Map<string, RedNode> | null = null
     let crossingsCache: Map<string, CrossedTags> | null = null
     let literalTagCache: LiteralTagScan | null = null
+    let collapsibleGradientsCache: Map<string, CollapsibleGradient> | null = null
     const literalTags = (): LiteralTagScan => {
       if (literalTagCache === null) literalTagCache = findLiteralTags(root, source)
       return literalTagCache
@@ -732,6 +736,21 @@ export class SemanticAnalyzer {
       },
       get orphanClosers(): ReadonlyMap<string, string> {
         return literalTags().orphans
+      },
+      get collapsibleGradients(): ReadonlyMap<string, CollapsibleGradient> {
+        if (collapsibleGradientsCache === null) {
+          collapsibleGradientsCache = new Map<string, CollapsibleGradient>()
+          if (root.green) {
+            const detected = findCollapsibleGradients(root.green)
+            for (const item of detected) {
+              const targetNode = root.findNodeAtOffset(item.range.start)
+              if (targetNode) {
+                collapsibleGradientsCache.set(targetNode.id, item)
+              }
+            }
+          }
+        }
+        return collapsibleGradientsCache
       },
       diagnostics,
       source,
@@ -1306,6 +1325,42 @@ export class SemanticAnalyzer {
             fixes: operations.length === 2
               ? [{ description: `Unwrap the inner [${name}]`, isAutomatic: false, operations }]
               : undefined,
+          },
+        )
+      },
+    })
+
+    // ── Collapsible gradient sequence ───────────────────────────
+    this.register({
+      code: 'collapsible-gradient',
+      severity: 'info',
+      kinds: ['color'],
+      validate: (node, ctx) => {
+        const item = ctx.collapsibleGradients.get(node.id)
+        if (!item) return null
+
+        return createDiagnostic(
+          'collapsible-gradient',
+          `Sequence of ${item.colorCount} colors can be collapsed into [gradient]`,
+          'info',
+          {
+            nodeId: node.id,
+            nodeKind: 'color',
+            range: item.range,
+            tags: ['unnecessary'],
+            fixes: [
+              {
+                description: 'Collapse into [gradient]',
+                isAutomatic: false,
+                operations: [
+                  {
+                    kind: 'replace_text',
+                    range: item.range,
+                    newText: item.replacementText,
+                  },
+                ],
+              },
+            ],
           },
         )
       },

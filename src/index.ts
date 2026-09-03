@@ -231,6 +231,8 @@ export {
   CharacterCountAnalyzer,
   MergeableColorAnalyzer,
   GradientAnalyzer,
+  findCollapsibleGradients,
+  formatGradientTag,
   RainbowAnalyzer,
   WaveAnalyzer,
   SymbolAnalyzer,
@@ -243,6 +245,7 @@ export {
   MergeColorsTransform,
 } from './Analysis/index'
 export type {
+  CollapsibleGradient,
   Pass,
   AnalyzerPass,
   DecisionPass,

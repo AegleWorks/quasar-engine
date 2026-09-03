@@ -132,4 +132,43 @@ describe('GradientAnalyzer v2', () => {
       expect(typeof diag.maxPerceptualError).toBe('number')
     }
   })
+
+  it('finds collapsible gradients with replacement text and combined content', () => {
+    const tree = greenNode('document', '', [
+      colorNode('#FF0000', 'H'),
+      colorNode('#CC0022', 'e'),
+      colorNode('#990044', 'l'),
+      colorNode('#660066', 'l'),
+      colorNode('#330088', 'o'),
+    ])
+
+    const analyzer = new GradientAnalyzer()
+    const collapsible = analyzer.findCollapsibleGradients(tree)
+
+    expect(collapsible).toHaveLength(1)
+    expect(collapsible[0].combinedText).toBe('Hello')
+    expect(collapsible[0].colorCount).toBe(5)
+    expect(collapsible[0].confidence).toBeGreaterThan(0.6)
+    // Only the necessary stops (endpoints for a smooth linear ramp), NOT all 5 colors!
+    expect(collapsible[0].stops).toHaveLength(2)
+    expect(collapsible[0].replacementText).toBe('[gradient=#FF0000,#330088]Hello[/gradient]')
+  })
+
+  it('accurately reproduces symmetric multi-stop gradients with minimal keyframes (37 chars -> 5 stops)', () => {
+    const raw = '[color=#302E38]✩[/color][color=#393A48]₊[/color][color=#424758]˚[/color][color=#4A5368].[/color][color=#535F78]⋆[/color][color=#5C6C87]☾[/color][color=#657897]⋆[/color][color=#6D84A7]⁺[/color][color=#7691B7]₊[/color][color=#7F9DC7]✧[/color][color=#8CA0C8]₊[/color][color=#98A3CA]⁺[/color][color=#A5A6CB]⋆[/color][color=#B1A9CC]☽[/color][color=#BEABCE]⋆[/color][color=#CAAECF].[/color][color=#D7B1D0]˚[/color][color=#E3B4D2]₊[/color][color=#F0B7D3]✩[/color][color=#E3B4D2]₊[/color][color=#D7B1D0]˚[/color][color=#CAAECF].[/color][color=#BEABCE]⋆[/color][color=#B1A9CC]☾[/color][color=#A5A6CB]⋆[/color][color=#98A3CA]⁺[/color][color=#8CA0C8]₊[/color][color=#7F9DC7]✧[/color][color=#7691B7]₊[/color][color=#6D84A7]⁺[/color][color=#657897]⋆[/color][color=#5C6C87]☽[/color][color=#535F78]⋆[/color][color=#4A5368].[/color][color=#424758]˚[/color][color=#393A48]₊[/color][color=#302E38]✩[/color]'
+    const colors = raw.match(/#[0-9A-Fa-f]{6}/g)!
+    const chars = Array.from('✩₊˚.⋆☾⋆⁺₊✧₊⁺⋆☽⋆.˚₊✩₊˚.⋆☾⋆⁺₊✧₊⁺⋆☽⋆.˚₊✩')
+    const nodes = colors.map((c, i) => colorNode(c, chars[i]))
+    const tree = greenNode('document', '', nodes)
+
+    const analyzer = new GradientAnalyzer()
+    const collapsible = analyzer.findCollapsibleGradients(tree)
+
+    expect(collapsible).toHaveLength(1)
+    expect(collapsible[0].stops).toHaveLength(5)
+    expect(collapsible[0].replacementText).toBe(
+      '[gradient=#302E38,#7F9DC7,#F0B7D3,#7F9DC7,#302E38]✩₊˚.⋆☾⋆⁺₊✧₊⁺⋆☽⋆.˚₊✩₊˚.⋆☾⋆⁺₊✧₊⁺⋆☽⋆.˚₊✩[/gradient]',
+    )
+  })
 })
+

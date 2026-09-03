@@ -143,4 +143,19 @@ describe('SemanticAnalyzer — built-in validators', () => {
   it('does warn about an unknown tag the author closed', () => {
     expect(codes('[unknowntag]hola[/unknowntag]')).toEqual(['unknown-tag'])
   })
+
+  it('flags collapsible gradient sequence with a replace_text fix', () => {
+    const source = '[color=#FF0000]H[/color][color=#CC0022]e[/color][color=#990044]l[/color][color=#660066]l[/color][color=#330088]o[/color]'
+    const found = diagnose(source)
+    const gradDiag = found.find(d => d.code === 'collapsible-gradient')
+
+    expect(gradDiag).toBeDefined()
+    expect(gradDiag?.severity).toBe('info')
+    expect(gradDiag?.range).toEqual({ start: 0, end: source.length })
+    expect(gradDiag?.fixes).toHaveLength(1)
+    expect(gradDiag?.fixes?.[0].operations[0].kind).toBe('replace_text')
+    const op = gradDiag?.fixes?.[0].operations[0] as { kind: 'replace_text'; range: { start: number; end: number }; newText: string }
+    expect(op.newText).toContain('Hello')
+    expect(op.newText).toContain('[gradient=')
+  })
 })
