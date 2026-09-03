@@ -107,6 +107,9 @@ export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpen
 // ── Reconciler ──
 export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult } from './Reconciler/SurgicalReconciler'
 
+// ── BBCode Optimizer (edit plan, conflict contract, rules) ──
+export * from './Edits'
+
 // ── BBCode Bridge ──
 export { BBCodeDocumentModel } from './BBCode/BBCodeDocumentModel'
 export type { BBCodeDocumentModelOptions } from './BBCode/BBCodeDocumentModel'
