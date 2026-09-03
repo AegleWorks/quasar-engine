@@ -1162,19 +1162,17 @@
 
 /* ─── Lyne (SYNE) Preview Highlight Overrides ────────────────────────────── */
 
-.theme-lyne [data-bbid]:hover,
-.bbcode-preview-lyne [data-bbid]:hover {
+.theme-lyne [data-bbid]:hover:not(:has([data-bbid]:hover, [data-node-id]:hover)),
+.bbcode-preview-lyne [data-bbid]:hover:not(:has([data-bbid]:hover, [data-node-id]:hover)) {
   outline: 1.5px solid #2EE6E2 !important;
   background-color: rgba(46, 230, 226, 0.1) !important;
   box-shadow: 0 0 8px rgba(46, 230, 226, 0.25) !important;
 }
 
-.theme-lyne[data-hover-highlight="on"] [data-bbid]:hover,
-.bbcode-preview-lyne[data-hover-highlight="on"] [data-bbid]:hover,
-.theme-lyne[data-hover-highlight="on"] [data-bbid]:has([data-bbid]:hover),
-.bbcode-preview-lyne[data-hover-highlight="on"] [data-bbid]:has([data-bbid]:hover),
-.theme-lyne[data-hover-highlight="on"] [data-node-id]:hover,
-.bbcode-preview-lyne[data-hover-highlight="on"] [data-node-id]:hover {
+.theme-lyne[data-hover-highlight="on"] [data-bbid]:hover:not(:has([data-bbid]:hover, [data-node-id]:hover)),
+.bbcode-preview-lyne[data-hover-highlight="on"] [data-bbid]:hover:not(:has([data-bbid]:hover, [data-node-id]:hover)),
+.theme-lyne[data-hover-highlight="on"] [data-node-id]:hover:not(:has([data-bbid]:hover, [data-node-id]:hover)),
+.bbcode-preview-lyne[data-hover-highlight="on"] [data-node-id]:hover:not(:has([data-bbid]:hover, [data-node-id]:hover)) {
   outline: 1px dashed rgba(46, 230, 226, 0.55) !important;
   box-shadow: 0 0 6px rgba(46, 230, 226, 0.2) !important;
 }
