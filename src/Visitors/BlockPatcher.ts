@@ -67,6 +67,8 @@ export interface PatchBlocksOptions {
    * path on small documents.
    */
   minWindowedBlocks?: number
+  /** If true, forces a full rebuild of the container instead of incremental patching. */
+  forceRebuild?: boolean
 }
 
 export interface PatchBlocksStats {
@@ -142,6 +144,13 @@ interface PatchCache {
 }
 
 const caches = new WeakMap<HTMLElement, PatchCache>()
+
+/**
+ * Evict `container` from the patch cache so the next patch rebuilds afresh.
+ */
+export function clearPatchCache(container: HTMLElement): void {
+  caches.delete(container)
+}
 
 const defaultRenderer = new HTMLRenderer()
 
@@ -921,6 +930,10 @@ export function patchBlocksInto(
     cache.lastKeySet = new Set()
     cache.lastRuns = []
     return { mode: 'full', total: 0, patched: 0 }
+  }
+
+  if (options.forceRebuild) {
+    return fullRebuild(container, rootNode, renderer, cache)
   }
 
   // DOM out of sync with the cache (a host replaced the innerHTML behind our

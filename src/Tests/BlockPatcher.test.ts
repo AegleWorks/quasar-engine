@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import { morphHTML } from '../Visitors/DOMMorpher'
-import { patchBlocksInto } from '../Visitors/BlockPatcher'
+import { patchBlocksInto, clearPatchCache } from '../Visitors/BlockPatcher'
 import { RedNode } from '../Syntax/RedNode'
 
 const renderer = new HTMLRenderer()
@@ -433,5 +433,30 @@ describe('patchBlocksInto — casos borde', () => {
     patchBlocksInto(el1, model.redRoot!, { renderer })
     patchBlocksInto(el2, model.redRoot!, { renderer })
     expect(stripIds(el1.innerHTML)).toBe(stripIds(el2.innerHTML))
+  })
+
+  it('clearPatchCache elimina el contenedor de la caché obligando un full rebuild', () => {
+    const model = new BBCodeDocumentModel({ source: 'bloque 1\n\nbloque 2' })
+    const el = document.createElement('div')
+    const initialStats = patchBlocksInto(el, model.redRoot!, { renderer })
+    expect(initialStats.mode).toBe('full')
+
+    const noopStats = patchBlocksInto(el, model.redRoot!, { renderer })
+    expect(noopStats.mode).toBe('blocks')
+    expect(noopStats.patched).toBe(0)
+
+    clearPatchCache(el)
+    const afterClearStats = patchBlocksInto(el, model.redRoot!, { renderer })
+    expect(afterClearStats.mode).toBe('full')
+  })
+
+  it('options.forceRebuild fuerza un full rebuild independientemente de la caché', () => {
+    const model = new BBCodeDocumentModel({ source: 'bloque 1\n\nbloque 2' })
+    const el = document.createElement('div')
+    patchBlocksInto(el, model.redRoot!, { renderer })
+
+    const forcedStats = patchBlocksInto(el, model.redRoot!, { renderer, forceRebuild: true })
+    expect(forcedStats.mode).toBe('full')
+    expect(forcedStats.patched).toBe(model.redRoot!.children.length)
   })
 })

@@ -60,7 +60,7 @@ export { BBCodeExporter, MILIASTRY_ONLY_TAGS, LYNE_ONLY_TAGS, type ExportTarget 
 export { BBBlocksExporter, type UIBBBlock } from './Visitors/BBBlocksExporter'
 export { HTMLRenderer, type HTMLRendererOptions } from './Visitors/HTMLRenderer'
 export { morphHTML } from './Visitors/DOMMorpher'
-export { patchBlocksInto } from './Visitors/BlockPatcher'
+export { patchBlocksInto, clearPatchCache, type PatchBlocksOptions, type PatchBlocksStats } from './Visitors/BlockPatcher'
 export { SVGRenderer } from './Visitors/SVGRenderer'
 export { MarkdownExporter } from './Visitors/MarkdownExporter'
 export { JSONExporter } from './Visitors/JSONExporter'
