@@ -16,6 +16,7 @@
  */
 
 import type { RedNode } from './RedNode'
+import type { TokenResolverFn } from '../Tokens'
 
 /** #rgb / #rgba / #rrggbb / #rrggbbaa, una palabra clave CSS, o rgb()/hsl(). */
 const CSS_COLOR_RE =
@@ -73,9 +74,15 @@ export function nodeAttrValue(node: RedNode, key?: string): string {
  *
  * Un hex sin `#` se completa: `[color=ff0000]` es como lo escribe medio mundo.
  */
-export function sanitizeColor(raw: string): string | null {
+export function sanitizeColor(raw: string, resolver?: TokenResolverFn): string | null {
   let v = raw.trim()
   if (!v) return null
+  if (v.startsWith('$') && resolver) {
+    const resolved = resolver(v.slice(1)) ?? resolver(v)
+    if (resolved !== undefined) {
+      v = resolved.trim()
+    }
+  }
   if (BARE_HEX_RE.test(v) && (v.length === 3 || v.length === 4 || v.length === 6 || v.length === 8)) {
     v = '#' + v
   }
@@ -83,14 +90,35 @@ export function sanitizeColor(raw: string): string | null {
 }
 
 /** El tamaño de `[size=…]` como número, o `null`. Se interpola en `%`. */
-export function sanitizeFontSize(raw: string): string | null {
-  const v = raw.trim()
+export function sanitizeFontSize(raw: string, resolver?: TokenResolverFn): string | null {
+  let v = raw.trim()
+  if (v.startsWith('$') && resolver) {
+    const resolved = resolver(v.slice(1)) ?? resolver(v)
+    if (resolved !== undefined) {
+      v = resolved.trim()
+      if (v.endsWith('%')) {
+        v = v.slice(0, -1).trim()
+      }
+    }
+  }
   return CSS_SIZE_RE.test(v) ? v : null
 }
 
 /** La familia de `[font=…]`, o `null`. */
-export function sanitizeFontFamily(raw: string): string | null {
-  const v = raw.trim()
+export function sanitizeFontFamily(raw: string, resolver?: TokenResolverFn): string | null {
+  let v = raw.trim()
+  if (v.startsWith('$') && resolver) {
+    const resolved = resolver(v.slice(1)) ?? resolver(v)
+    if (resolved !== undefined) {
+      v = resolved.trim()
+      if (
+        (v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith("'") && v.endsWith("'"))
+      ) {
+        v = v.slice(1, -1).trim()
+      }
+    }
+  }
   return CSS_FONT_RE.test(v) ? v : null
 }
 

@@ -12,6 +12,12 @@ import { RedNode } from '../Syntax/RedNode'
 import { Visitor } from './Visitor'
 import type { VisitorContext } from './Visitor'
 import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
+import {
+  toTokenResolver,
+  resolveTokenValue,
+  type TokenResolverFn,
+  type TokenSource,
+} from '../Tokens'
 
 /**
  * Export target for BBCodeExporter.
@@ -20,6 +26,19 @@ import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
  * - 'lyne': Preserves Lyne-native tags as-is for round-trip editing.
  */
 export type ExportTarget = 'osu' | 'miliastry' | 'lyne'
+
+export interface BBCodeExporterOptions {
+  registry?: TagRegistry
+  target?: ExportTarget
+  tokens?: TokenSource
+  resolveTokens?: boolean
+}
+
+export type BBCodeExportOptions = {
+  target?: ExportTarget
+  tokens?: TokenSource
+  resolveTokens?: boolean
+}
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
 const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow', 'paint'])
@@ -181,11 +200,32 @@ export class BBCodeExporter extends Visitor<string> {
   private registry: TagRegistry
   private depth: number = 0
   private target: ExportTarget
+  private tokens?: TokenSource
+  private tokenResolver?: TokenResolverFn
+  private explicitResolveTokens?: boolean
 
-  constructor(registry: TagRegistry = new TagRegistry(), target: ExportTarget = 'osu') {
+  constructor(
+    registryOrOptions?: TagRegistry | BBCodeExporterOptions,
+    target: ExportTarget = 'osu',
+    options?: BBCodeExporterOptions | { tokens?: TokenSource; resolveTokens?: boolean },
+  ) {
     super()
-    this.registry = registry
-    this.target = target
+    if (registryOrOptions && !(registryOrOptions instanceof TagRegistry) && !('get' in registryOrOptions)) {
+      const opts = registryOrOptions as BBCodeExporterOptions
+      this.registry = opts.registry ?? new TagRegistry()
+      this.target = opts.target ?? 'osu'
+      this.tokens = opts.tokens
+      this.tokenResolver = toTokenResolver(opts.tokens)
+      this.explicitResolveTokens = opts.resolveTokens
+    } else {
+      this.registry = (registryOrOptions as TagRegistry) ?? new TagRegistry()
+      this.target = target
+      if (options) {
+        this.tokens = options.tokens
+        this.tokenResolver = toTokenResolver(options.tokens)
+        this.explicitResolveTokens = options.resolveTokens
+      }
+    }
   }
 
   /**
@@ -193,6 +233,26 @@ export class BBCodeExporter extends Visitor<string> {
    */
   setTarget(target: ExportTarget): void {
     this.target = target
+  }
+
+  setTokens(tokens?: TokenSource): void {
+    this.tokens = tokens
+    this.tokenResolver = toTokenResolver(tokens)
+  }
+
+  getTokens(): TokenSource | undefined {
+    return this.tokens
+  }
+
+  getTokenResolver(): TokenResolverFn | undefined {
+    return this.tokenResolver
+  }
+
+  private shouldResolveTokens(): boolean {
+    if (this.explicitResolveTokens !== undefined) {
+      return this.explicitResolveTokens
+    }
+    return this.target === 'osu'
   }
 
   /**
@@ -206,10 +266,32 @@ export class BBCodeExporter extends Visitor<string> {
 
   /**
    * Export the entire document to BBCode.
-   * Optionally override the export target for this specific call.
+   * Optionally override the export target or options for this specific call.
    */
-  export(root: RedNode, target?: ExportTarget): string {
-    if (target !== undefined) this.target = target
+  export(
+    root: RedNode,
+    targetOrOptions?: ExportTarget | BBCodeExportOptions,
+    options?: BBCodeExportOptions,
+  ): string {
+    if (typeof targetOrOptions === 'string') {
+      this.target = targetOrOptions
+      if (options?.tokens !== undefined) {
+        this.setTokens(options.tokens)
+      }
+      if (options?.resolveTokens !== undefined) {
+        this.explicitResolveTokens = options.resolveTokens
+      }
+    } else if (targetOrOptions && typeof targetOrOptions === 'object') {
+      if (targetOrOptions.target !== undefined) {
+        this.target = targetOrOptions.target
+      }
+      if (targetOrOptions.tokens !== undefined) {
+        this.setTokens(targetOrOptions.tokens)
+      }
+      if (targetOrOptions.resolveTokens !== undefined) {
+        this.explicitResolveTokens = targetOrOptions.resolveTokens
+      }
+    }
     return this.visit(root)
   }
 
@@ -231,8 +313,20 @@ export class BBCodeExporter extends Visitor<string> {
         if (style.fontStyle === 'italic') out = `[i]${out}[/i]`
         if (style.textDecoration === 'underline') out = `[u]${out}[/u]`
         if (style.textDecoration === 'line-through') out = `[s]${out}[/s]`
-        if (style.color) out = `[color=${normalizeColorToHex(style.color)}]${out}[/color]`
-        if (style.fontSize) out = `[size=${style.fontSize}]${out}[/size]`
+        if (style.color) {
+          let col = style.color
+          if (this.shouldResolveTokens() && col.startsWith('$')) {
+            col = resolveTokenValue(col, this.tokenResolver)
+          }
+          out = `[color=${normalizeColorToHex(col)}]${out}[/color]`
+        }
+        if (style.fontSize) {
+          let size = style.fontSize
+          if (this.shouldResolveTokens() && size.startsWith('$')) {
+            size = resolveTokenValue(size, this.tokenResolver)
+          }
+          out = `[size=${size}]${out}[/size]`
+        }
         // Se pueden seguir sumando estilos dinámicos
       }
       return out
@@ -314,19 +408,34 @@ export class BBCodeExporter extends Visitor<string> {
         if (tag?.properties) {
           const parts: string[] = []
           for (const prop of tag.properties) {
-            const val = node.metadata[prop.name]
+            let val = node.metadata[prop.name]
             if (val !== undefined && val !== null) {
+              if (this.shouldResolveTokens() && typeof val === 'string' && val.startsWith('$')) {
+                val = resolveTokenValue(val, this.tokenResolver)
+              }
               parts.push(`${prop.name}=${val}`)
             }
           }
           if (parts.length > 0) return `=${parts[0]}`
         }
       } else if (node.kind === 'font_size' && hasAttrValue(node.metadata.size)) {
-        return `=${node.metadata.size}`
+        let size = String(node.metadata.size)
+        if (this.shouldResolveTokens() && size.startsWith('$')) {
+          size = resolveTokenValue(size, this.tokenResolver)
+        }
+        return `=${size}`
       } else if (node.kind === 'color' && hasAttrValue(node.metadata.color)) {
-        return `=${normalizeColorToHex(node.metadata.color as string)}`
+        let color = String(node.metadata.color)
+        if (this.shouldResolveTokens() && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
+        return `=${normalizeColorToHex(color)}`
       } else if (node.kind === 'font' && hasAttrValue(node.metadata.font)) {
-        return `=${node.metadata.font}`
+        let font = String(node.metadata.font)
+        if (this.shouldResolveTokens() && font.startsWith('$')) {
+          font = resolveTokenValue(font, this.tokenResolver)
+        }
+        return `=${font}`
       } else if (node.kind === 'url' && node.metadata.href !== undefined) {
         return `=${node.metadata.href}`
       } else if (node.kind === 'email' && hasAttrValue(node.metadata.href)) {
@@ -341,20 +450,36 @@ export class BBCodeExporter extends Visitor<string> {
         // falls back to a synthetic "Box"/"Spoiler" when the tag is bare. Only
         // the raw form can be trusted to reproduce the input, so it wins.
         const raw = node.metadata.rawTitle
-        const titleVal = String((raw !== undefined ? raw : node.metadata.title) ?? '')
+        let titleVal = String((raw !== undefined ? raw : node.metadata.title) ?? '')
+        if (this.shouldResolveTokens() && titleVal.startsWith('$')) {
+          titleVal = resolveTokenValue(titleVal, this.tokenResolver)
+        }
         // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
         // a añadir aquí para que el round-trip no pierda el sufijo.
-        const color = node.metadata.color as string | undefined
+        let color = node.metadata.color as string | undefined
+        if (this.shouldResolveTokens() && color && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
         // A bare `[box]` has neither, and must stay bare.
         if (titleVal === '' && !color) return ''
         return `=${titleVal}${color ? `:${color}` : ''}`
       } else if ((node.kind === 'notice' || node.kind === 'wnotice') && node.metadata.color !== undefined) {
-        return `=${node.metadata.color}`
+        let color = String(node.metadata.color)
+        if (this.shouldResolveTokens() && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
+        return `=${color}`
       } else if (node.kind === 'tables' && node.metadata.variant !== undefined) {
-        const color = node.metadata.color as string | undefined
+        let color = node.metadata.color as string | undefined
+        if (this.shouldResolveTokens() && color && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
         return `=${node.metadata.variant}${color ? `:${color}` : ''}`
       } else if (node.kind === 'columns' && node.metadata.columns !== undefined) {
-        const color = node.metadata.color as string | undefined
+        let color = node.metadata.color as string | undefined
+        if (this.shouldResolveTokens() && color && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
         return `=${node.metadata.columns}${color ? `:${color}` : ''}`
       } else if (node.kind === 'separator' && node.metadata.variant !== undefined) {
         return `=${node.metadata.variant}`
@@ -371,21 +496,41 @@ export class BBCodeExporter extends Visitor<string> {
       } else if (node.kind === 'align' && node.metadata.align !== undefined) {
         return `=${node.metadata.align}`
       } else if (node.kind === 'effect' && node.metadata.effectType !== undefined) {
-        const color = node.metadata.color as string | undefined
+        let color = node.metadata.color as string | undefined
+        if (this.shouldResolveTokens() && color && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
         return `=${node.metadata.effectType}${color ? `:${color}` : ''}`
       } else if (node.kind === 'image' && node.metadata.imgAttr !== undefined) {
         return `=${node.metadata.imgAttr}`
       } else if (node.kind === 'anim' && node.metadata.animType !== undefined) {
         return `=${node.metadata.animType}`
       } else if (node.kind === 'container' && node.metadata.containerType !== undefined) {
-        const color = node.metadata.color as string | undefined
+        let color = node.metadata.color as string | undefined
+        if (this.shouldResolveTokens() && color && color.startsWith('$')) {
+          color = resolveTokenValue(color, this.tokenResolver)
+        }
         return `=${node.metadata.containerType}${color ? `:${color}` : ''}`
       } else if (node.kind === 'style_tag' && node.metadata.style !== undefined) {
-        return `=${node.metadata.style}`
+        let style = String(node.metadata.style)
+        if (this.shouldResolveTokens()) {
+          style = style.replace(/\$([a-zA-Z0-9_.-]+)/g, (match) => {
+            return resolveTokenValue(match, this.tokenResolver)
+          })
+        }
+        return `=${style}`
       } else if (hasAttrValue(node.metadata.value)) {
-        return `=${node.metadata.value}`
+        let val = String(node.metadata.value)
+        if (this.shouldResolveTokens() && val.startsWith('$')) {
+          val = resolveTokenValue(val, this.tokenResolver)
+        }
+        return `=${val}`
       } else if (hasAttrValue(node.metadata.raw)) {
-        return `=${node.metadata.raw}`
+        let raw = String(node.metadata.raw)
+        if (this.shouldResolveTokens() && raw.startsWith('$')) {
+          raw = resolveTokenValue(raw, this.tokenResolver)
+        }
+        return `=${raw}`
       }
     }
 
@@ -393,7 +538,17 @@ export class BBCodeExporter extends Visitor<string> {
     const text = node.text || ''
     if (text.startsWith('=') || text.startsWith(' ')) {
       if (node.kind === 'color' && text.startsWith('=')) {
-        return `=${normalizeColorToHex(text.slice(1))}`
+        let col = text.slice(1)
+        if (this.shouldResolveTokens() && col.startsWith('$')) {
+          col = resolveTokenValue(col, this.tokenResolver)
+        }
+        return `=${normalizeColorToHex(col)}`
+      }
+      if (this.shouldResolveTokens() && text.startsWith('=')) {
+        let val = text.slice(1)
+        if (val.startsWith('$')) {
+          return `=${resolveTokenValue(val, this.tokenResolver)}`
+        }
       }
       return text
     }

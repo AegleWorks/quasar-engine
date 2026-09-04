@@ -25,6 +25,57 @@ import {
   addDiagnostic,
 } from '../Types/diagnostics'
 import { findCollapsibleGradients, type CollapsibleGradient } from '../Analysis/Passes/Analysis/GradientAnalyzer'
+import {
+  toTokenResolver,
+  type TokenResolverFn,
+  type TokenSource,
+} from '../Tokens'
+import { nodeAttrValue } from '../Syntax/nodeAttr'
+
+function findTokenReferences(node: RedNode): string[] {
+  const tokens = new Set<string>()
+
+  // Check metadata
+  if (node.metadata) {
+    for (const [k, val] of Object.entries(node.metadata)) {
+      if (typeof val === 'string' && val.startsWith('$')) {
+        tokens.add(val)
+      } else if (k === 'style' && val && typeof val === 'object') {
+        for (const sVal of Object.values(val as Record<string, unknown>)) {
+          if (typeof sVal === 'string' && sVal.startsWith('$')) {
+            tokens.add(sVal)
+          }
+        }
+      } else if (k === 'style' && typeof val === 'string') {
+        const matches = val.match(/\$[a-zA-Z0-9_.-]+/g)
+        if (matches) {
+          for (const m of matches) tokens.add(m)
+        }
+      }
+    }
+  }
+
+  // Check node.text for tag nodes (like [color=$accent] or [box=Title:$accent])
+  if (
+    node.kind !== 'text' &&
+    node.kind !== 'document' &&
+    node.kind !== 'paragraph' &&
+    node.kind !== 'spacing' &&
+    node.kind !== 'empty_line'
+  ) {
+    const attr = nodeAttrValue(node)
+    if (attr && attr.startsWith('$')) {
+      tokens.add(attr)
+    }
+    const text = node.text || ''
+    const match = /:(\$[a-zA-Z0-9_.-]+)/.exec(text)
+    if (match) {
+      tokens.add(match[1])
+    }
+  }
+
+  return Array.from(tokens)
+}
 
 /**
  * Run one validator and file whatever it returns, both on the collection and on
@@ -638,6 +689,11 @@ function hrefRange(node: RedNode, source: string, href: string): { start: number
 
 // ─── SemanticAnalyzer ──────────────────────────────────────────
 
+export interface SemanticAnalyzerOptions {
+  dialect?: BBCodeDialect
+  tokens?: TokenSource
+}
+
 export class SemanticAnalyzer {
   private validators: Map<string, Validator> = new Map()
 
@@ -664,7 +720,35 @@ export class SemanticAnalyzer {
    */
   dialect: BBCodeDialect = 'miliastry'
 
-  constructor() {
+  private _tokens?: TokenSource
+  private _tokenResolver?: TokenResolverFn
+
+  get tokens(): TokenSource | undefined {
+    return this._tokens
+  }
+
+  set tokens(val: TokenSource | undefined) {
+    this._tokens = val
+    this._tokenResolver = toTokenResolver(val)
+  }
+
+  get tokenResolver(): TokenResolverFn | undefined {
+    return this._tokenResolver
+  }
+
+  setTokens(tokens?: TokenSource): void {
+    this.tokens = tokens
+  }
+
+  constructor(options?: SemanticAnalyzerOptions | BBCodeDialect) {
+    if (typeof options === 'string') {
+      this.dialect = options
+    } else if (options) {
+      if (options.dialect) this.dialect = options.dialect
+      if (options.tokens) {
+        this.tokens = options.tokens
+      }
+    }
     this.registerBuiltinValidators()
   }
 
@@ -703,7 +787,24 @@ export class SemanticAnalyzer {
   /**
    * Analyze a Red Tree and produce diagnostics.
    */
-  analyze(root: RedNode, source: string): IndexedAnalyzeResult {
+  analyze(
+    root: RedNode,
+    source: string,
+    tokensOrOptions?: TokenSource | { tokens?: TokenSource },
+  ): IndexedAnalyzeResult {
+    if (tokensOrOptions !== undefined) {
+      if (
+        typeof tokensOrOptions === 'object' &&
+        tokensOrOptions !== null &&
+        'tokens' in tokensOrOptions &&
+        !('palette' in tokensOrOptions) &&
+        !('variables' in tokensOrOptions)
+      ) {
+        this.tokens = (tokensOrOptions as { tokens?: TokenSource }).tokens
+      } else {
+        this.tokens = tokensOrOptions as TokenSource
+      }
+    }
     const startTime = performance.now()
     const diagnostics = createDiagnosticCollection()
     let nodesAnalyzed = 0
@@ -1363,6 +1464,40 @@ export class SemanticAnalyzer {
             ],
           },
         )
+      },
+    })
+
+    // ── Unresolved design token validator ────────────────────────
+    this.register({
+      code: 'unresolved-token',
+      severity: 'warning',
+      validate: (node) => {
+        if (!this._tokenResolver) return null
+
+        const tokenRefs = findTokenReferences(node)
+        if (tokenRefs.length === 0) return null
+
+        const diagnostics: Diagnostic[] = []
+        for (const tokenRef of tokenRefs) {
+          const name = tokenRef.startsWith('$') ? tokenRef.slice(1) : tokenRef
+          const resolved = this._tokenResolver(name) ?? this._tokenResolver(tokenRef)
+          if (resolved === undefined) {
+            diagnostics.push(
+              createDiagnostic(
+                'unresolved-token',
+                `Design token "${tokenRef}" is not defined in project tokens`,
+                'warning',
+                {
+                  nodeId: node.id,
+                  nodeKind: node.kind,
+                  range: node.range,
+                },
+              ),
+            )
+          }
+        }
+
+        return diagnostics.length > 0 ? diagnostics : null
       },
     })
   }

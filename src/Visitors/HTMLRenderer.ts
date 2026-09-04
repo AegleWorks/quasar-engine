@@ -22,6 +22,12 @@ import { RenderTree } from '../RenderPipeline/RenderTree'
 
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
+import {
+  toTokenResolver,
+  resolveTokenValue,
+  type TokenResolverFn,
+  type TokenSource,
+} from '../Tokens'
 
 export interface HTMLRendererOptions {
   /** 
@@ -52,19 +58,24 @@ export interface HTMLRendererOptions {
    * timestamp as plain text. Used by map hosts that deep-link into an editor.
    */
   timestampResolver?: (ms: number, label: string) => { href: string; external?: boolean } | null
+  /** Design tokens or resolver function */
+  tokens?: TokenSource
 }
 
 export class HTMLRenderer extends Visitor<string> {
-  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver'>> & {
+  private tokenResolver?: TokenResolverFn
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens'>> & {
     registry?: TagRegistry
     mediaProxy?: (url: string) => string
     entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
     mentionResolver?: (name: string) => { href: string; external?: boolean } | null
     timestampResolver?: (ms: number, label: string) => { href: string; external?: boolean } | null
+    tokens?: TokenSource
   }
 
   constructor(options: HTMLRendererOptions = {}) {
     super()
+    this.tokenResolver = toTokenResolver(options.tokens)
     this.options = {
       osuBehaviour: options.osuBehaviour ?? true,
       registry: options.registry,
@@ -74,7 +85,17 @@ export class HTMLRenderer extends Visitor<string> {
       entityLinkResolver: options.entityLinkResolver,
       mentionResolver: options.mentionResolver,
       timestampResolver: options.timestampResolver,
+      tokens: options.tokens,
     }
+  }
+
+  setTokens(tokens?: TokenSource): void {
+    this.tokenResolver = toTokenResolver(tokens)
+    this.options.tokens = tokens
+  }
+
+  getTokenResolver(): TokenResolverFn | undefined {
+    return this.tokenResolver
   }
 
   // ─── Tag → HTML Element Map ─────────────────────────────
@@ -258,8 +279,8 @@ export class HTMLRenderer extends Visitor<string> {
       const style = node.metadata?.style as Record<string, string> | undefined
       if (style) {
         const inlineStyles = []
-        const color = style.color && sanitizeColor(style.color)
-        const fontSize = style.fontSize && sanitizeFontSize(style.fontSize)
+        const color = style.color && sanitizeColor(style.color, this.tokenResolver)
+        const fontSize = style.fontSize && sanitizeFontSize(style.fontSize, this.tokenResolver)
         if (color) inlineStyles.push(`color: ${color}`)
         if (fontSize) inlineStyles.push(`font-size: ${fontSize}%`)
         if (this.isCssKeyword(style.fontWeight)) inlineStyles.push(`font-weight: ${style.fontWeight}`)
@@ -547,17 +568,17 @@ export class HTMLRenderer extends Visitor<string> {
   /** Read a metadata field, falling back to the raw tag attribute. */
 
   private colorStyle(node: RedNode): string {
-    const color = sanitizeColor(nodeAttrValue(node, 'color'))
+    const color = sanitizeColor(nodeAttrValue(node, 'color'), this.tokenResolver)
     return color ? `style="color:${color};"` : ''
   }
 
   private fontSizeStyle(node: RedNode): string {
-    const size = sanitizeFontSize(nodeAttrValue(node, 'size'))
+    const size = sanitizeFontSize(nodeAttrValue(node, 'size'), this.tokenResolver)
     return size ? `style="font-size:${size}%;"` : ''
   }
 
   private fontStyle(node: RedNode): string {
-    const font = sanitizeFontFamily(nodeAttrValue(node, 'font'))
+    const font = sanitizeFontFamily(nodeAttrValue(node, 'font'), this.tokenResolver)
     return font ? `style="font-family:${font};"` : ''
   }
 
@@ -691,7 +712,7 @@ export class HTMLRenderer extends Visitor<string> {
   private renderNotice(node: RedNode, warning: boolean): string {
     const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne' || warning
     if (isLyne) {
-      const color = sanitizeColor(nodeAttrValue(node, 'color'))
+      const color = sanitizeColor(nodeAttrValue(node, 'color'), this.tokenResolver)
       const styleAttr = color
         ? ` style="background:${this.hexToRgba(color, 0.08)};border-color:${this.hexToRgba(color, 0.4)};border-left-color:${color};color:${this.hexToRgba(color, 0.85)};"`
         : ''
@@ -803,7 +824,7 @@ export class HTMLRenderer extends Visitor<string> {
     const raw = (String(node.metadata?.effectType ?? '') || nodeAttrValue(node) || 'glow').toLowerCase().trim()
     const effectType = raw.includes(':') ? raw.split(':')[0] : (raw.startsWith('#') ? 'glow' : raw)
     const rawColor = String(node.metadata?.color ?? '') || (raw.includes(':') ? raw.split(':')[1] : (raw.startsWith('#') ? raw : nodeAttrValue(node)))
-    const color = sanitizeColor(rawColor)
+    const color = sanitizeColor(rawColor, this.tokenResolver)
     const content = this.renderChildren(node)
     const idAttr = this.idAttr(node)
 
@@ -888,7 +909,7 @@ export class HTMLRenderer extends Visitor<string> {
         return `<div${idAttr} class="bb-middle">${content}</div>`
       case 'square':
       case 'circle': {
-        const accent = sanitizeColor(param)
+        const accent = sanitizeColor(param, this.tokenResolver)
         const border = accent ? this.hexToRgba(accent, 0.35) : ''
         const bg = accent ? this.hexToRgba(accent, 0.08) : ''
         const style = accent ? ` style="--square-accent:${accent};--square-border:${border};--square-bg:${bg};"` : ''
@@ -901,14 +922,14 @@ export class HTMLRenderer extends Visitor<string> {
         // del que el CSS deriva borde, tinte de fondo y —vía la clase
         // `bb-accented`— la paleta del contenido sin color propio. Sin color,
         // defaults y sin clase.
-        const accent = sanitizeColor(param)
+        const accent = sanitizeColor(param, this.tokenResolver)
         const cls = accent ? ' bb-accented' : ''
         const style = accent ? ` style="--${containerType}-accent:${accent};"` : ''
         return `<div${idAttr} class="bb-cut-panel bb-${containerType}${cls}"${style}>${content}</div>`
       }
       case 'neon-box':
       case 'neonbox': {
-        const c = sanitizeColor(param || nodeAttrValue(node)) || 'var(--color-accent, #2EE6E2)'
+        const c = sanitizeColor(param || nodeAttrValue(node), this.tokenResolver) || 'var(--color-accent, #2EE6E2)'
         return `<div${idAttr} class="bb-cut-panel bb-neon-box" style="--neon-color:${c};border-color:${c};">${content}</div>`
       }
       default:
@@ -945,7 +966,10 @@ export class HTMLRenderer extends Visitor<string> {
       // color-mix()…) — antes se eliminaban y rompían esos valores. Lo que sí
       // se bloquea son las funciones/fuentes peligrosas (url(), expression(),
       // javascript:), que no tienen uso legítimo en el whitelist de props.
-      const safeVal = val.replace(/["'{}<>]/g, '').slice(0, 100)
+      let safeVal = val.replace(/["'{}<>]/g, '').slice(0, 100)
+      if (safeVal.startsWith('$') && this.tokenResolver) {
+        safeVal = resolveTokenValue(safeVal, this.tokenResolver)
+      }
       if (/url\s*\(|expression\s*\(|javascript\s*:/i.test(safeVal)) continue
       safeStyles.push(`${prop}:${safeVal}`)
     }
@@ -1024,7 +1048,7 @@ export class HTMLRenderer extends Visitor<string> {
    * borde + fondo en columns). Devuelve '' si no hay color válido.
    */
   private boxAccentStyle(node: RedNode, suffix: 'box' | 'table' | 'columns' = 'box'): string {
-    const color = sanitizeColor(String(node.metadata?.color ?? ''))
+    const color = sanitizeColor(String(node.metadata?.color ?? ''), this.tokenResolver)
     if (!color) return ''
     const border = this.hexToRgba(color, 0.35)
     const bg = this.hexToRgba(color, 0.08)
@@ -1154,13 +1178,13 @@ export class HTMLRenderer extends Visitor<string> {
 
     if (Array.isArray(params.colors)) {
       params.colors = params.colors
-        .map(c => (typeof c === 'string' ? sanitizeColor(c) : null))
+        .map(c => (typeof c === 'string' ? sanitizeColor(c, this.tokenResolver) : null))
         .filter((c): c is string => c !== null)
       if (params.colors.length === 0) delete params.colors
     }
     if (Array.isArray(params.stops)) {
       params.stops = params.stops
-        .filter(st => st && typeof st.color === 'string' && sanitizeColor(st.color) !== null)
+        .filter(st => st && typeof st.color === 'string' && sanitizeColor(st.color, this.tokenResolver) !== null)
       if (params.stops.length === 0) delete params.stops
     }
     return params
@@ -1217,7 +1241,7 @@ export class HTMLRenderer extends Visitor<string> {
       // ASCII art would arrive as one unreadable line.
       const escaped = this.escapeHtml(seg.text).replace(/\n/g, '<br>')
       if (seg.color) {
-        const safe = sanitizeColor(seg.color)
+        const safe = sanitizeColor(seg.color, this.tokenResolver)
         out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped
       } else if (seg.size !== undefined) {
         out += `<span style="font-size:${Math.max(10, Math.min(400, seg.size))}%">${escaped}</span>`

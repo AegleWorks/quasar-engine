@@ -36,7 +36,7 @@ export { TreeBuilder, type BuildResult } from './Syntax/TreeBuilder'
 export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
 
 // ── Semantic ──
-export { SemanticAnalyzer, type AnalyzeResult, type CrossedTags, type UnknownTag } from './Semantic/SemanticAnalyzer'
+export { SemanticAnalyzer, type AnalyzeResult, type SemanticAnalyzerOptions, type CrossedTags, type UnknownTag } from './Semantic/SemanticAnalyzer'
 export type { Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticFix, FixOperation } from './Types/diagnostics'
 
 // ── Tag Registry ──
@@ -56,7 +56,7 @@ export { TreeDiffer, type DiffOperation, type DiffKind } from './Diff/TreeDiffer
 
 // ── Visitors ──
 export { Visitor, type VisitorContext } from './Visitors/Visitor'
-export { BBCodeExporter, MILIASTRY_ONLY_TAGS, LYNE_ONLY_TAGS, type ExportTarget } from './Visitors/BBCodeExporter'
+export { BBCodeExporter, MILIASTRY_ONLY_TAGS, LYNE_ONLY_TAGS, type ExportTarget, type BBCodeExporterOptions, type BBCodeExportOptions } from './Visitors/BBCodeExporter'
 export { BBBlocksExporter, type UIBBBlock } from './Visitors/BBBlocksExporter'
 export { HTMLRenderer, type HTMLRendererOptions } from './Visitors/HTMLRenderer'
 export { morphHTML } from './Visitors/DOMMorpher'
@@ -292,3 +292,15 @@ export {
   sanitizeFontFamily,
 } from './Syntax/nodeAttr'
 export type { ImgAttr } from './Syntax/nodeAttr'
+
+// ── Design Tokens ──
+export {
+  toTokenResolver,
+  resolveTokenValue,
+} from './Tokens/index'
+export type {
+  DocumentTokens,
+  TokenResolverFn,
+  TokenSource,
+} from './Tokens/index'
+

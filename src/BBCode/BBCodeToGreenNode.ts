@@ -410,7 +410,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       // `[box=Mi Caja:#FF0055]` separa el color del título; el color se guarda
       // aparte para que el renderer lo aplique como `--box-accent` y el
       // exporter lo vuelva a emitir en el round-trip.
-      const colorMatch = /:#[0-9a-fA-F]{3,8}$/.exec(value)
+      const colorMatch = /:(?:#[0-9a-fA-F]{3,8}|\$[a-zA-Z0-9_.-]+)$/.exec(value)
       const color = colorMatch ? colorMatch[0].slice(1) : undefined
       const titleValue = colorMatch ? value.slice(0, colorMatch.index) : value
       return {
@@ -458,7 +458,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
           res.colspan = parseInt(p, 10)
         } else if (/^(center|centre|left|right|justify)$/i.test(p)) {
           res.align = p.toLowerCase() === 'centre' ? 'center' : p.toLowerCase()
-        } else if (/^#[0-9a-fA-F]{3,8}$/.test(p)) {
+        } else if (/^(?:#[0-9a-fA-F]{3,8}|\$[a-zA-Z0-9_.-]+)$/.test(p)) {
           res.color = p
         }
       }
@@ -468,11 +468,11 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
     case 'wnotice':  return value ? { color: value } : {}
     case 'tables':
     case 'columns': {
-      // Sufijo de color `:#hex` (como en box): `[tables=striped:#FF0055]` y
-      // `[columns=2:#FF0055]`. De ese color se deriva toda la paleta (bordes,
+      // Sufijo de color `:#hex` o `:$token`: `[tables=striped:#FF0055]`, `[tables=striped:$accent]`
+      // y `[columns=2:#FF0055]`. De ese color se deriva toda la paleta (bordes,
       // filas, encabezado) vía `--table-accent` / `--columns-accent`.
       if (!value) return {}
-      const colorMatch = /:#[0-9a-fA-F]{3,8}$/.exec(value)
+      const colorMatch = /:(?:#[0-9a-fA-F]{3,8}|\$[a-zA-Z0-9_.-]+)$/.exec(value)
       const clean = colorMatch ? value.slice(0, colorMatch.index) : value
       const color = colorMatch ? colorMatch[0].slice(1) : undefined
       const base = kind === 'tables' ? { variant: clean } : { columns: clean }
