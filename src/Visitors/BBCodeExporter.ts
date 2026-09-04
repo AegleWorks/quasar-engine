@@ -40,6 +40,27 @@ export type BBCodeExportOptions = {
   resolveTokens?: boolean
 }
 
+/**
+ * Referencia a un token de diseño dentro de un texto: `$nombre`.
+ *
+ * A nivel de módulo porque el sitio caliente es la rama de nodo TEXTO, la
+ * clase de nodo más frecuente de cualquier documento: un literal de expresión
+ * regular ahí dentro construye un `RegExp` por nodo. Había además tres copias
+ * idénticas del mismo patrón repartidas por el fichero.
+ */
+const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
+
+/** Sustituye cada `$token` por su valor; deja intacto el que no resuelva. */
+function expandTokenRefs(text: string, resolve: TokenResolverFn): string {
+  // `indexOf` antes que `replace`: la inmensa mayoría de los textos no lleva
+  // ningún `$`, y así no se pone en marcha el motor de expresiones regulares.
+  if (text.indexOf('$') === -1) return text
+  return text.replace(TOKEN_REF_RE, (match, name: string) => {
+    const resolved = resolve(name) ?? resolve(match)
+    return resolved !== undefined ? resolved : match
+  })
+}
+
 /** Miliastry-native effect tags that osu! doesn't support natively */
 const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow', 'paint'])
 
@@ -203,6 +224,14 @@ export class BBCodeExporter extends Visitor<string> {
   private tokens?: TokenSource
   private tokenResolver?: TokenResolverFn
   private explicitResolveTokens?: boolean
+  /**
+   * El resolvedor a aplicar en ESTE recorrido, o `null` si no hay expansión.
+   *
+   * Se decide una vez en `visit`, no por nodo: `shouldResolveTokens()` da la
+   * misma respuesta para todo el documento, y se estaba llamando en la rama
+   * de nodo texto, la más frecuente que hay.
+   */
+  private expandTokens: TokenResolverFn | null = null
 
   constructor(
     registryOrOptions?: TagRegistry | BBCodeExporterOptions,
@@ -261,6 +290,8 @@ export class BBCodeExporter extends Visitor<string> {
   visit(node: RedNode, context?: VisitorContext): string {
     if (context) this.context = context
     this.depth = 0
+    this.expandTokens =
+      this.tokenResolver !== undefined && this.shouldResolveTokens() ? this.tokenResolver : null
     return this.exportNode(node)
   }
 
@@ -295,6 +326,21 @@ export class BBCodeExporter extends Visitor<string> {
     return this.visit(root)
   }
 
+  /**
+   * Exporta los hijos directos y los concatena.
+   *
+   * Reemplaza el `children.map(...).join('')`, que asignaba un cierre y un
+   * array intermedio de N cadenas en cada nivel del árbol. `HTMLRenderer`
+   * hizo este mismo cambio y dejó la nota; el exportador se quedó atrás, y es
+   * el camino que corre bajo un límite de 60.000 caracteres.
+   */
+  private exportChildren(node: RedNode): string {
+    const children = node.children
+    let out = ''
+    for (let i = 0; i < children.length; i++) out += this.exportNode(children[i])
+    return out
+  }
+
   private exportNode(node: RedNode): string {
     // Un cierre que no cerró nada no vuelve al source. Escribirlo hacía que el
     // siguiente parseo lo leyera otra vez como etiqueta viva, y el documento no
@@ -306,6 +352,7 @@ export class BBCodeExporter extends Visitor<string> {
     // Text nodes
     if (node.kind === 'text') {
       let out = node.text
+      if (this.expandTokens !== null) out = expandTokenRefs(out, this.expandTokens)
       const style = node.metadata?.style as Record<string, string> | undefined
       if (style) {
         // Envolvemos desde adentro hacia afuera (o al revés, no importa mucho para osu)
@@ -334,7 +381,7 @@ export class BBCodeExporter extends Visitor<string> {
 
     // Document root
     if (node.kind === 'document') {
-      return node.children.map(c => this.exportNode(c)).join('')
+      return this.exportChildren(node)
     }
 
     // Custom tag handlers from registry
@@ -358,7 +405,7 @@ export class BBCodeExporter extends Visitor<string> {
     // Default BBCode serialization
     let tagName = this.kindToTagName(node.kind)
     const attrs = this.getTagAttributes(node)
-    const content = node.children.map(c => this.exportNode(c)).join('')
+    const content = this.exportChildren(node)
 
     if (!tagName) {
       if (node.kind === 'spacing') return '\n'
@@ -444,16 +491,16 @@ export class BBCodeExporter extends Visitor<string> {
         const address = (node.metadata.href as string).replace('mailto:', '')
         return address === '' ? '' : `=${address}`
       } else if (node.kind === 'quote' && hasAttrValue(node.metadata.source)) {
-        return `="${node.metadata.source}"`
+        let src = String(node.metadata.source)
+        if (this.expandTokens !== null) src = expandTokenRefs(src, this.expandTokens)
+        return `="${src}"`
       } else if (node.kind === 'box' || node.kind === 'boxw' || node.kind === 'spoilerbox') {
         // `rawTitle` is the source spelling; `title` is the parsed one, which
         // falls back to a synthetic "Box"/"Spoiler" when the tag is bare. Only
         // the raw form can be trusted to reproduce the input, so it wins.
         const raw = node.metadata.rawTitle
         let titleVal = String((raw !== undefined ? raw : node.metadata.title) ?? '')
-        if (this.shouldResolveTokens() && titleVal.startsWith('$')) {
-          titleVal = resolveTokenValue(titleVal, this.tokenResolver)
-        }
+        if (this.expandTokens !== null) titleVal = expandTokenRefs(titleVal, this.expandTokens)
         // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
         // a añadir aquí para que el round-trip no pierda el sufijo.
         let color = node.metadata.color as string | undefined

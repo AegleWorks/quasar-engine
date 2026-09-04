@@ -10,12 +10,26 @@ export interface UIBBBlock {
   content?: string
 }
 
+/** Distingue exportadores creados dentro del mismo milisegundo. */
+let exporterSeq = 0
+
 export class BBBlocksExporter extends Visitor<UIBBBlock[]> {
   private idCounter = 0
 
+  /**
+   * Un identificador único dentro de ESTA exportación.
+   *
+   * Llevaba un `Date.now().toString(36)` por nodo. El reloj no aportaba nada
+   * —los identificadores solo tienen que distinguirse entre sí dentro del
+   * lote— y se leía, y se convertía a base 36, una vez por nodo del árbol.
+   * El prefijo se calcula una sola vez por exportador para que dos lotes
+   * consecutivos sigan sin colisionar.
+   */
+  private readonly idPrefix = `block-${(exporterSeq++).toString(36)}-${Date.now().toString(36)}`
+
   private generateId(): string {
     this.idCounter++
-    return `block-${Date.now().toString(36)}-${this.idCounter}`
+    return `${this.idPrefix}-${this.idCounter}`
   }
 
   visit(node: RedNode, context?: VisitorContext): UIBBBlock[] {

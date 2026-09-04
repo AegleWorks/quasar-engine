@@ -36,7 +36,7 @@ import type { Contribution } from '../../Contracts/Contribution'
 import { ContributionKind } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
 import { childOffsets } from '../../../Syntax/GreenNode'
-import { hexToOklab, mixHexOklab, perceptualDistance, hexToRgb } from '../../../Utils/ColorMath'
+import { hexToOklab, mixOklabToHex, perceptualDistanceOklab, hexToRgb } from '../../../Utils/ColorMath'
 import { extractHex, sigmoid, extractSequences, checkFormattingBreaks } from '../../Utils/color-utils'
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -158,9 +158,26 @@ export class GradientAnalyzer implements AnalyzerPass {
     nodeStart: number = 0,
     minConfidence: number = 0.6,
   ): void {
+    // El corte por arriba: la inmensa mayoría de los nodos del documento son
+    // hojas o no tienen suficientes hijos `color` seguidos como para formar
+    // un degradado. `childOffsets` asigna un array por nodo y
+    // `extractSequences` otro más; hacerlo para todos era pagar dos
+    // asignaciones por nodo del árbol para descartarlos acto seguido.
+    const children = node.children as GreenNode[]
+    if (children.length === 0) return
+    if (countColorChildren(children) < MIN_SEQUENCE_LENGTH) {
+      // Los desplazamientos se acumulan sobre la marcha, que es lo mismo que
+      // hace `childOffsets` pero sin el array.
+      let offset = nodeStart + node.leadingWidth
+      for (let i = 0; i < children.length; i++) {
+        this.collectCollapsibleGradients(children[i], sink, offset, minConfidence)
+        offset += children[i].width
+      }
+      return
+    }
+
     const offsets = childOffsets(node, nodeStart)
-    if (node.children.length > 0) {
-      const children = node.children as GreenNode[]
+    {
       const sequences = extractSequences(children, 'color', extractHex)
 
       for (const seq of sequences) {
@@ -292,9 +309,11 @@ export class GradientAnalyzer implements AnalyzerPass {
       return [r / 255, g / 255, b / 255]
     })
 
+    // From `oklab`, not from the hex strings: `perceptualDistance` would
+    // convert both endpoints again, and both are already in hand.
     const deltas: number[] = []
     for (let i = 1; i < n; i++) {
-      deltas.push(perceptualDistance(colors[i - 1], colors[i]))
+      deltas.push(perceptualDistanceOklab(oklab[i - 1], oklab[i]))
     }
 
     // 1. Text Studio change-point detection (derivative jump between neighbours)
@@ -364,6 +383,9 @@ export class GradientAnalyzer implements AnalyzerPass {
       color: colors[idx],
       position: idx / (n - 1),
     }))
+    // Where each stop sits in `colors`, so the easing pass below can index
+    // into `oklab` instead of re-converting `stop.color`.
+    const stopSourceIndex = sortedIndices
 
     // Infer easing from change in perceptual distance across segments
     let easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' = 'linear'
@@ -371,7 +393,7 @@ export class GradientAnalyzer implements AnalyzerPass {
       const segDists: number[] = []
       for (let i = 1; i < stops.length; i++) {
         const segLen = stops[i].position - stops[i - 1].position
-        const segDist = perceptualDistance(stops[i - 1].color, stops[i].color)
+        const segDist = perceptualDistanceOklab(oklab[stopSourceIndex[i - 1]], oklab[stopSourceIndex[i]])
         segDists.push(segLen > 0 ? segDist / segLen : 0)
       }
 
@@ -404,7 +426,7 @@ export class GradientAnalyzer implements AnalyzerPass {
     // 1. Uniform perceptual spacing
     const pDiffs: number[] = []
     for (let i = 1; i < n; i++) {
-      pDiffs.push(perceptualDistance(colors[i - 1], colors[i]))
+      pDiffs.push(perceptualDistanceOklab(oklabArray[i - 1], oklabArray[i]))
     }
     const avgDiff = pDiffs.reduce((a, b) => a + b, 0) / pDiffs.length
     const diffVariance = pDiffs.reduce((sum, d) => sum + (d - avgDiff) ** 2, 0) / pDiffs.length
@@ -427,19 +449,26 @@ export class GradientAnalyzer implements AnalyzerPass {
     }
     const monotonic = violations < n * 0.2
 
-    // 3. Count plateaus (consecutive perceptually identical colours)
+    // 3. Count plateaus (consecutive perceptually identical colours).
+    // These are the neighbour distances from step 1, not a new measurement.
     let plateauCount = 0
-    for (let i = 1; i < n; i++) {
-      if (perceptualDistance(colors[i - 1], colors[i]) < 0.01) plateauCount++
+    for (let i = 0; i < pDiffs.length; i++) {
+      if (pDiffs[i] < 0.01) plateauCount++
     }
 
     // 4. Perceptual error vs ideal OKLab interpolation
     let maxPerceptualError = 0
     if (n >= 3 && stops.length >= 2) {
+      // The ramp's endpoints are fixed for the whole loop; only `t` moves.
+      // The mix still round-trips through hex because the comparison is
+      // against a colour that has been quantised to 8 bits per channel, and
+      // dropping that would change the score.
+      const rampFrom = hexToOklab(stops[0].color)
+      const rampTo = hexToOklab(stops[stops.length - 1].color)
       for (let i = 0; i < n; i++) {
         const t = n > 1 ? i / (n - 1) : 0
-        const ideal = mixHexOklab(stops[0].color, stops[stops.length - 1].color, t)
-        const error = perceptualDistance(ideal, colors[i])
+        const ideal = mixOklabToHex(rampFrom, rampTo, t)
+        const error = perceptualDistanceOklab(hexToOklab(ideal), oklabArray[i])
         maxPerceptualError = Math.max(maxPerceptualError, error)
       }
     }
@@ -482,6 +511,15 @@ export class GradientAnalyzer implements AnalyzerPass {
 
     return { score, featureScores }
   }
+}
+
+/** Cuántos hijos directos son nodos `color`. Sin asignar nada. */
+function countColorChildren(children: readonly GreenNode[]): number {
+  let count = 0
+  for (let i = 0; i < children.length; i++) {
+    if (children[i].kind === 'color') count++
+  }
+  return count
 }
 
 export function findCollapsibleGradients(

@@ -111,15 +111,25 @@ function morphNodes(parent: Node, newParent: Node): void {
           newEl.classList.add('is-open')
         }
 
-        // Sync attributes in-place
-        for (const attr of Array.from(newEl.attributes)) {
+        // Sync attributes in-place.
+        //
+        // `attributes` se recorre por índice: `Array.from` asignaba un array
+        // por elemento y por sentido, dos por pareja morfada, y esto corre
+        // sobre la ventana cambiada en cada pulsación.
+        const newAttrs = newEl.attributes
+        for (let i = 0; i < newAttrs.length; i++) {
+          const attr = newAttrs[i]
           if (oldEl.getAttribute(attr.name) !== attr.value) {
             oldEl.setAttribute(attr.name, attr.value)
           }
         }
-        for (const attr of Array.from(oldEl.attributes)) {
-          if (!newEl.hasAttribute(attr.name)) {
-            oldEl.removeAttribute(attr.name)
+        // Hacia atrás: quitar un atributo compacta la colección viva, y
+        // recorrerla hacia delante mientras se borra se salta el siguiente.
+        const oldAttrs = oldEl.attributes
+        for (let i = oldAttrs.length - 1; i >= 0; i--) {
+          const name = oldAttrs[i].name
+          if (!newEl.hasAttribute(name)) {
+            oldEl.removeAttribute(name)
           }
         }
 

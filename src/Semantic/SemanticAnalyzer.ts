@@ -294,10 +294,66 @@ const NO_CLOSING_TAG_EXPECTED = new Set<NodeKind>([
 export function isUnclosedTag(node: RedNode, source: string): boolean {
   if (NO_CLOSING_TAG_EXPECTED.has(node.kind)) return false
 
-  const name = openingTagName(node, source)
-  if (!name || name === '*') return false
+  // Por códigos de carácter y sin materializar el nombre: esto corre una vez
+  // por nodo de elemento del documento, y `openingTagName` construía un array
+  // de captura y una cadena en minúsculas para cada uno, casi siempre solo
+  // para compararla con el cierre y tirarla.
+  //
+  // El recorrido reproduce exactamente lo que acepta `OPENING_TAG_RE` — `[`,
+  // una `/` OPCIONAL, y luego uno o más `[a-zA-Z0-9_*-]` — y el nombre
+  // empieza DESPUÉS de esa barra, igual que el grupo de captura: un
+  // `discarded_tag` es literalmente `[/notice]`, y tomar su nombre desde el
+  // corchete daría `/notice`.
+  const start = node.range.start
+  if (start < 0 || start >= source.length || source.charCodeAt(start) !== 0x5b /* [ */) return false
+  let i = start + 1
+  if (source.charCodeAt(i) === 0x2f /* / */) i++
+  const nameStart = i
+  while (i < source.length && isTagNameChar(source.charCodeAt(i))) i++
+  if (i === nameStart) return false
+  // Un `[*]` de lista no lleva cierre.
+  if (i - nameStart === 1 && source.charCodeAt(nameStart) === 0x2a /* * */) return false
 
-  return !endsWithClosingTag(source, node.range.end, name)
+  return !endsWithClosingTagSpan(source, node.range.end, nameStart, i)
+}
+
+/** `[a-zA-Z0-9_*-]`, el alfabeto de nombres de `OPENING_TAG_RE`. */
+function isTagNameChar(c: number): boolean {
+  return (
+    (c >= 0x61 && c <= 0x7a) || // a-z
+    (c >= 0x41 && c <= 0x5a) || // A-Z
+    (c >= 0x30 && c <= 0x39) || // 0-9
+    c === 0x5f /* _ */ || c === 0x2a /* * */ || c === 0x2d /* - */
+  )
+}
+
+/**
+ * `endsWithClosingTag`, pero comparando contra el nombre EN el propio texto
+ * en vez de contra una cadena ya extraída. Las dos partes se comparan sin
+ * distinguir mayúsculas, que es lo que hacía la versión anterior al pasar el
+ * nombre de apertura por `toLowerCase()`.
+ */
+function endsWithClosingTagSpan(
+  source: string,
+  end: number,
+  nameStart: number,
+  nameEnd: number,
+): boolean {
+  const length = nameEnd - nameStart
+  const start = end - length - 3
+  if (start < 0) return false
+  if (source.charCodeAt(start) !== 0x5b /* [ */) return false
+  if (source.charCodeAt(start + 1) !== 0x2f /* / */) return false
+  if (source.charCodeAt(end - 1) !== 0x5d /* ] */) return false
+
+  for (let i = 0; i < length; i++) {
+    let a = source.charCodeAt(start + 2 + i)
+    let b = source.charCodeAt(nameStart + i)
+    if (a >= 0x41 && a <= 0x5a) a |= 32
+    if (b >= 0x41 && b <= 0x5a) b |= 32
+    if (a !== b) return false
+  }
+  return true
 }
 
 /**
@@ -521,17 +577,39 @@ function findLiteralTags(root: RedNode, source: string): LiteralTagScan {
   const orphans = new Map<string, string>()
 
   // `closes` is in document order, so the first unused match is the nearest.
+  //
+  // Indexed by tag name, with a cursor per name: the flat scan re-walked the
+  // consumed prefix for every opener, which is free on a healthy document —
+  // both lists are empty — and quadratic on the one full of unknown pairs.
+  // That is exactly the document a checker exists for.
+  const closesByTag = new Map<string, typeof closes>()
+  for (const close of closes) {
+    const list = closesByTag.get(close.tag)
+    if (list) list.push(close)
+    else closesByTag.set(close.tag, [close])
+  }
+  const cursorByTag = new Map<string, number>()
+
   for (const open of opens) {
-    for (const close of closes) {
-      if (close.used || close.tag !== open.tag || close.start < open.end) continue
-      close.used = true
-      paired.set(open.id, {
-        tag: open.tag,
-        opener: { start: open.start, end: open.end },
-        closer: { start: close.start, end: close.end },
-      })
-      break
+    const candidates = closesByTag.get(open.tag)
+    if (candidates === undefined) continue
+    let i = cursorByTag.get(open.tag) ?? 0
+    // Openers arrive in document order too, so a closer skipped for sitting
+    // before this opener sits before every later one as well. The cursor
+    // therefore only ever moves forward.
+    while (i < candidates.length && candidates[i].start < open.end) i++
+    if (i >= candidates.length) {
+      cursorByTag.set(open.tag, i)
+      continue
     }
+    const close = candidates[i]
+    close.used = true
+    cursorByTag.set(open.tag, i + 1)
+    paired.set(open.id, {
+      tag: open.tag,
+      opener: { start: open.start, end: open.end },
+      closer: { start: close.start, end: close.end },
+    })
   }
 
   // Whatever no opener claimed closes nothing at all. Pairing has to run first:
@@ -709,6 +787,8 @@ export class SemanticAnalyzer {
    */
   private _always: Validator[] = []
   private _byKind: Map<string, Validator[]> = new Map()
+  /** Set by register/unregister; cleared by the next `rebuildDispatch`. */
+  private _dispatchDirty: boolean = true
 
   /**
    * The dialect this analyzer validates against.
@@ -757,18 +837,30 @@ export class SemanticAnalyzer {
    */
   register(validator: Validator): void {
     this.validators.set(validator.code, validator)
-    this.rebuildDispatch()
+    this._dispatchDirty = true
   }
+
 
   /**
    * Remove a validator.
    */
   unregister(code: string): void {
     this.validators.delete(code)
-    this.rebuildDispatch()
+    this._dispatchDirty = true
   }
 
+  /**
+   * Rebuild the kind buckets, unless they are already current.
+   *
+   * `register` used to rebuild them itself, so constructing an analyzer —
+   * which registers thirteen built-ins — rebuilt the whole table thirteen
+   * times and threw away the first twelve. A plugin registering a batch paid
+   * the same way. Registration now only marks the table stale and `analyze`
+   * rebuilds it at most once, whatever the batch size.
+   */
   private rebuildDispatch(): void {
+    if (!this._dispatchDirty) return
+    this._dispatchDirty = false
     this._always = []
     this._byKind = new Map()
     for (const validator of this.validators.values()) {
@@ -857,6 +949,7 @@ export class SemanticAnalyzer {
       source,
     }
 
+    if (this._dispatchDirty) this.rebuildDispatch()
     const always = this._always
     const byKind = this._byKind
 

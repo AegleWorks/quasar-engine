@@ -620,6 +620,11 @@ function reconcileWindowed(
   const dbg = (...a: unknown[]): void => {
     if (DBG) console.log('[BP]', ...a)
   }
+  // OJO: `dbg(...)` evalúa sus argumentos ANTES de entrar, así que las
+  // llamadas que construyen algo —`.map()`, plantillas, `slice`— van dentro
+  // de un `if (DBG)`. Este es el camino de cada pulsación: los cuatro
+  // volcados de abajo recorrían la ventana entera y construían una cadena por
+  // ejecución, con la depuración apagada, para tirarlo todo.
 
 
   // ── Old window (OLD coordinates). ──────────────────────────────────────
@@ -758,10 +763,12 @@ function reconcileWindowed(
   const oldWinRunsFinal = oldRuns.slice(oldWinFrom2, oldWinTo)
   const newWinRunsFinal = newWinRuns
 
-  dbg('change', { start: change.start, end: change.end, endOld: change.endOld })
-  dbg('oldWin', oldWinFrom2, oldWinTo, 'keys', oldWinRunsFinal.map((r) => `${r.key}:${r.node.kind}`).slice(0, 40))
-  dbg('newWin', fromNew, toNew, 'keys', newWinRunsFinal.map((r) => `${r.key}:${r.node.kind}`).slice(0, 40))
-  dbg('newWinKeySet', [...newWinRunsFinal.map((r) => r.key).slice(0, 40)])
+  if (DBG) {
+    dbg('change', { start: change.start, end: change.end, endOld: change.endOld })
+    dbg('oldWin', oldWinFrom2, oldWinTo, 'keys', oldWinRunsFinal.map((r) => `${r.key}:${r.node.kind}`).slice(0, 40))
+    dbg('newWin', fromNew, toNew, 'keys', newWinRunsFinal.map((r) => `${r.key}:${r.node.kind}`).slice(0, 40))
+    dbg('newWinKeySet', [...newWinRunsFinal.map((r) => r.key).slice(0, 40)])
+  }
 
   // DOM anchor at the window start, and the window's old nodes.
   let anchorNode: Node | null = container.firstChild
@@ -809,7 +816,7 @@ function reconcileWindowed(
       const k = oldWinRunsFinal[i].key
       if (newKeySet.has(k) || newByNode.has(oldWinRunsFinal[i].node)) continue
       const el = oldWinNodes[i]
-      dbg('orphan?', k, oldWinRunsFinal[i].node.kind, 'el=', el ? (el.nodeType === 1 ? (el as Element).tagName : `text:'${String((el as Text).data ?? '').slice(0, 20)}'`) : 'null')
+      if (DBG) dbg('orphan?', k, oldWinRunsFinal[i].node.kind, 'el=', el ? (el.nodeType === 1 ? (el as Element).tagName : `text:'${String((el as Text).data ?? '').slice(0, 20)}'`) : 'null')
       if (el && !removed.has(el)) {
         removed.add(el)
         container.removeChild(el)
@@ -837,7 +844,7 @@ function reconcileWindowed(
       const prev = oldRunByKey.get(run.key) ?? oldRunByNode.get(run.node)
       const element = oldByKey.get(run.key) ?? oldByNode.get(run.node)
 
-      dbg('WALK', run.key, run.node.kind, 'element=', element ? (element.nodeType === 1 ? (element as Element).tagName : 'text') : 'NEW', 'cursor=', cursor ? (cursor.nodeType === 1 ? (cursor as Element).tagName : 'text') : 'null')
+      if (DBG) dbg('WALK', run.key, run.node.kind, 'element=', element ? (element.nodeType === 1 ? (element as Element).tagName : 'text') : 'NEW', 'cursor=', cursor ? (cursor.nodeType === 1 ? (cursor as Element).tagName : 'text') : 'null')
 
       if (!element) {
         container.insertBefore(nodeFromHtml(run.html), cursor)
@@ -867,7 +874,7 @@ function reconcileWindowed(
     // the first suffix node. Leftovers of runs that rendered to a different
     // node count sit between the walk's end and the suffix — drop them.
     let tail = cursor
-    dbg('tail-safety: cursor=', cursor ? (cursor.nodeType === 1 ? (cursor as Element).tagName : `text:'${String((cursor as Text).data ?? '').slice(0, 15)}'`) : 'null', 'afterWindow=', afterWindow ? (afterWindow.nodeType === 1 ? (afterWindow as Element).tagName : `text:'${String((afterWindow as Text).data ?? '').slice(0, 15)}'`) : 'null')
+    if (DBG) dbg('tail-safety: cursor=', cursor ? (cursor.nodeType === 1 ? (cursor as Element).tagName : `text:'${String((cursor as Text).data ?? '').slice(0, 15)}'`) : 'null', 'afterWindow=', afterWindow ? (afterWindow.nodeType === 1 ? (afterWindow as Element).tagName : `text:'${String((afterWindow as Text).data ?? '').slice(0, 15)}'`) : 'null')
     let tailCount = 0
     while (tail !== afterWindow) {
       if (!tail) break
