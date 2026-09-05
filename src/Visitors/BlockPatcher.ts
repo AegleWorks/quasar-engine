@@ -146,9 +146,49 @@ interface PatchCache {
 const caches = new WeakMap<HTMLElement, PatchCache>()
 
 /**
+ * ¿Está encendido el volcado verboso? (`globalThis.__BP_DEBUG__ = true`)
+ *
+ * Imprime por consola el detalle de la reconciliación por ventana. Es caro:
+ * sirve para leer un caso a mano, NO para medir con él encendido.
+ */
+function BP_DEBUG(): boolean {
+  return (globalThis as { __BP_DEBUG__?: boolean }).__BP_DEBUG__ === true
+}
+
+/**
+ * Deja constancia de POR QUÉ `patchBlocksInto` tomó el camino que tomó, en
+ * `globalThis.__BP_LAST__` (`globalThis.__BP_TRACE__ = true` para encenderlo).
+ *
+ * Va aparte del volcado verboso a propósito: esta traza es UNA asignación por
+ * parcheo, así que se puede dejar encendida MIENTRAS SE MIDE sin falsear la
+ * medida, que es justo cuando hace falta.
+ *
+ * Existe porque "¿por qué esto no usó el camino incremental?" es cara de
+ * contestar desde fuera: el bundle está minificado, `patchBlocksInto` devuelve
+ * `mode` pero no el motivo, y quien lo llama (el preview) tira las
+ * estadísticas. Diagnosticar la caída a `fullRebuild` por tecla en el
+ * documento de 547 KB costó desminificar a mano una función dentro de una
+ * línea de 75.000 caracteres; con esto se lee `__BP_LAST__` y ya está.
+ *
+ * Coste apagada: una comparación de identidad por parcheo.
+ */
+function bpTrace(reason: Record<string, unknown>): void {
+  if ((globalThis as { __BP_TRACE__?: boolean }).__BP_TRACE__ === true) {
+    ;(globalThis as { __BP_LAST__?: unknown }).__BP_LAST__ = reason
+  }
+}
+
+/**
  * Evict `container` from the patch cache so the next patch rebuilds afresh.
  */
 export function clearPatchCache(container: HTMLElement): void {
+  // Contador de invalidaciones bajo la misma traza barata: "cuántas veces se
+  // tira la caché por pulsación" es la pregunta que destapó el fullRebuild por
+  // tecla, y no se puede contestar desde fuera del módulo.
+  if ((globalThis as { __BP_TRACE__?: boolean }).__BP_TRACE__ === true) {
+    const g = globalThis as { __BP_CLEARS__?: number }
+    g.__BP_CLEARS__ = (g.__BP_CLEARS__ ?? 0) + 1
+  }
   caches.delete(container)
 }
 
@@ -616,7 +656,7 @@ function reconcileWindowed(
 
   const oldRuns = cache.lastRuns
 
-  const DBG = (globalThis as { __BP_DEBUG__?: boolean }).__BP_DEBUG__ === true
+  const DBG = BP_DEBUG()
   const dbg = (...a: unknown[]): void => {
     if (DBG) console.log('[BP]', ...a)
   }
@@ -946,12 +986,14 @@ export function patchBlocksInto(
   }
 
   if (options.forceRebuild) {
+    bpTrace({ why: 'forceRebuild' })
     return fullRebuild(container, rootNode, renderer, cache)
   }
 
   // DOM out of sync with the cache (a host replaced the innerHTML behind our
   // back, or a run rendered to a different node count than last time).
   if (container.childNodes.length !== cache.lastRuns.length) {
+    bpTrace({ why: 'desync', kids: container.childNodes.length, runs: cache.lastRuns.length })
     return fullRebuild(container, rootNode, renderer, cache)
   }
 
@@ -964,7 +1006,13 @@ export function patchBlocksInto(
     undefined
   if (change) {
     const windowed = reconcileWindowed(container, rootNode, change, renderer, cache, options)
-    if (windowed) return windowed
+    if (windowed) {
+      bpTrace({ why: 'windowed' })
+      return windowed
+    }
+    bpTrace({ why: 'windowed-declinado' })
+  } else {
+    bpTrace({ why: 'sin-changeRange' })
   }
 
   const blocks = rootNode.children
@@ -982,8 +1030,10 @@ export function patchBlocksInto(
     oldSet.add(k)
   }
   if (added >= cache.lastKeys.length) {
+    bpTrace({ why: 'added>=lastKeys', added, lastKeys: cache.lastKeys.length })
     return fullRebuild(container, rootNode, renderer, cache)
   }
 
+  bpTrace({ why: 'keyed' })
   return reconcileKeyed(container, rootNode, keys, renderer, cache, options)
 }
