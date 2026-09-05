@@ -37,6 +37,32 @@ export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
 
 // ── Semantic ──
 export { SemanticAnalyzer, type AnalyzeResult, type SemanticAnalyzerOptions, type CrossedTags, type UnknownTag } from './Semantic/SemanticAnalyzer'
+/**
+ * Whether an analysis walked the document or only the edit — see
+ * {@link AnalyzeResult.scope}.
+ *
+ * `'full'` every node was validated afresh; `'window'` only the nodes an edit
+ * could have changed were, and every other node kept the verdict it already
+ * had. The DIAGNOSTICS ARE THE SAME EITHER WAY: this says how they were
+ * arrived at, not what they are.
+ *
+ * Worth reading if you are timing the engine, deciding whether a slow frame
+ * was the analysis, or writing a test that must not silently lose the
+ * incremental path. NOT worth branching your rendering on — a consumer that
+ * treats `'window'` results as partial and merges them into what it already
+ * had will double-report, because `AnalyzeResult.diagnostics` is always the
+ * whole document's.
+ *
+ * `AnalyzeResult.window` carries the span that was re-validated on a
+ * `'window'` pass, and is `null` on a full one.
+ */
+export type { AnalyzeScope } from './Semantic/SemanticAnalyzer'
+/**
+ * `AnalyzeResult` plus the id→node index — see
+ * {@link SemanticAnalyzer.analyze}. `allNodes` is a getter that builds the
+ * index on first read, so a caller that never asks never pays for the walk.
+ */
+export type { IndexedAnalyzeResult } from './Semantic/SemanticAnalyzer'
 export type { Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticFix, FixOperation } from './Types/diagnostics'
 
 // ── Tag Registry ──
@@ -50,6 +76,38 @@ export { NodeFactory } from './Model/NodeFactory'
 // ── Incremental ──
 export { IncrementalParser, type EditOperation } from './Incremental/IncrementalParser'
 export { ChangeTracker, type TextChange } from './Incremental/ChangeTracker'
+/**
+ * A half-open span of the source, `[start, end)`, in the coordinates of the
+ * text whose result carries it.
+ *
+ * The same shape everywhere it appears — {@link ReparseResult.window},
+ * `AnalyzeResult.window`, `DocumentModel.lastReparseWindow` — because it
+ * always means the same thing: the part of the CURRENT text that the engine
+ * actually looked at.
+ */
+export type { SourceSpan } from './Incremental/IncrementalParser'
+/**
+ * What a reparse did, including {@link ReparseResult.window} — the span of the
+ * new text that went through the parser, or `null` after a full rebuild,
+ * where the answer is "all of it".
+ *
+ * Everything outside that span came across from the previous tree by
+ * reference, so a consumer holding per-node state (a rendered block, a
+ * measured height, a decoration) can keep it for every node the span does not
+ * touch. `DocumentModel.lastReparseWindow` is the same value for the model's
+ * last edit, which is usually the easier place to read it.
+ */
+export type { ReparseResult } from './Incremental/IncrementalParser'
+/**
+ * Why a reparse rebuilt the whole document instead of splicing a window.
+ *
+ * Useful when a document is unexpectedly slow to edit: a reason that repeats
+ * on every keystroke is a document shape the window guards will not accept —
+ * an unclosed `[` before the caret (`open-bracket-before`), a stray closing
+ * tag inside the window (`region-not-isolated`), an edit that changes what the
+ * parser leaves pending for the text after it (`pending-auto-close`).
+ */
+export type { FallbackReason } from './Incremental/IncrementalParser'
 
 // ── Diff ──
 export { TreeDiffer, type DiffOperation, type DiffKind } from './Diff/TreeDiffer'

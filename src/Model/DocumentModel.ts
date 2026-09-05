@@ -236,6 +236,12 @@ export class DocumentModel {
     return this._diagnostics
   }
 
+  /**
+   * What the last analysis cost and how it was obtained — its `scope` says
+   * whether it walked the document or only the edit's window, and `window`
+   * carries that span when it did. The diagnostics themselves are on
+   * {@link diagnostics}, and are the whole document's on either route.
+   */
   get lastAnalyze(): AnalyzeResult | null {
     return this._lastAnalyzeResult
   }
@@ -519,6 +525,10 @@ export class DocumentModel {
           version: this._version,
           source: this._source,
           diagnostics: this._diagnostics,
+          // How they were arrived at, not what they are: `diagnostics` is the
+          // whole document's on both routes. See `DocumentEvent.analysisScope`.
+          analysisScope: this._lastAnalyzeResult?.scope,
+          analysisWindow: this._lastAnalyzeResult?.window ?? null,
           timestamp: Date.now()
         }
         this.defineLazyNodeMatch(diagnosticsEvent, oldRoot, this._redRoot)
