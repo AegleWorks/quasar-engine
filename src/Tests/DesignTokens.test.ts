@@ -361,5 +361,36 @@ describe('Design Tokens Resolution', () => {
       const res = analyzer.analyze(doc.root!, doc.source)
       expect(res.diagnostics.items.filter(d => d.code === 'unresolved-token')).toHaveLength(0)
     })
+
+    it('expands text node variables and box titles when target is osu', () => {
+      const doc = new BBCodeDocumentModel({
+        source: 'Welcome $headerFont to [box=Section $titleSize:$primary]Hello $accent![/box]',
+      })
+      const exporter = new BBCodeExporter(undefined, 'osu', { tokens })
+      const exported = exporter.export(doc.root!)
+
+      expect(exported).toBe(
+        'Welcome Arial, sans-serif to [box=Section 150:#0055ff]Hello #ff66aa![/box]'
+      )
+    })
+
+    it('preserves text node variables when target is miliastry for round-trip', () => {
+      const original = 'Welcome $headerFont to [box=Section $titleSize:$primary]Hello $accent![/box]'
+      const doc = new BBCodeDocumentModel({ source: original })
+      const exporter = new BBCodeExporter(undefined, 'miliastry', { tokens })
+      const exported = exporter.export(doc.root!)
+
+      expect(exported).toBe(original)
+    })
+
+    it('renders text node variables in HTMLRenderer live preview', () => {
+      const doc = new BBCodeDocumentModel({
+        source: 'Welcome $headerFont!',
+      })
+      const renderer = new HTMLRenderer({ tokens })
+      const html = renderer.render(doc.root!)
+
+      expect(html).toContain('Welcome Arial, sans-serif!')
+    })
   })
 })

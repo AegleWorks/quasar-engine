@@ -160,5 +160,128 @@ describe('IncrementalParser', () => {
         expect(model.lastReparseFallbackReason).not.toBeNull()
       })
     }
+
+    it('a stray closer of a KNOWN tag after an auto-close elsewhere: the full parse discards it', () => {
+      // `[/quote]` auto-closes the inner `[b]`; the `[/b]` typed two blocks
+      // later is a `discarded_tag` in a full parse (invisible, not exported)
+      // but plain text in a window that never saw the `[quote]`. Found by
+      // the differential; pinned here.
+      const filler = Array.from({ length: 40 }, (_, i) => `relleno ${i}`).join('\n') + '\n\n'
+      const base = filler + '[quote][b]x[/quote]\n\ny\n\n' + filler
+      const at = base.indexOf('\n\ny\n\n') + 3
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + '[/b]' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('full_rebuild')
+      expect(model.lastReparseFallbackReason).toBe('region-not-isolated')
+      const kinds: string[] = []
+      model.redRoot!.walk(n => { kinds.push(n.kind) })
+      expect(kinds).toContain('discarded_tag')
+    })
+
+    it('a stray closer of an UNKNOWN tag is text either way and stays windowed', () => {
+      const filler = Array.from({ length: 40 }, (_, i) => `relleno ${i}`).join('\n') + '\n\n'
+      const base = filler + '[quote][b]x[/quote]\n\ny\n\n' + filler
+      const at = base.indexOf('\n\ny\n\n') + 3
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + '[/bold]' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('incremental')
+    })
+
+    it('an edit that undoes a crossing INSIDE the window changes a [/b] outside it', () => {
+      // The leak the bracket differential found, minimised. `[/notice]`
+      // overtakes the `[b]`, which leaves `b` pending in the parser's
+      // `autoClosed`; the `[/b]` two blocks down is therefore a
+      // `discarded_tag` — invisible, not exported. Closing the `[b]` by hand
+      // retires the pending name, and that `[/b]` becomes visible text. It
+      // sits outside the window, so the splice would have adopted the stale
+      // `discarded_tag` and the document would render a tag the author
+      // deleted. Against the old guard this test fails with
+      // `kind discarded_tag vs text`.
+      const filler = 'relleno de relleno\n\n'
+      const base = filler + '[notice]a[b]b[/notice]c\n\n' + filler + '[/b]\n\n' + filler
+      const at = base.indexOf('b[/notice]') + 1
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + '[/b]' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('full_rebuild')
+      expect(model.lastReparseFallbackReason).toBe('pending-auto-close')
+    })
+
+    it('an untouched crossing in the window is not a reason to rebuild', () => {
+      // The check compares the window's effect on `autoClosed` before and
+      // after; a crossing that both sides share cancels out, so a document
+      // with crossed tags still edits incrementally.
+      const filler = 'relleno de relleno\n\n'
+      const base = filler + '[notice]a[b]b[/notice]c\n\n' + filler + '[/b]\n\n' + filler
+      const at = base.indexOf('[/notice]c') + '[/notice]'.length
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + 'XYZ' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('incremental')
+    })
+
+    it('a stray closer inside [code] is content, not a reason to rebuild', () => {
+      const filler = Array.from({ length: 40 }, (_, i) => `relleno ${i}`).join('\n') + '\n\n'
+      const base = filler + '[code][/b][/code]\n\ny\n\n' + filler
+      const at = base.indexOf('\n\ny\n\n') + 3
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + 'z' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('incremental')
+    })
+  })
+
+  describe('the bracket boundary check', () => {
+    // The check used to scan the whole prefix on every keystroke. It now
+    // reads an index that is carried across edits, so the question here is
+    // twofold: does it still say exactly what the scan said (the differential
+    // below, on documents full of stray brackets, where the answer flips
+    // often), and does it read only a bounded slice of text (the last test).
+    function mulberry32(seed: number): () => number {
+      let a = seed >>> 0
+      return () => {
+        a |= 0; a = (a + 0x6D2B79F5) | 0
+        let t = Math.imul(a ^ (a >>> 15), 1 | a)
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+      }
+    }
+
+    it('differential over 400 bracket-heavy edits: incremental tree == rebuild', () => {
+      const rand = mulberry32(0xb4ac)
+      const pieces = ['hola', ' ', '\n', '\n\n', '[b]', '[/b]', '[i]', '[/i]', '[', ']', '[color=red]', '[/color]', '[notice]', '[/notice]', '[quote]', '[/quote]']
+      let src = ''
+      for (let i = 0; i < 1200; i++) src += pieces[Math.floor(rand() * pieces.length)]
+      const model = new BBCodeDocumentModel({ source: src, autoAnalyze: false })
+      let incremental = 0
+      for (let edit = 0; edit < 400; edit++) {
+        const pos = Math.floor(rand() * (src.length + 1))
+        const next = rand() < 0.65
+          ? src.slice(0, pos) + pieces[Math.floor(rand() * pieces.length)] + src.slice(pos)
+          : src.slice(0, pos) + src.slice(Math.min(src.length, pos + 1 + Math.floor(rand() * 4)))
+        model.applyTextUpdate(next)
+        src = next
+        if (model.lastReparsePath === 'incremental') incremental++
+        const truth = new BBCodeDocumentModel({ source: src, autoAnalyze: false })
+        expect(firstDiff(model.greenRoot!, truth.greenRoot!), `edit ${edit}`).toBeNull()
+      }
+      // The guard must not have become a blanket rebuild. The bar is low
+      // because this document is deliberately the worst case there is: an
+      // eighth of it is bare `[` and `]`, so 250 of the 400 edits have a
+      // genuinely unmatched `[` somewhere before their window and CANNOT be
+      // spliced — the measured split is 254 `open-bracket-before`, 124
+      // `region-not-isolated`, 2 `pending-auto-close`, 20 windowed. What a
+      // real document does is pinned by the 500 KB battery instead; this one
+      // is here for the differential, and the count only guards against the
+      // guard collapsing to "never".
+      expect(incremental).toBeGreaterThan(15)
+    })
+
+    it('reads a bounded slice of the prefix, wherever the caret is', () => {
+      let src = Array.from({ length: 4000 }, (_, i) => `linea ${i} con [b]negrita[/b] y [i]cursiva[/i]`).join('\n')
+      const model = new BBCodeDocumentModel({ source: src, autoAnalyze: false })
+      const parser = model.incrementalParser
+      // At the very end, then in the middle, then at the start.
+      for (const at of [src.length, Math.floor(src.length / 2), 0]) {
+        const next = src.slice(0, at) + 'x' + src.slice(at)
+        model.applyTextUpdate(next)
+        src = next
+        expect(model.lastReparsePath).toBe('incremental')
+        expect(parser.lastBoundaryScan).toBeLessThanOrEqual(8192)
+      }
+      expect(model.redRoot!.range.end).toBe(src.length)
+    })
   })
 })

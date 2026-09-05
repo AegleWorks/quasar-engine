@@ -191,11 +191,44 @@ export type TagHandler = {
   [K in keyof TagDefinition]: TagDefinition[K]
 }
 
+/**
+ * The language's own tags, built once for the process.
+ *
+ * `registerBuiltins` allocates ~130 definition objects, several of them
+ * carrying closures. Constructing a registry cost 14.7 µs because of it, and
+ * a registry is constructed by every `DocumentModel`, every
+ * `SemanticAnalyzer` and every exporter that is handed no registry — so a
+ * throwaway parse paid for the whole table three times over. The table never
+ * changes, so it is shared, and a registry only takes a private copy when a
+ * plugin actually mutates it.
+ */
+let BUILTIN_TAGS: ReadonlyMap<string, TagDefinition> | null = null
+let BUILTIN_KINDS: ReadonlyMap<NodeKind, TagDefinition> | null = null
+let BUILTIN_NAMES: ReadonlySet<string> | null = null
+
+function ensureBuiltins(): void {
+  if (BUILTIN_TAGS !== null) return
+  const tags = new Map<string, TagDefinition>()
+  const kinds = new Map<NodeKind, TagDefinition>()
+  for (const tag of builtinTagDefinitions()) {
+    tags.set(tag.name, tag)
+    kinds.set(tag.kind, tag)
+  }
+  BUILTIN_TAGS = tags
+  BUILTIN_KINDS = kinds
+  BUILTIN_NAMES = new Set(tags.keys())
+}
+
 export class TagRegistry {
-  private tags: Map<string, TagDefinition> = new Map()
-  private kinds: Map<NodeKind, TagDefinition> = new Map()
+  private tags: Map<string, TagDefinition>
+  private kinds: Map<NodeKind, TagDefinition>
   /** Names registered by the constructor — the language's own tags. */
-  private builtins: Set<string> = new Set()
+  private builtins: ReadonlySet<string>
+  /**
+   * Whether `tags`/`kinds` are still the process-wide builtin maps. While
+   * they are, this registry must not write to them.
+   */
+  private shared: boolean = true
 
   /**
    * Bumped on every register/unregister, so consumers that derive something
@@ -205,14 +238,25 @@ export class TagRegistry {
   version: number = 0
 
   constructor() {
-    this.registerBuiltins()
-    for (const name of this.tags.keys()) this.builtins.add(name)
+    ensureBuiltins()
+    this.tags = BUILTIN_TAGS as Map<string, TagDefinition>
+    this.kinds = BUILTIN_KINDS as Map<NodeKind, TagDefinition>
+    this.builtins = BUILTIN_NAMES!
+  }
+
+  /** Take a private copy of the builtin maps before the first write. */
+  private own(): void {
+    if (!this.shared) return
+    this.tags = new Map(this.tags)
+    this.kinds = new Map(this.kinds)
+    this.shared = false
   }
 
   /**
    * Register a tag definition.
    */
   register(tag: TagDefinition): void {
+    this.own()
     this.tags.set(tag.name, tag)
     this.kinds.set(tag.kind, tag)
     this.version++
@@ -222,6 +266,8 @@ export class TagRegistry {
    * Unregister a tag definition.
    */
   unregister(name: string): void {
+    if (!this.tags.has(name)) return
+    this.own()
     const tag = this.tags.get(name)
     if (tag) {
       this.tags.delete(name)
@@ -247,6 +293,7 @@ export class TagRegistry {
    * costs one size comparison and no allocation.
    */
   customTags(): Map<string, NodeKind> | null {
+    if (this.shared) return null
     if (this.tags.size === this.builtins.size) return null
     const out = new Map<string, NodeKind>()
     for (const [name, def] of this.tags) {
@@ -304,10 +351,16 @@ export class TagRegistry {
     return this.getAll().filter(t => !t.isInline && !t.isSelfClosing)
   }
 
-  /**
-   * Register the built-in BBCode tags.
-   */
-  private registerBuiltins(): void {
+}
+
+/**
+ * The built-in BBCode tags.
+ *
+ * Called once per process, through `ensureBuiltins`. It used to be a private
+ * method that registered each definition into `this`, which meant rebuilding
+ * this whole table for every registry.
+ */
+function builtinTagDefinitions(): TagDefinition[] {
     const tags: TagDefinition[] = [
       // ── Formatting ──
       { name: 'b', kind: 'bold', label: 'Bold', category: 'formatting', isInline: true, isSelfClosing: false, canHaveChildren: true, toolbar: { group: 'formatting', label: 'Bold', icon: 'Bold', shortcut: 'Ctrl+B' } },
@@ -436,8 +489,5 @@ export class TagRegistry {
       { name: 'group', kind: 'group', label: 'Group', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true },
     ]
 
-    for (const tag of tags) {
-      this.register(tag)
-    }
-  }
+    return tags
 }

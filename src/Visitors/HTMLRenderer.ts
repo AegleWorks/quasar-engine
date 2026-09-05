@@ -62,6 +62,12 @@ export interface HTMLRendererOptions {
   tokens?: TokenSource
 }
 
+/** Saltos de línea a convertir en `<br>` al pintar un efecto. */
+const NEWLINE_RE = /\n/g
+
+/** Referencia a un token de diseño dentro de un texto: `$nombre`. */
+const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
+
 export class HTMLRenderer extends Visitor<string> {
   private tokenResolver?: TokenResolverFn
   private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens'>> & {
@@ -241,7 +247,22 @@ export class HTMLRenderer extends Visitor<string> {
     return this.renderNode(node)
   }
 
+  /**
+   * Ancho de cada tabla abierta, apilado igual que `tableDepth`.
+   *
+   * `getTableContext` corre una vez POR CELDA y recorría todas las filas de
+   * la tabla en cada llamada, con un `.filter()` —y su array— por fila: una
+   * tabla de 20×20 hacía 8.000 arrays intermedios por renderizado para
+   * llegar 400 veces al mismo número. Ahora se calcula una vez al entrar en
+   * la tabla. Va en una pila y no en un caché por nodo porque los hijos de un
+   * `RedNode` SON mutables (`appendChild`/`removeChild`), así que la
+   * identidad del nodo no garantiza que su estructura siga siendo la misma
+   * entre renderizados.
+   */
+  private maxColsStack: number[] = []
+
   render(root: RedNode): string {
+    this.maxColsStack.length = 0
     return this.renderNode(root)
   }
 
@@ -273,9 +294,21 @@ export class HTMLRenderer extends Visitor<string> {
   private renderNode(node: RedNode): string {
     // Leaf nodes
     if (node.children.length === 0 && node.kind === 'text') {
+      let rawText = node.text
+      // El `indexOf` va delante: casi ningún texto lleva un `$`, y así ni se
+      // arranca el motor de expresiones regulares. El patrón es de módulo
+      // porque este es el nodo más frecuente del documento y un literal aquí
+      // dentro construía un `RegExp` por hoja, en cada renderizado.
+      if (this.tokenResolver !== undefined && rawText.indexOf('$') !== -1) {
+        const resolve = this.tokenResolver
+        rawText = rawText.replace(TOKEN_REF_RE, (match, name: string) => {
+          const resolved = resolve(name) ?? resolve(match)
+          return resolved !== undefined ? resolved : match
+        })
+      }
       let out = this.mentionResolver || this.options.timestampResolver
-        ? this.linkifyText(node.text)
-        : this.escapeHtml(node.text)
+        ? this.linkifyText(rawText)
+        : this.escapeHtml(rawText)
       const style = node.metadata?.style as Record<string, string> | undefined
       if (style) {
         const inlineStyles = []
@@ -734,7 +767,9 @@ export class HTMLRenderer extends Visitor<string> {
       variants.has('borders') ? 'bb-table-borders' : '',
     ].filter(Boolean).join(' ')
     this.tableDepth++
+    this.maxColsStack.push(HTMLRenderer.widestRow(node))
     const content = this.renderChildren(node)
+    this.maxColsStack.pop()
     this.tableDepth--
     // `[tables=striped:#hex]`: de `--table-accent` se deriva toda la paleta
     // de la tabla (gradiente del frame, hover de filas, encabezado, bordes).
@@ -742,22 +777,52 @@ export class HTMLRenderer extends Visitor<string> {
     return `<div${this.idAttr(node)} class="bb-table-frame"${accent}><table class="${tableClasses}"><tbody>${content}</tbody></table></div>`
   }
 
+  /** Celdas directas de una fila, sin materializar un array intermedio. */
+  private static countCells(node: RedNode): number {
+    let count = 0
+    const children = node.children
+    for (let i = 0; i < children.length; i++) {
+      const kind = children[i].kind
+      if (kind === 'table_th' || kind === 'table_col') count++
+    }
+    return count
+  }
+
+  /**
+   * Columnas de la tabla más ancha bajo `tableNode`, memoizado por tabla.
+   *
+   * `getTableContext` se llama una vez POR CELDA, y recorría todas las filas
+   * de la tabla en cada llamada, con un `.filter()` —y su array— por fila.
+   * Una tabla de 20×20 hacía 8.000 arrays intermedios en cada renderizado
+   * para llegar 400 veces al mismo número. El caché se vacía al empezar cada
+   * render, así que no retiene nodos entre documentos.
+   */
+  private static widestRow(tableNode: RedNode): number {
+    let maxCols = 1
+    const rows = tableNode.children
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      if (row.kind !== 'table_row') continue
+      const count = HTMLRenderer.countCells(row)
+      if (count > maxCols) maxCols = count
+    }
+    return maxCols
+  }
+
   private getTableContext(node: RedNode): { cellCount: number; maxCols: number; isDirect: boolean } {
     const parent = node.parent
     const isDirect = parent?.kind === 'tables'
     const tableNode = isDirect ? parent : (parent?.parent?.kind === 'tables' ? parent.parent : undefined)
-    const cellCount = parent?.children
-      ? parent.children.filter(c => c.kind === 'table_th' || c.kind === 'table_col').length
-      : 1
+    const cellCount = parent ? HTMLRenderer.countCells(parent) : 1
 
     let maxCols = cellCount
     if (tableNode) {
-      for (const row of tableNode.children) {
-        if (row.kind === 'table_row') {
-          const count = row.children.filter(c => c.kind === 'table_th' || c.kind === 'table_col').length
-          if (count > maxCols) maxCols = count
-        }
-      }
+      // La tabla en curso está en lo alto de la pila; solo se recorre si esta
+      // celda llegó por un camino que no pasó por `renderTables`.
+      const widest = this.maxColsStack.length > 0
+        ? this.maxColsStack[this.maxColsStack.length - 1]
+        : HTMLRenderer.widestRow(tableNode)
+      if (widest > maxCols) maxCols = widest
     }
     return { cellCount, maxCols, isDirect }
   }
@@ -1037,8 +1102,14 @@ export class HTMLRenderer extends Visitor<string> {
     if (titleNodes && titleNodes.length > 0) {
       return titleNodes.map(c => this.renderNode(c)).join('')
     }
-    const title = node.metadata?.title ?? nodeAttrValue(node) ?? fallback
-    return this.escapeHtml(String(title))
+    let title = String(node.metadata?.title ?? nodeAttrValue(node) ?? fallback)
+    if (this.tokenResolver) {
+      title = title.replace(/\$([a-zA-Z_][a-zA-Z0-9_-]*)/g, (match, name) => {
+        const resolved = this.tokenResolver!(name) ?? this.tokenResolver!(match)
+        return resolved !== undefined ? resolved : match
+      })
+    }
+    return this.escapeHtml(title)
   }
 
   /**
@@ -1239,7 +1310,12 @@ export class HTMLRenderer extends Visitor<string> {
       // The break is markup, not text: escaping it would print a newline
       // that HTML collapses to a space, which is how a painted block of
       // ASCII art would arrive as one unreadable line.
-      const escaped = this.escapeHtml(seg.text).replace(/\n/g, '<br>')
+      // El `indexOf` delante: un degradado sin fusionar emite un segmento POR
+      // CARÁCTER, y `/\n/g` es un literal —en ES2015+ eso asigna un objeto
+      // nuevo cada vez que se evalúa— para recorrer una cadena de un carácter
+      // que casi nunca es un salto de línea.
+      const html = this.escapeHtml(seg.text)
+      const escaped = html.indexOf('\n') === -1 ? html : html.replace(NEWLINE_RE, '<br>')
       if (seg.color) {
         const safe = sanitizeColor(seg.color, this.tokenResolver)
         out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped

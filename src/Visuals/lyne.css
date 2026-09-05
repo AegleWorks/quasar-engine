@@ -6,9 +6,23 @@
  *
  * Scoped under `.bbcode-preview-lyne` and `.theme-lyne`.
  * All rules strictly override default/osu.css styles to ensure 0% pink bleed.
+ *
+ * No `@import` of Google Fonts here — the host supplies the faces.
+ *
+ * This file used to open with
+ *   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono…&family=Saira+Condensed…&family=Saira…')
+ * and that line broke the desktop app. Chromium reports a stylesheet as FAILED
+ * when any of its @imports fails to load, so under a CSP whose `style-src` does
+ * not list fonts.googleapis.com (Tauri's) — or simply with no network — the CSS
+ * chunk carrying this file rejected, the dynamic import of the whole BBCode
+ * feature rejected with it, and the kernel booted without an editor.
+ *
+ * Miliastry self-hosts these families with next/font and publishes them as
+ * `--font-syne-display` / `--font-syne-body` / `--font-syne-mono` (app/layout.tsx;
+ * `[data-theme='syne']` in globals.css reads the same variables). They are
+ * used when present; the plain family names remain as the fallback for a host
+ * that installs the fonts by other means.
  */
-
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Saira+Condensed:wght@600;700&family=Saira:wght@400;600&display=swap');
 
 .theme-lyne,
 .bbcode-preview-lyne,
@@ -21,9 +35,9 @@
   --color-text-mid: #9EACD4;
   --color-text-dim: #606C8F;
   --color-hairline: rgba(255, 255, 255, 0.12);
-  --font-display: "Saira Condensed", sans-serif;
-  --font-body: "Saira", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-numeric: "IBM Plex Mono", monospace;
+  --font-display: var(--font-syne-display, "Saira Condensed"), "Saira Condensed", sans-serif;
+  --font-body: var(--font-syne-body, "Saira"), "Saira", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-numeric: var(--font-syne-mono, "IBM Plex Mono"), "IBM Plex Mono", monospace;
   --lyne-cut: 8px;
 }
 

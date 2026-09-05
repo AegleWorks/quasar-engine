@@ -56,7 +56,17 @@ import { RedNode } from '../Syntax/RedNode'
 import { GreenNode } from '../Syntax/GreenNode'
 import { spliceGreen, withChildrenSpliced, type SpineStep } from '../Syntax/greenEdit'
 import { tagToNodeKind } from '../BBCode/BBCodeToGreenNode'
+import { BracketDepthIndex } from './BracketIndex'
 import type { TextChange } from './ChangeTracker'
+
+/**
+ * A span of the source, `[start, end)`, in the coordinates of the text the
+ * result describes.
+ */
+export interface SourceSpan {
+  start: number
+  end: number
+}
 
 export interface EditOperation {
   kind: 'insert' | 'delete' | 'replace'
@@ -97,6 +107,25 @@ export interface ReparseResult {
   path: 'incremental' | 'full_rebuild'
   /** When `full_rebuild`, why the incremental path was declined. */
   reason?: FallbackReason
+  /**
+   * The span of `newSource` that went through the parser, in NEW coordinates,
+   * or `null` after a full rebuild (where the answer is "all of it").
+   *
+   * This is the contract the incremental semantic analysis is built on. The
+   * red tree that comes back is derived from a green tree that shares every
+   * subtree outside this span by reference with the previous one, so — with
+   * red-subtree reuse — every red node outside the span is the SAME object it
+   * was before the edit, and everything anyone computed about it (its
+   * diagnostics, above all) is still true of it, up to a shift in position.
+   * The nodes inside the span, plus the ancestors on the path down to it
+   * (rebuilt because their child lists changed), are the only ones that are
+   * new. `SemanticAnalyzer.analyzeWindow` re-validates exactly those.
+   *
+   * The span is closed on the widened window, not on the edit: the parser
+   * re-parses the sibling on each side of the change too (see
+   * `findReparseWindow`), and those siblings are new nodes as well.
+   */
+  window: SourceSpan | null
 }
 
 export type FallbackReason =
@@ -108,6 +137,11 @@ export type FallbackReason =
   | 'region-not-isolated'
   /** An unclosed `[` before the region could claim a `]` the edit creates. */
   | 'open-bracket-before'
+  /**
+   * The window changed what the parser's `autoClosed` set holds when the text
+   * after it is read — see `pendingAutoClosePreserved`.
+   */
+  | 'pending-auto-close'
   /** The container covers so much of the document that a rebuild is cheaper. */
   | 'region-too-large'
   /** The document is small enough that rebuilding it outright costs less. */
@@ -166,16 +200,295 @@ const MIN_SOURCE_LENGTH = 2500
 const ORPHAN_CLOSE_RE = /^\[\/([a-zA-Z0-9_*-]+)\]$/
 
 /**
+ * What a stretch of tree does to the parser's `autoClosed` set.
+ *
+ * `autoClosed` is the one piece of parser state that flows RIGHTWARDS past a
+ * window without being visible in the tree at the window's edge (see
+ * `pendingAutoClosePreserved`). A stretch of text does three things to it:
+ *
+ *   - ADDS a name, when a `[/x]` overtakes an inner `[y]` and closes it
+ *     without its delimiter — the element ends up with `trailingWidth === 0`;
+ *   - CONSUMES one, when a `[/y]` arrives while `y` is pending: the parser
+ *     keeps it as a `discarded_tag` and drops the name;
+ *   - DELETES one, on every opening tag, because reopening `[y]` retires the
+ *     `y` that was still pending.
+ */
+interface AutoCloseProfile {
+  /**
+   * For each kind, the LAST thing the stretch did to it: `add` (a crossing
+   * left it pending) or `del` (an opening tag or a `discarded_tag` retired
+   * it). Only the last one matters — the operations are per-name and
+   * idempotent, so whatever happened before it has already been overwritten.
+   */
+  last: Map<string, 'add' | 'del'>
+  /**
+   * The kinds still open when the stretch ENDS — the rightmost chain. Those
+   * are not adds yet: whatever closes them sits past the window and adds them
+   * all at once there, so they override everything in `last`.
+   */
+  chain: Set<string>
+}
+
+function emptyProfile(): AutoCloseProfile {
+  return { last: new Map(), chain: new Set() }
+}
+
+/**
+ * A node the parser had on its tag stack, as opposed to a leaf or a grouping
+ * wrapper: exactly the nodes that own an opening delimiter. Leaves always
+ * carry a leading width of 0 (see `greenLeaf`), and so do `paragraph`,
+ * `group` and the document root, which the parser synthesises.
+ */
+function wasStackFrame(node: GreenNode): boolean {
+  return node.leadingWidth > 0
+}
+
+/**
+ * Fill `out` from one node, in document order.
+ *
+ * `onChain` marks the rightmost chain of nodes still open when the stretch
+ * ends: they carry no closing delimiter because there was nothing left to
+ * close them, not because a crossing did.
+ */
+function profileNode(node: GreenNode, onChain: boolean, out: AutoCloseProfile): void {
+  if (node.kind === 'discarded_tag') {
+    const match = ORPHAN_CLOSE_RE.exec(node.text)
+    // Named by kind like every other event, so both sides compare on the same
+    // alphabet.
+    out.last.set(match === null ? node.text : tagToNodeKind(match[1]), 'del')
+    return
+  }
+  if (wasStackFrame(node)) out.last.set(node.kind, 'del')
+
+  const children = node.children as readonly GreenNode[]
+  // A node that owns a closing delimiter was closed where it stands, so
+  // nothing below it is still open at the end of the stretch.
+  const stillOpen = onChain && node.trailingWidth === 0
+  for (let i = 0; i < children.length; i++) {
+    profileNode(children[i], stillOpen && i === children.length - 1, out)
+  }
+
+  if (node.trailingWidth > 0) {
+    // This delimiter closed the author's tag and, on the way, every frame
+    // still open inside it — the rightmost chain, which is what the parser's
+    // `autoClosedHere` collects.
+    for (
+      let c = children[children.length - 1] as GreenNode | undefined;
+      c !== undefined && wasStackFrame(c) && c.trailingWidth === 0;
+      c = c.children[c.children.length - 1] as GreenNode | undefined
+    ) {
+      out.last.set(c.kind, 'add')
+    }
+  } else if (onChain && wasStackFrame(node)) {
+    out.chain.add(node.kind)
+  }
+}
+
+function profileSiblings(children: readonly GreenNode[], out: AutoCloseProfile): AutoCloseProfile {
+  for (let i = 0; i < children.length; i++) profileNode(children[i], i === children.length - 1, out)
+  return out
+}
+
+/**
+ * Does the re-parsed window hand the text AFTER it the same `autoClosed` set
+ * the old one did?
+ *
+ * This is the leak the differential fuzz found, and it is invisible in the
+ * window itself. `[notice]
+[b] [/notice]` auto-closes the `[b]`, leaving `b`
+ * pending; a `[/b]` further down the document is then a `discarded_tag` —
+ * invisible, not exported. Delete a `]` somewhere earlier so that the whole
+ * run gets swallowed into one literal-text token, and the `[b]` never opens,
+ * so the `[/b]` outside the window becomes visible text. The window parses
+ * correctly; the tree keeps the stale `discarded_tag` it adopted.
+ *
+ * ─── Why one entry per kind is the whole answer ─────────────────────────────
+ *
+ * `autoClosed` is a set of NAMES, and every operation on it names exactly one:
+ * a crossing adds one, an opening tag or a spent `[/tag]` deletes one. Names
+ * never interact, so the window's effect factorises into one function per
+ * kind, and each of those has only three possible shapes — leave the name as
+ * it arrived (the window did nothing to it), force it pending (the last thing
+ * the window did was add it), or force it absent (the last thing was a
+ * delete). That is why only the LAST operation per kind is recorded, and why a
+ * crossing the window resolves on the spot — `[b]` auto-closed by `[/notice]`
+ * and then reopened, which the fixture does 24 times — cancels out and costs
+ * nothing.
+ *
+ * The frames left open at the window's end are the exception in placement
+ * only: whatever closes them does so past the window, after every other
+ * operation, so `chain` overrides `last`.
+ *
+ * Two shapes still disagree without it mattering: "did nothing" and "deleted"
+ * are the same function whenever the name was not pending on the way in, which
+ * is a fact about the prefix that {@link PendingSpans} answers from a few
+ * dozen measured stretches. Without that relaxation an ordinary
+ * `[heading]TOP[/heading]` typed above the fixture's first block loses its
+ * window, because the block opens 190 tags and the new one is a 191st.
+ *
+ * The one approximation is naming an operation by its element KIND rather than
+ * by the tag as written, so two spellings of the same element — `[centre]` and
+ * `[center]` — look alike to it. Getting that wrong needs a pending cross of
+ * one of the two spellings over the window AND the edit to swap the window
+ * between them; it is the same order of blind spot as the plugin-tag note
+ * above, and it is recorded here rather than paid for on every keystroke.
+ */
+function pendingAutoClosePreserved(
+  oldChildren: readonly GreenNode[],
+  from: number,
+  to: number,
+  region: GreenNode,
+  pending: PendingSpans,
+  windowStart: number,
+): boolean {
+  const after = profileSiblings(region.children as readonly GreenNode[], emptyProfile())
+  const before = profileSiblings(oldChildren.slice(from, to), emptyProfile())
+
+  const kinds = new Set<string>(before.last.keys())
+  for (const kind of after.last.keys()) kinds.add(kind)
+  for (const kind of before.chain) kinds.add(kind)
+  for (const kind of after.chain) kinds.add(kind)
+
+  for (const kind of kinds) {
+    const b = before.chain.has(kind) ? 'add' : before.last.get(kind) ?? 'none'
+    const a = after.chain.has(kind) ? 'add' : after.last.get(kind) ?? 'none'
+    if (b === a) continue
+    // `del` and `none` are the same function on a name that was not pending.
+    if (b !== 'add' && a !== 'add' && !pending.covers(kind, windowStart)) continue
+    return false
+  }
+  return true
+}
+
+/** A stretch of the document over which `kind` sits in the parser's `autoClosed`. */
+interface PendingSpan {
+  kind: string
+  start: number
+  /** `Infinity` for a name nothing ever retired. */
+  end: number
+}
+
+/**
+ * Where in the document a name is pending in the parser's `autoClosed`.
+ *
+ * The parser's own rules, replayed over the tree in one walk: a closing
+ * delimiter makes every frame it overtook pending from that point; an opening
+ * tag of the same name retires it (reopening `[b]` retires the pending `b`);
+ * so does a `discarded_tag`, which is the pending name being spent. What comes
+ * out is a handful of short spans — on the 547 KB fixture, a couple of dozen,
+ * none longer than a few KB — and outside them the incoming set is empty,
+ * which is what lets the window guard ignore the deletes almost always.
+ *
+ * The walk is O(nodes) and runs once per green root. An incremental splice
+ * carries it forward instead (`shifted`), because the guard that consults it
+ * only passes edits that leave the crossings where they were.
+ */
+class PendingSpans {
+  constructor(private readonly spans: readonly PendingSpan[]) {}
+
+  covers(kind: string, offset: number): boolean {
+    for (const span of this.spans) {
+      if (span.kind === kind && span.start <= offset && offset < span.end) return true
+    }
+    return false
+  }
+
+  /**
+   * The same spans over the text an edit produced.
+   *
+   * Anything wholly before the window is untouched and anything wholly after
+   * it moves by `delta`. An endpoint that falls INSIDE the window is clamped
+   * outwards, to the window's own edges: the guard has already established
+   * that the crossing and the tag that retires it are both still there, but
+   * not exactly where, and a span that claims to be pending for slightly
+   * longer than it is can only cost a rebuild, never correctness.
+   */
+  shifted(windowStart: number, windowEndOld: number, delta: number): PendingSpans {
+    const windowEndNew = windowEndOld + delta
+    const move = (at: number): number => {
+      if (at === Number.POSITIVE_INFINITY || at >= windowEndOld) return at + delta
+      return at
+    }
+    const spans: PendingSpan[] = []
+    for (const span of this.spans) {
+      const start = span.start < windowStart ? span.start : Math.max(windowStart, move(span.start))
+      const end = span.end <= windowStart ? span.end : Math.max(windowEndNew, move(span.end))
+      spans.push({ kind: span.kind, start, end })
+    }
+    return new PendingSpans(spans)
+  }
+}
+
+function collectPendingSpans(root: GreenNode): PendingSpans {
+  const spans: PendingSpan[] = []
+  const open = new Map<string, number>()
+  const retire = (kind: string, at: number): void => {
+    const start = open.get(kind)
+    if (start === undefined) return
+    open.delete(kind)
+    spans.push({ kind, start, end: at })
+  }
+
+  const visit = (node: GreenNode, start: number): void => {
+    if (node.kind === 'discarded_tag') {
+      const match = ORPHAN_CLOSE_RE.exec(node.text)
+      if (match !== null) retire(tagToNodeKind(match[1]), start)
+      return
+    }
+    if (wasStackFrame(node)) retire(node.kind, start)
+
+    const children = node.children as readonly GreenNode[]
+    let offset = start + node.leadingWidth
+    for (let i = 0; i < children.length; i++) {
+      visit(children[i], offset)
+      offset += children[i].width
+    }
+
+    if (node.trailingWidth > 0) {
+      const at = start + node.width
+      for (
+        let c = children[children.length - 1] as GreenNode | undefined;
+        c !== undefined && wasStackFrame(c) && c.trailingWidth === 0;
+        c = c.children[c.children.length - 1] as GreenNode | undefined
+      ) {
+        if (!open.has(c.kind)) open.set(c.kind, at)
+      }
+    }
+  }
+  visit(root, 0)
+
+  // Whatever the document never retired stays pending to its end and beyond:
+  // an edit appending text reads it with the name still set.
+  for (const [kind, start] of open) spans.push({ kind, start, end: Number.POSITIVE_INFINITY })
+  return new PendingSpans(spans)
+}
+
+/**
  * Can this window be parsed on its own and mean the same thing it means in
  * context? Four ways it cannot:
  *
- *  - A closing tag with no opener inside the window, whose name matches an
- *    ANCESTOR. In isolation it is literal text; in the whole document it
- *    closes that ancestor, which moves the ancestor's own boundary. An orphan
- *    that matches no ancestor is text either way and is perfectly safe — being
- *    conservative here cost the incremental path most of its opportunities,
- *    since a half-typed `[/color]` is the single most common transient state
- *    while editing.
+ *  - A closing tag with no opener inside the window, in one of two situations.
+ *    In isolation it is literal text; in the whole document it may be
+ *    something else, and the window cannot tell which:
+ *      · if the name matches an ANCESTOR it closes that ancestor, which moves
+ *        the ancestor's own boundary;
+ *      · otherwise it is a `discarded_tag` — invisible, not exported — exactly
+ *        when the parser auto-closed a tag of that name EARLIER in the
+ *        document and no later `[/name]` has claimed it since (see
+ *        `autoClosed` in `Parser.ts`). That is a fact about the prefix, which
+ *        a window parse never sees: the differential found a `[/b]` typed
+ *        after `[quote][b]x[/quote]` coming back as visible text where the
+ *        full parse discards it. {@link PendingSpans} is what makes that fact
+ *        answerable here without reading the prefix — and answerable
+ *        precisely, which matters: refusing every stray closer of a KNOWN tag
+ *        instead cost the 20 KB mid-document delete its window on the 500 KB
+ *        fixture, and a large delete strands a closer almost by definition.
+ *    Anything else is text either way and is perfectly safe — the common case
+ *    while editing, since a half-typed `[/colo` matches nothing and a finished
+ *    `[/color]` normally closes a `[color]` inside the window or above it.
+ *    Plugin tags are the one blind spot: `tagToNodeKind` sees the built-in
+ *    dialects, not a document's registry, so a stray closer of a plugin tag is
+ *    compared as `custom`.
  *  - A lone `[` with no `]` after it. The lexer's bracket matching would find
  *    a `]` beyond the window.
  *  - An unclosed `[code]`. Raw blocks swallow everything up to their closing
@@ -200,6 +513,7 @@ function regionIsSelfContained(
   region: GreenNode,
   ancestorKinds: ReadonlySet<string>,
   window: { reachesEnd: boolean },
+  pendingKind: (kind: string) => boolean,
 ): boolean {
   // Checked on the PARSED region rather than on a second token scan. Lexing the
   // region twice — once to vet it, once to parse it — cost more than the whole
@@ -209,24 +523,38 @@ function regionIsSelfContained(
   // Everything the guard needs survives into the tree, because the parser now
   // keeps what it used to drop: a bare `[` and an orphaned `[/tag]` are both
   // `text` leaves holding exactly their own source.
+  //
+  // Leaves inside a raw block are content, not syntax: `[code][/b][/code]`
+  // holds a text leaf that IS `[/b]`, and the lexer never matched brackets
+  // in there to begin with. The flag rides the stack beside the node.
   const stack: GreenNode[] = [region]
+  const inCode: boolean[] = [false]
   while (stack.length > 0) {
     const node = stack.pop()!
+    const code = inCode.pop()! || node.kind === 'code' || node.kind === 'inline_code'
 
     if (node.children.length === 0) {
-      if (node.kind === 'text') {
+      if (node.kind === 'text' && !code) {
         // The lexer emits a bare '[' as text exactly when it found no matching
         // bracket — the one case where its decision depends on what follows.
         if (node.text === '[') return false
 
+        // A stray closer that is not text after all: an ancestor's, or one
+        // the prefix left pending — see the header. Compared by node kind,
+        // not tag name: `[centre]` and `[center]` are the same element and
+        // either spelling closes it.
         const orphan = ORPHAN_CLOSE_RE.exec(node.text)
-        // Compare by node kind, not tag name: `[centre]` and `[center]` are
-        // the same element and either spelling closes it.
-        if (orphan !== null && ancestorKinds.has(tagToNodeKind(orphan[1]))) return false
+        if (orphan !== null) {
+          const kind = tagToNodeKind(orphan[1])
+          if (ancestorKinds.has(kind) || pendingKind(kind)) return false
+        }
       }
       continue
     }
-    for (const child of node.children as readonly GreenNode[]) stack.push(child)
+    for (const child of node.children as readonly GreenNode[]) {
+      stack.push(child)
+      inCode.push(code)
+    }
   }
 
   // Tags still open at the end of the window are exactly the rightmost chain of
@@ -250,29 +578,6 @@ function regionIsSelfContained(
   return true
 }
 
-/**
- * Does every `[` before `end` find its `]` before `end` too?
- *
- * If one does not, the lexer's bracket matching for it scans onward into the
- * region we are about to re-parse — and an edit that adds a `]` there (or
- * deletes a `[` that was keeping the nesting depth up) changes what that
- * OUTSIDE bracket means. The region would be re-parsed correctly and the text
- * before it would silently become something else.
- *
- * A plain depth count is enough and is exact for this question: the lexer
- * pairs brackets with a stack, so a `[` is unmatched precisely when the depth
- * never returns to its level.
- */
-function bracketsCloseBefore(source: string, end: number): boolean {
-  let depth = 0
-  for (let i = 0; i < end; i++) {
-    const c = source.charCodeAt(i)
-    if (c === 91 /* [ */) depth++
-    else if (c === 93 /* ] */ && depth > 0) depth--
-  }
-  return depth === 0
-}
-
 export interface IncrementalParserOptions {
   /** Override `MIN_SOURCE_LENGTH`. Set to 0 to always attempt a splice. */
   minSourceLength?: number
@@ -285,6 +590,37 @@ export class IncrementalParser {
   private readonly maxRegionFraction: number
 
   /**
+   * Bracket-depth summary of the source, for the boundary check below.
+   *
+   * Keyed on the green root it was last synchronised with: a reparse whose
+   * `oldGreen` is that root brings the index across the edit by re-reading a
+   * few KB around it; any other root (a `rebuild`, a model handed a foreign
+   * tree) rebuilds it with one scan — the same scan every keystroke used to
+   * pay. See `BracketDepthIndex` for why the summary is exact.
+   */
+  private readonly brackets = new BracketDepthIndex()
+  private bracketsRoot: GreenNode | null = null
+  /**
+   * Whether, within the current `reparse` call, the index has been brought to
+   * describe `newSource`. Explicit rather than inferred: a length comparison
+   * would confuse an unsynchronised index over an older text of the same
+   * length (insert one character, delete one) with a synchronised one.
+   */
+  private bracketsSynced = false
+
+  /**
+   * Where the document carries a pending `autoClosed` name, memoised on the
+   * green root it was measured over — see {@link PendingSpans}.
+   *
+   * It survives an incremental splice by construction: the window guard that
+   * consults it only lets through edits that leave the crossings on both
+   * sides of the window as they were, so the spans need only be moved. Any
+   * other outcome drops the key and the next edit pays one walk.
+   */
+  private pendingRoot: GreenNode | null = null
+  private pendingSpans = new PendingSpans([])
+
+  /**
    * The thresholds are constructor options because they are performance
    * tuning, not semantics: the tree that comes out is the same either way, so
    * a caller with a different document profile — or a test that wants to
@@ -294,6 +630,57 @@ export class IncrementalParser {
   constructor(options: IncrementalParserOptions = {}) {
     this.minSourceLength = options.minSourceLength ?? MIN_SOURCE_LENGTH
     this.maxRegionFraction = options.maxRegionFraction ?? MAX_REGION_FRACTION
+  }
+
+  /**
+   * Characters the last boundary check actually read — the tail of one index
+   * piece, never the prefix. Exposed so a test can pin the bound.
+   */
+  get lastBoundaryScan(): number {
+    return this.brackets.lastScanned
+  }
+
+  /**
+   * Does every `[` before `end` find its `]` before `end` too?
+   *
+   * If one does not, the lexer's bracket matching for it scans onward into
+   * the region we are about to re-parse — and an edit that adds a `]` there
+   * (or deletes a `[` that was keeping the nesting depth up) changes what that
+   * OUTSIDE bracket means. The region would be re-parsed correctly and the
+   * text before it would silently become something else.
+   *
+   * A clamped depth count is exact for this question: the lexer pairs
+   * brackets with a stack, so a `[` is unmatched precisely when the depth
+   * never returns to its level. The count used to be a scan of the whole
+   * prefix on every keystroke — 22% of a keystroke with the caret at the end
+   * of a post, 1.4 ms on the 547 KB fixture. The index answers it from piece
+   * summaries, reading at most one piece of text.
+   *
+   * The index is brought across the edit here, not earlier: the paths that
+   * return before this point never needed it, and on the next call the
+   * root-key mismatch simply rebuilds it. The caller re-keys it on whatever
+   * green root it returns.
+   */
+  private bracketsCloseBefore(
+    oldGreen: GreenNode,
+    change: TextChange,
+    newSource: string,
+    end: number,
+  ): boolean {
+    const inSync = this.bracketsRoot === oldGreen
+    // Unkeyed while it is being moved: should the parse callback throw
+    // halfway through this call, no later call can mistake the half-moved
+    // index for a description of any tree.
+    this.bracketsRoot = null
+    if (inSync) {
+      this.brackets.applyChange(newSource, change.start, change.end, change.text.length)
+    } else {
+      this.brackets.rebuild(newSource)
+    }
+    // Describes `newSource` from here on, whatever the outcome; the key is
+    // set once the root that owns that text exists (see `keyed`).
+    this.bracketsSynced = true
+    return this.brackets.depthAt(newSource, end) === 0
   }
 
   /**
@@ -313,6 +700,23 @@ export class IncrementalParser {
     const startTime = performance.now()
     const delta = change.text.length - (change.end - change.start)
 
+    // Whatever the outcome, the bracket index ends up keyed on the tree whose
+    // text it describes — or on nothing, so the next call rebuilds it. A call
+    // that returns before the boundary check never moved the index, and the
+    // tree it returns describes a text the index does not; the key it had
+    // (the previous root) is useless from here on, since the next call comes
+    // in with this call's root.
+    this.bracketsSynced = false
+    // The pending spans carry over only on the incremental path (see the
+    // field); anything else re-keys them to nothing so the next call remeasures.
+    let carriedSpans: PendingSpans | null = null
+    const keyed = (result: ReparseResult): ReparseResult => {
+      this.bracketsRoot = this.bracketsSynced ? result.green : null
+      this.pendingRoot = carriedSpans === null ? null : result.green
+      if (carriedSpans !== null) this.pendingSpans = carriedSpans
+      return result
+    }
+
     const fullRebuild = (reason: FallbackReason, tFind: number): ReparseResult => {
       const t0 = performance.now()
       const green = parseCallback(newSource)
@@ -321,7 +725,7 @@ export class IncrementalParser {
       const red = buildRedCallback(green)
       const tBuild = performance.now() - t1
       const total = performance.now() - startTime
-      return {
+      return keyed({
         green,
         red,
         affectedNodes: [red],
@@ -336,7 +740,8 @@ export class IncrementalParser {
         },
         path: 'full_rebuild',
         reason,
-      }
+        window: null,
+      })
     }
 
     if (newSource.length < this.minSourceLength) {
@@ -373,7 +778,7 @@ export class IncrementalParser {
     if (region.length > (newSource.length + 1) * this.maxRegionFraction) {
       return fullRebuild('region-too-large', tFind)
     }
-    if (!bracketsCloseBefore(newSource, windowStart)) {
+    if (!this.bracketsCloseBefore(oldGreen, change, newSource, windowStart)) {
       return fullRebuild('open-bracket-before', tFind)
     }
     const tBoundary = performance.now() - tBoundary0
@@ -385,10 +790,26 @@ export class IncrementalParser {
     const parsedRegion = parseCallback(region, { normalizeParagraphs: isRoot })
     const tParse = performance.now() - tParse0
 
+    // Measured on the OLD tree, which is the one the incoming set is a fact
+    // about; the guard below is what keeps the answer true of the new one.
+    // Both guards want it, so it is settled before either runs.
+    if (this.pendingRoot !== oldGreen) {
+      this.pendingSpans = collectPendingSpans(oldGreen)
+      this.pendingRoot = oldGreen
+    }
+    const spans = this.pendingSpans
+    const pendingKind = (kind: string): boolean => spans.covers(kind, windowStart)
+
     const reachesEnd = to === parent.children.length
-    if (!regionIsSelfContained(parsedRegion, ancestorKinds, { reachesEnd })) {
+    if (!regionIsSelfContained(parsedRegion, ancestorKinds, { reachesEnd }, pendingKind)) {
       return fullRebuild('region-not-isolated', tFind)
     }
+    if (!pendingAutoClosePreserved(
+      parent.children as readonly GreenNode[], from, to, parsedRegion, spans, windowStart,
+    )) {
+      return fullRebuild('pending-auto-close', tFind)
+    }
+    carriedSpans = this.pendingSpans.shifted(windowStart, windowEnd, delta)
 
     // No rebasing step: the parsed region has widths, not offsets, so it is
     // already correct wherever it ends up.
@@ -405,7 +826,7 @@ export class IncrementalParser {
     const tBuild = performance.now() - tBuild0
 
     const total = performance.now() - startTime
-    return {
+    return keyed({
       green: newGreenRoot,
       red: newRed,
       affectedNodes: [newRed],
@@ -419,7 +840,9 @@ export class IncrementalParser {
         other: Math.max(0, total - tFind - tBoundary - tParse - tBuild - tMutate),
       },
       path: 'incremental',
-    }
+      // The region, in the coordinates of the text it now describes.
+      window: { start: windowStart, end: windowEnd + delta },
+    })
   }
 
   /**

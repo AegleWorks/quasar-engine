@@ -45,6 +45,24 @@ export interface DocumentEvent {
    * of changes it applied itself. Absent on events with no single cause.
    */
   origin?: string
+  /**
+   * On `diagnostics_updated`: how the analysis that produced them was
+   * obtained — `'full'` (every node revalidated) or `'window'` (only the
+   * nodes the edit could have changed; every other node kept its verdict).
+   *
+   * The `diagnostics` on the event are the WHOLE document's either way, so a
+   * subscriber renders them the same in both cases. This is here for the
+   * cases where the difference is the point: a performance overlay, a test
+   * that must notice the incremental path going away, a log line explaining a
+   * slow frame. See `AnalyzeScope`.
+   */
+  analysisScope?: 'full' | 'window'
+  /**
+   * On `diagnostics_updated` with `analysisScope === 'window'`: the span of
+   * the current source that was re-validated, in current coordinates.
+   * `null`/absent when the whole document was.
+   */
+  analysisWindow?: { start: number; end: number } | null
   timestamp: number
   [key: string]: unknown
 }

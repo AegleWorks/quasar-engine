@@ -75,6 +75,15 @@ export function nodeAttrValue(node: RedNode, key?: string): string {
  * Un hex sin `#` se completa: `[color=ff0000]` es como lo escribe medio mundo.
  */
 export function sanitizeColor(raw: string, resolver?: TokenResolverFn): string | null {
+  // Atajo para `#RRGGBB`, que es la forma que produce el propio motor y con
+  // la que llega la inmensa mayoría de las llamadas. Un degradado sin
+  // fusionar emite UN SEGMENTO POR CARÁCTER y cada uno pasaba por `trim`,
+  // dos expresiones regulares y el `startsWith` de los tokens. La comprobación
+  // por códigos de carácter acepta exactamente el mismo conjunto que
+  // `CSS_COLOR_RE` para siete caracteres, así que la garantía no cambia:
+  // sigue siendo imposible que salga de aquí algo que no sea un color.
+  if (raw.length === 7 && raw.charCodeAt(0) === 35 /* # */ && isPlainHex6(raw)) return raw
+
   let v = raw.trim()
   if (!v) return null
   if (v.startsWith('$') && resolver) {
@@ -87,6 +96,18 @@ export function sanitizeColor(raw: string, resolver?: TokenResolverFn): string |
     v = '#' + v
   }
   return CSS_COLOR_RE.test(v) ? v : null
+}
+
+/** `true` si `s[1..7]` son seis dígitos hexadecimales. Sin asignar nada. */
+function isPlainHex6(s: string): boolean {
+  for (let i = 1; i < 7; i++) {
+    const c = s.charCodeAt(i)
+    const isDigit = c >= 0x30 && c <= 0x39
+    const isLower = c >= 0x61 && c <= 0x66
+    const isUpper = c >= 0x41 && c <= 0x46
+    if (!isDigit && !isLower && !isUpper) return false
+  }
+  return true
 }
 
 /** El tamaño de `[size=…]` como número, o `null`. Se interpola en `%`. */

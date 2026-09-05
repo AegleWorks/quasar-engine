@@ -27,7 +27,7 @@
 
 import {
   hexToRgb, hexToHsl, hslToHex, solveCubicBezierY, mixHex, mixMultipleStops,
-  ease, __setExpressionCompiler, type ColorStop, type Easing,
+  ease, compileEase, __setExpressionCompiler, type ColorStop, type Easing,
 } from './ColorMath'
 
 // ── Deterministic randomness ───────────────────────────────────
@@ -141,6 +141,23 @@ const OPERATOR_RE = /^[0-9.\s+\-*/%()<>!&|?:,=]*$/
 
 export type CompiledExpression = (vars: ExpressionVars) => number
 
+/**
+ * Desaloja la entrada MÁS ANTIGUA hasta volver al límite.
+ *
+ * Los dos cachés de este fichero hacían `clear()` al tocar el techo: en un
+ * documento con más claves distintas que el límite eso los dejaba en cero una
+ * y otra vez, así que todo volvía a compilarse o a interpretarse en cada
+ * pasada. Un `Map` conserva el orden de inserción, y refrescar la posición en
+ * cada acierto lo convierte en un LRU sin estructuras extra.
+ */
+function evictOldest<K, V>(cache: Map<K, V>, limit: number): void {
+  while (cache.size > limit) {
+    const oldest = cache.keys().next()
+    if (oldest.done) break
+    cache.delete(oldest.value)
+  }
+}
+
 const expressionCache = new Map<string, CompiledExpression | null>()
 const EXPRESSION_CACHE_LIMIT = 256
 
@@ -179,6 +196,10 @@ export function validateExpression(src: string): { ok: true } | { ok: false; rea
 /** Compile a validated expression, or return null if it is rejected. */
 export function compileExpression(src: string): CompiledExpression | null {
   const cached = expressionCache.get(src)
+  if (cached !== undefined) {
+    expressionCache.delete(src)
+    expressionCache.set(src, cached)
+  }
   if (cached !== undefined) return cached
 
   let compiled: CompiledExpression | null = null
@@ -203,8 +224,8 @@ export function compileExpression(src: string): CompiledExpression | null {
     }
   }
 
-  if (expressionCache.size >= EXPRESSION_CACHE_LIMIT) expressionCache.clear()
   expressionCache.set(src, compiled)
+  evictOldest(expressionCache, EXPRESSION_CACHE_LIMIT)
   return compiled
 }
 
@@ -660,6 +681,63 @@ const EMPTY_TABLE: SampleTable = {
 export function buildSampleTable(plainText: string): SampleTable {
   if (!plainText) return EMPTY_TABLE
 
+  const cached = sampleTableCache.get(plainText)
+  if (cached !== undefined) {
+    // Renovar la posición: lo que se sigue pidiendo no debe caer del caché.
+    sampleTableCache.delete(plainText)
+    sampleTableCache.set(plainText, cached)
+    return cached
+  }
+
+  return cacheSampleTable(plainText, computeSampleTable(plainText))
+}
+
+/**
+ * Tablas de coordenadas por texto, con desalojo del menos usado.
+ *
+ * La tabla es una función PURA del texto: un objeto `CharSample` de siete
+ * campos por carácter, más un `Array.from` que es una segunda copia entera de
+ * la cadena. Se reconstruía en cada llamada a `evaluateEffect`, o sea en cada
+ * renderizado de cada nodo de efecto, aunque el texto del nodo no hubiera
+ * cambiado — que es el caso normal al escribir en otra parte del documento.
+ *
+ * Los dos límites son necesarios: el de entradas evita acumular texto de
+ * documentos ya cerrados, y el de caracteres evita que unos pocos textos
+ * enormes se coman la memoria que el de entradas creería estar controlando.
+ * El desalojo es por el más antiguo y no un `clear()` entero, para que
+ * desbordar no tire también lo que se está pintando ahora mismo.
+ *
+ * NADIE muta una `SampleTable`; se comprobó en todos los consumidores del
+ * repo antes de compartirlas. Si alguna vez hiciera falta, hay que copiar.
+ */
+const sampleTableCache = new Map<string, SampleTable>()
+const SAMPLE_TABLE_CACHE_ENTRIES = 128
+const SAMPLE_TABLE_CACHE_CHARS = 512 * 1024
+let sampleTableCacheChars = 0
+
+function cacheSampleTable(plainText: string, table: SampleTable): SampleTable {
+  // Un texto que por sí solo desborda el presupuesto no entra: guardarlo
+  // vaciaría el caché entero en su beneficio y lo dejaría inútil para el
+  // resto del documento.
+  if (plainText.length > SAMPLE_TABLE_CACHE_CHARS) return table
+
+  sampleTableCache.set(plainText, table)
+  sampleTableCacheChars += plainText.length
+
+  while (
+    sampleTableCache.size > SAMPLE_TABLE_CACHE_ENTRIES ||
+    sampleTableCacheChars > SAMPLE_TABLE_CACHE_CHARS
+  ) {
+    const oldest = sampleTableCache.keys().next()
+    if (oldest.done) break
+    sampleTableCache.delete(oldest.value)
+    sampleTableCacheChars -= oldest.value.length
+  }
+  return table
+}
+
+function computeSampleTable(plainText: string): SampleTable {
+
   const chars = Array.from(plainText)
   const samples: CharSample[] = new Array(chars.length)
   const lineLengths: number[] = []
@@ -856,8 +934,27 @@ export function buildRangeScope(table: SampleTable, start: number, end: number):
 
 /** A scope covering the whole document. */
 export function documentScope(table: SampleTable): RangeScope {
-  return buildRangeScope(table, 0, table.samples.length)
+  const cached = documentScopeCache.get(table)
+  if (cached !== undefined) return cached
+  const scope = buildRangeScope(table, 0, table.samples.length)
+  documentScopeCache.set(table, scope)
+  return scope
 }
+
+/**
+ * El ámbito de documento completo por tabla.
+ *
+ * `buildRangeScope` asigna CINCO `Int32Array` de la longitud del texto y los
+ * rellena, y `evaluateEffect` lo pedía en cada renderizado de cada nodo de
+ * efecto. Es función pura de la tabla, que ahora se comparte entre
+ * renderizados (ver `sampleTableCache`), así que la caché acierta siempre que
+ * el texto del nodo no haya cambiado.
+ *
+ * `WeakMap`: la entrada desaparece con la tabla, así que no hay un segundo
+ * presupuesto de memoria que vigilar. Nadie muta un `RangeScope`; se
+ * comprobó en todos los consumidores antes de compartirlos.
+ */
+const documentScopeCache = new WeakMap<SampleTable, RangeScope>()
 
 // ── Axes ───────────────────────────────────────────────────────
 
@@ -1745,6 +1842,10 @@ const STOP_CACHE_LIMIT = 256
 export function parseColorStops(colorsStr: string): ColorStop[] {
   const key = colorsStr ?? ''
   const cached = stopCache.get(key)
+  if (cached !== undefined) {
+    stopCache.delete(key)
+    stopCache.set(key, cached)
+  }
   if (cached) return cached
 
   const parts = key.split(',').map(s => s.trim()).filter(Boolean)
@@ -1776,8 +1877,8 @@ export function parseColorStops(colorsStr: string): ColorStop[] {
     }
   }
 
-  if (stopCache.size >= STOP_CACHE_LIMIT) stopCache.clear()
   stopCache.set(key, stops)
+  evictOldest(stopCache, STOP_CACHE_LIMIT)
   return stops
 }
 
@@ -2059,6 +2160,10 @@ export function evaluateEffect(
   const easingArg: Easing = p.easing === 'custom'
     ? `bezier(${p.bezier.join(',')})`
     : p.easing
+  // Compilado FUERA del bucle: el suavizado es el mismo para todos los
+  // caracteres, y `ease` volvía a interpretar la cadena en cada uno. Ver
+  // `compileEase`.
+  const easeFn = compileEase(easingArg, p.parabolaCenter, p.parabolaPower)
 
   // Placement, mask and grid are resolved once. They do not vary per
   // character, and reading fifteen `??` fallbacks inside the loop cost
@@ -2149,7 +2254,7 @@ export function evaluateEffect(
       count: scope.count,
       vars: p.wave === 'expr' ? expressionVars(ctx, u, p.seed | 0) : undefined,
     })
-    v = ease(v, easingArg, p.parabolaCenter, p.parabolaPower)
+    v = easeFn(v)
     if (p.steps >= 2) {
       const levels = Math.round(p.steps)
       v = Math.round(clamp01(v) * (levels - 1)) / (levels - 1)
@@ -2328,7 +2433,22 @@ function applyWeight(
  * uniform without touching the colour maths.
  */
 export function normalizeHex(hex: string): string {
-  return /^#[0-9a-fA-F]+$/.test(hex) ? hex.toUpperCase() : hex
+  // Equivale a `/^#[0-9a-fA-F]+$/.test(hex) ? hex.toUpperCase() : hex`, pero
+  // por códigos de carácter: era un literal de expresión regular DENTRO de la
+  // función —y en ES2015+ eso asigna un objeto nuevo en cada evaluación— en
+  // una función que corre una vez por segmento coloreado, o sea una vez por
+  // carácter en un degradado sin fusionar. De paso, un valor que ya está en
+  // mayúsculas se devuelve tal cual en vez de copiarse.
+  if (hex.length < 2 || hex.charCodeAt(0) !== 0x23 /* # */) return hex
+  let hasLower = false
+  for (let i = 1; i < hex.length; i++) {
+    const c = hex.charCodeAt(i)
+    if (c >= 0x30 && c <= 0x39) continue // 0-9
+    if (c >= 0x41 && c <= 0x46) continue // A-F
+    if (c >= 0x61 && c <= 0x66) { hasLower = true; continue } // a-f
+    return hex
+  }
+  return hasLower ? hex.toUpperCase() : hex
 }
 
 // ── Wiring ─────────────────────────────────────────────────────
