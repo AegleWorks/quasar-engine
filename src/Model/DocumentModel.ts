@@ -27,6 +27,7 @@ import {
   IncrementalParser,
   type ReparseParseOptions,
   type FallbackReason,
+  type SourceSpan,
 } from '../Incremental/IncrementalParser'
 import { ChangeTracker } from '../Incremental/ChangeTracker'
 import type { TextChange, TextChangeRange } from '../Incremental/ChangeTracker'
@@ -123,6 +124,12 @@ export class DocumentModel {
   /** Why the last reparse fell back to a full rebuild, if it did. */
   lastReparseFallbackReason: FallbackReason | null = null
   lastReparseTimings: { findAffected: number; safeBoundary: number; parse: number; buildRed: number; mutate: number; other: number } | null = null
+  /**
+   * The span of the current source the last reparse actually re-parsed, in
+   * CURRENT coordinates — `null` after a full rebuild, where the answer is
+   * "all of it". See {@link ReparseResult.window}.
+   */
+  lastReparseWindow: SourceSpan | null = null
 
   constructor(options: DocumentModelOptions = {}) {
     this._options = {
@@ -215,6 +222,7 @@ export class DocumentModel {
     // incrementally, so the range is cleared and the preview falls back to its
     // full reconcile (which is what it must do for undo/redo/load anyway).
     this._lastChangeRange = null
+    this.lastReparseWindow = null
     this._attachChangeRange(this._redRoot)
     // Unchanged nodes keep the identity they had before the rebuild, so the
     // HTML of untouched subtrees stays byte-identical between renders and the
@@ -357,6 +365,7 @@ export class DocumentModel {
         this.lastReparsePath = result.path
         this.lastReparseFallbackReason = result.reason ?? null
         this.lastReparseTimings = result.timings
+        this.lastReparseWindow = result.window
         this._greenRoot = result.green
         this._redRoot = result.red
         // Identity across the edit, by whichever mechanism applies.
@@ -384,6 +393,7 @@ export class DocumentModel {
       } catch {
         this.lastReparsePath = 'full_rebuild'
         this.lastReparseTimings = null
+        this.lastReparseWindow = null
         this.rebuild(this._source)
         return
       }

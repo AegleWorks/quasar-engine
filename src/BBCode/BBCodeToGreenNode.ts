@@ -246,18 +246,6 @@ export function tagToNodeKind(tag: string | null, dialect: BBCodeDialect = 'mili
   return map.get(tag) ?? 'custom'
 }
 
-/**
- * Whether ANY built-in dialect parses `tag` as an element.
- *
- * For a caller that does not know which dialect a document is in — the
- * incremental parser, deciding whether a stray `[/tag]` can be judged from a
- * window alone — the union is the safe answer: a tag known anywhere costs a
- * rebuild rather than a wrong tree. Plugin registrations are not included.
- */
-export function isKnownTagName(tag: string): boolean {
-  return DIALECT_MAPS.miliastry.has(tag) || DIALECT_MAPS.osu.has(tag) || DIALECT_MAPS.lyne.has(tag)
-}
-
 export function nodeKindToTag(kind: NodeKind): string | null {
   return KIND_TO_TAG[kind] ?? null
 }

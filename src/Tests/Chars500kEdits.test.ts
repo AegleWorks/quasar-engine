@@ -230,17 +230,19 @@ describe('Quasar @ 500k — every edit kind on the real fixture', () => {
       const expected = morphDOM(model, renderer)
       expect(stripIds(el.innerHTML), `divergencia tras "${phase.name}"`).toBe(stripIds(expected.innerHTML))
 
+      // Antes de la aserción a propósito: cuando una fase pierde la ventana,
+      // lo primero que hay que saber es por qué camino fue el reparse.
+      if (PROFILE && model.lastReparsePath) {
+        console.log(
+          `[500k-edits] ${phase.name}: reparse=${model.lastReparsePath}${model.lastReparseFallbackReason ? ` (${model.lastReparseFallbackReason})` : ''}`,
+        )
+      }
+
       if (phase.expectWindowed) {
         expect(
           stats.windowed,
           `"${phase.name}" debió ir por la ventana pero fue ${stats.mode}/${stats.windowed ? 'win' : 'full'}`,
         ).toBe(true)
-      }
-
-      if (PROFILE && model.lastReparsePath) {
-        console.log(
-          `[500k-edits]   └ reparse=${model.lastReparsePath}${model.lastReparseFallbackReason ? ` (${model.lastReparseFallbackReason})` : ''}`,
-        )
       }
 
       results.push({

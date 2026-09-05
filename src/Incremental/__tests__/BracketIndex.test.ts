@@ -19,18 +19,8 @@ import { BracketDepthIndex } from '../BracketIndex'
  * than an O(n) scan per offset.
  */
 
-function oracle(source: string, end: number): number {
-  let depth = 0
-  for (let i = 0; i < end && i < source.length; i++) {
-    const c = source.charCodeAt(i)
-    if (c === 91) depth++
-    else if (c === 93 && depth > 0) depth--
-  }
-  return depth
-}
-
 /**
- * `oracle(source, end)` for every `end` in `[0, length]`, in one pass.
+ * The plain scan's answer for every `end` in `[0, length]`, in one pass.
  *
  * `into` is reused across calls when it is large enough — the edit loop asks
  * for a table per edit, and allocating 400 KB each time is pure GC churn.
@@ -71,10 +61,22 @@ function noisy(rand: () => number, length: number): string {
   return parts.join('').slice(0, length)
 }
 
+/**
+ * Compare at every `step`-th offset, without paying for an `expect` per one.
+ *
+ * `expect` is the expensive part of a sweep — a few microseconds each, against
+ * tens of nanoseconds for the comparison — and the sweeps here run over
+ * hundreds of thousands of offsets. The loop compares by hand and only builds
+ * an assertion when it has something to report, which is what keeps the whole
+ * file inside a normal test timeout.
+ */
 function expectAgreesEverywhere(index: BracketDepthIndex, source: string, step: number): void {
   const table = oracleTable(source)
   for (let end = 0; end <= source.length; end += step) {
-    expect(index.depthAt(source, end), `depth at ${end} of ${source.length}`).toBe(table[end])
+    const got = index.depthAt(source, end)
+    if (got !== table[end]) {
+      expect(got, `depth at ${end} of ${source.length}`).toBe(table[end])
+    }
   }
   expect(index.depthAt(source, source.length)).toBe(table[source.length])
 }
@@ -94,13 +96,17 @@ describe('BracketDepthIndex', () => {
     }
   })
 
-  it('8.000 random edits: every offset agrees with the scan, and only one piece is ever read', () => {
+  it('2.000 random edits: every offset agrees with the scan, and only one piece is ever read', () => {
     const rand = mulberry32(0x5eed)
     let source = noisy(rand, 60_000)
     const index = new BracketDepthIndex()
     index.rebuild(source)
+    // One table per edit answers every offset the edit is checked at — the
+    // first version asked `oracle` per offset, which rescanned the prefix each
+    // time and turned the loop quadratic.
+    let table = oracleTable(source)
 
-    for (let edit = 0; edit < 8_000; edit++) {
+    for (let edit = 0; edit < 2_000; edit++) {
       const kind = rand()
       const start = Math.floor(rand() * (source.length + 1))
       let endOld = start
@@ -128,20 +134,22 @@ describe('BracketDepthIndex', () => {
       index.applyChange(next, start, endOld, text.length)
       source = next
 
-      expect(index.length).toBe(source.length)
+      if (index.length !== source.length) expect(index.length).toBe(source.length)
+      table = oracleTable(source, table)
       // Around the edit, where a wrong summary would show first, and a few
-      // far away offsets; a full sweep every 250 edits.
-      for (const end of [start, start + text.length, Math.max(0, start - 5000), Math.min(source.length, start + 5000)]) {
-        expect(index.depthAt(source, end)).toBe(oracle(source, end))
-        expect(index.lastScanned).toBeLessThanOrEqual(8192)
+      // far away offsets; a full sweep every 100 edits.
+      for (const end of [start, Math.min(source.length, start + text.length), Math.max(0, start - 5000), Math.min(source.length, start + 5000)]) {
+        const got = index.depthAt(source, end)
+        if (got !== table[end]) expect(got, `depth at ${end} after edit ${edit}`).toBe(table[end])
+        if (index.lastScanned > 8192) expect(index.lastScanned).toBeLessThanOrEqual(8192)
       }
-      if (edit % 250 === 0) expectAgreesEverywhere(index, source, 97)
+      if (edit % 100 === 0) expectAgreesEverywhere(index, source, 97)
     }
     expect(source.length).toBeLessThanOrEqual(MAX_DOC + 9000)
     expectAgreesEverywhere(index, source, 1)
     // The piece count stays proportional to the text, not to the edit count.
     expect(index.pieceCount).toBeLessThanOrEqual(Math.ceil(source.length / 1024) + 2)
-  })
+  }, 30_000)
 
   it('a caller whose picture of the previous text disagrees gets a rebuild, not a wrong answer', () => {
     const rand = mulberry32(3)

@@ -35,7 +35,7 @@
  *
  * Cost per keystroke: one summary of ≤ 8 KB plus one walk over ~140 piece
  * summaries at 547 KB — a few microseconds, and independent of where the
- * caret is. Verified against the plain scan by `BracketIndex.test.ts`: 20.000
+ * caret is. Verified against the plain scan by `BracketIndex.test.ts`: 2.000
  * random edits over documents full of stray brackets, every offset agreeing.
  *
  * The index does not know which document it describes; the parser keys it on
