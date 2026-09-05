@@ -85,6 +85,34 @@ export interface DocumentModelOptions {
   reuseRed?: boolean
 }
 
+/**
+ * A span of the OLD text, in the coordinates of the text `change` produced.
+ *
+ * An endpoint before the change does not move and one after it moves by the
+ * change's delta; one INSIDE it has no image, so it is pushed outwards — the
+ * start down to where the change begins, the end up to where the replacement
+ * ends. The span this belongs to is a re-validation window, and a window that
+ * covers slightly more than it must costs nodes, never correctness.
+ */
+function shiftSpan(span: SourceSpan | null, change: TextChange): SourceSpan | null {
+  if (span === null) return null
+  const delta = change.text.length - (change.end - change.start)
+  const newEnd = change.start + change.text.length
+  const start = span.start <= change.start
+    ? span.start
+    : span.start >= change.end ? span.start + delta : change.start
+  const end = span.end <= change.start
+    ? span.end
+    : span.end >= change.end ? span.end + delta : newEnd
+  return { start, end }
+}
+
+/** The smallest span containing both. */
+function unionSpans(a: SourceSpan | null, b: SourceSpan): SourceSpan {
+  if (a === null) return b
+  return { start: Math.min(a.start, b.start), end: Math.max(a.end, b.end) }
+}
+
 export class DocumentModel {
   // ── Core State ──
   private _source: string
@@ -130,6 +158,26 @@ export class DocumentModel {
    * "all of it". See {@link ReparseResult.window}.
    */
   lastReparseWindow: SourceSpan | null = null
+
+  // ── Incremental analysis bookkeeping ──
+  //
+  // `analyzeWindow` re-validates the nodes an edit could have changed and
+  // keeps every other node's verdict. What makes that sound is a promise only
+  // the model can make: that this tree grew out of the analysed one through
+  // incremental reparses WITH red-subtree reuse, so every node outside the
+  // windows is the same object over the same text. These two fields are that
+  // promise, tracked edit by edit.
+
+  /**
+   * The union of every reparse window since the last analysis, in CURRENT
+   * coordinates — `null` when nothing is pending. A bounding span rather than
+   * a list: over-covering only means re-validating a few more nodes, and the
+   * arithmetic to keep several spans current across later edits costs more
+   * than the nodes do.
+   */
+  private _analysisWindow: SourceSpan | null = null
+  /** Set by anything a window pass cannot be built on: a rebuild, a reparse that fell back. */
+  private _analysisWindowBroken = true
 
   constructor(options: DocumentModelOptions = {}) {
     this._options = {
@@ -223,6 +271,11 @@ export class DocumentModel {
     // full reconcile (which is what it must do for undo/redo/load anyway).
     this._lastChangeRange = null
     this.lastReparseWindow = null
+    // A rebuild replaces every node in the tree, so nothing a previous
+    // analysis knew about any of them survives. Set BEFORE `analyze()` below,
+    // which reads it.
+    this._analysisWindow = null
+    this._analysisWindowBroken = true
     this._attachChangeRange(this._redRoot)
     // Unchanged nodes keep the identity they had before the rebuild, so the
     // HTML of untouched subtrees stays byte-identical between renders and the
@@ -304,8 +357,22 @@ export class DocumentModel {
   }
 
   /**
-   * Apply a source text change (e.g. from Monaco editor input).
-   * Uses incremental parsing when possible.
+   * Apply one exact source change — THE edit path, and the one an editor
+   * should use.
+   *
+   * An editor already knows what the user did: Monaco's
+   * `onDidChangeModelContent` hands over `rangeOffset`, `rangeLength` and
+   * `text`, which is exactly a {@link TextChange}. Handing that over instead
+   * of the new document text skips the only part of the pipeline that is
+   * unavoidably proportional to the whole document — the prefix/suffix diff
+   * in {@link applyTextUpdate} — and the difference is not marginal. Typing
+   * 120 characters into the middle of the 500 KB fixture, per keystroke:
+   *
+   *     applyTextUpdate   p50 7.35 ms   p95 28.79 ms
+   *     applyChange       p50 1.85 ms   p95  8.18 ms
+   *
+   * Everything downstream is already windowed, so what is left after the diff
+   * goes is work proportional to the edit.
    *
    * `origin` tags where the change came from — `'local'` (default) for the
    * user's own editing, anything else for programmatic or synced sources
@@ -386,6 +453,20 @@ export class DocumentModel {
         if (oldRoot && reuse.adopted === 0) {
           preserveNodeIds(oldRoot, this._redRoot)
         }
+        // Carry the analysis window across this edit, or give up on it. Both
+        // conditions matter: without a reparse window every node is new, and
+        // without adopted subtrees `preserveNodeIds` has just moved ids
+        // between different nodes, which is exactly what an id-keyed snapshot
+        // of the previous analysis cannot survive.
+        if (result.window === null || reuse.adopted === 0) {
+          this._analysisWindow = null
+          this._analysisWindowBroken = true
+        } else if (!this._analysisWindowBroken) {
+          this._analysisWindow = unionSpans(
+            shiftSpan(this._analysisWindow, change),
+            result.window,
+          )
+        }
         this._version++
         // The incremental path resolved: the range stays attached to the new
         // root so the preview can find the edited region.
@@ -394,6 +475,7 @@ export class DocumentModel {
         this.lastReparsePath = 'full_rebuild'
         this.lastReparseTimings = null
         this.lastReparseWindow = null
+        // `rebuild` clears the analysis window itself.
         this.rebuild(this._source)
         return
       }
@@ -466,8 +548,14 @@ export class DocumentModel {
   }
 
   /**
-   * Calculate a simple diff between the current source and the new source,
-   * then apply the change.
+   * Recover the edit from the new document text, then apply it.
+   *
+   * The FALLBACK, for a caller that only has the text: a textarea's `value`,
+   * a CRDT that hands over a materialised document, a paste normaliser. It is
+   * a shared-prefix/shared-suffix diff, so it costs one pass over the
+   * unchanged part of the document before any of the incremental machinery
+   * gets to run — which is precisely the term {@link applyChange} does not
+   * pay. Anything that knows the edit should say so and use that instead.
    */
   applyTextUpdate(newSource: string, origin: string = 'local'): void {
     if (this._source === newSource) return
@@ -578,12 +666,35 @@ export class DocumentModel {
 
   /**
    * Run semantic analysis on the current tree.
+   *
+   * Incremental when it can be: if every edit since the last analysis was an
+   * incremental reparse that adopted subtrees, only the nodes inside those
+   * reparse windows — plus the ones whose document-wide facts the edits moved
+   * — are re-validated, and every other node keeps the verdict it already
+   * had. The DIAGNOSTICS ARE THE SAME EITHER WAY; the difference is how long
+   * it took to arrive at them, and {@link AnalyzeResult.scope} says which
+   * route was taken. The differential in `Chars500kAnalysis.test.ts` compares
+   * the two, edit by edit, on the real fixture.
+   *
+   * Falls back to the full pass whenever the window pass declines — no
+   * previous pass to build on, the validator set or the token source changed
+   * under it, or a validator whose verdicts are not a function of one node
+   * (see `Validator.scope`).
    */
   analyze(): AnalyzeResult {
     if (!this._redRoot) {
       throw new Error('Cannot analyze: no document loaded')
     }
-    const result = this.semanticAnalyzer.analyze(this._redRoot, this._source)
+    const window = this._analysisWindowBroken ? null : this._analysisWindow
+    const result =
+      (window !== null
+        ? this.semanticAnalyzer.analyzeWindow(this._redRoot, this._source, window)
+        : null)
+      ?? this.semanticAnalyzer.analyze(this._redRoot, this._source)
+    // Whatever route it took, the tree is now fully analysed and the next
+    // edit starts a fresh window on top of this pass.
+    this._analysisWindow = null
+    this._analysisWindowBroken = false
     this._diagnostics = result.diagnostics
 
     // Keep the id index out of the retained result: holding it would pin every

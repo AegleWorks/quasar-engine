@@ -91,6 +91,28 @@ function findTokenReferences(node: RedNode): string[] {
  * The `try` is per validator, deliberately: one that throws must not take the
  * rest of the analysis down with it.
  */
+/**
+ * A diagnostic whose range is its OWN object, not the node's.
+ *
+ * `RedNode.range` hands back the node's internal `_range`, and a shift
+ * mutates that object in place (see `RedNode.materialize`). A validator that
+ * files a diagnostic "at this node" — most of them, plus `hrefRange`'s
+ * fallback — therefore ends up holding a range that silently follows the node
+ * around. Harmless while every analysis rebuilt every diagnostic; a bug the
+ * moment one is KEPT across an edit, because the incremental pass then moves
+ * it a second time by the displacement it had already absorbed, and the
+ * squiggle lands two characters past the tag while its quick fix stays put.
+ * Found by the analysis differential on the first fuzz document.
+ *
+ * One small object per diagnostic produced, on a document that has a few
+ * hundred of them among 38.000 nodes.
+ */
+function detachRange(diagnostic: Diagnostic): Diagnostic {
+  const range = diagnostic.range
+  if (range === null || range === undefined) return diagnostic
+  return { ...diagnostic, range: { start: range.start, end: range.end } }
+}
+
 function runValidator(
   validator: Validator,
   node: RedNode,
@@ -102,12 +124,14 @@ function runValidator(
     if (result === null || result === undefined) return
     if (Array.isArray(result)) {
       for (let i = 0; i < result.length; i++) {
-        addDiagnostic(diagnostics, result[i])
-        node.diagnostics.push(result[i])
+        const own = detachRange(result[i])
+        addDiagnostic(diagnostics, own)
+        node.diagnostics.push(own)
       }
     } else {
-      addDiagnostic(diagnostics, result)
-      node.diagnostics.push(result)
+      const own = detachRange(result)
+      addDiagnostic(diagnostics, own)
+      node.diagnostics.push(own)
     }
   } catch (error) {
     // Validator error should not break the analysis
