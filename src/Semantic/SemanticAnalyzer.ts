@@ -13,6 +13,7 @@
 import { RedNode } from '../Syntax/RedNode'
 import { getBBCodeTagNames, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import type { NodeKind } from '../Types/core'
+import type { Range } from '../Types/tokens'
 import type {
   Diagnostic,
   DiagnosticSeverity,
@@ -24,7 +25,8 @@ import {
   createDiagnostic,
   addDiagnostic,
 } from '../Types/diagnostics'
-import { findCollapsibleGradients, type CollapsibleGradient } from '../Analysis/Passes/Analysis/GradientAnalyzer'
+import { collapsibleGradientsAt, type CollapsibleGradient } from '../Analysis/Passes/Analysis/GradientAnalyzer'
+import type { SourceSpan } from '../Incremental/IncrementalParser'
 import {
   toTokenResolver,
   type TokenResolverFn,
@@ -129,6 +131,22 @@ export interface Validator {
    * call into a lookup that never happens.
    */
   kinds?: readonly string[]
+  /**
+   * What a verdict on one node depends on. Default `'node'`.
+   *
+   * `'node'`: the node itself, its ancestors, its own source span, and the
+   * document-scope maps on the context (`crossings`, `unknownTags`,
+   * `orphanClosers`, `collapsibleGradients`) — everything the incremental
+   * analysis knows how to keep current. Every built-in is `'node'`-scoped.
+   *
+   * `'document'`: anything else — counting headings, comparing a node with
+   * an unrelated one, reading `allNodes`. A verdict like that can change for
+   * a node the edit never touched, which the window pass cannot see, so
+   * registering one turns every analysis into a full pass until it is
+   * unregistered. Reading `allNodes` from a `'node'`-scoped validator is
+   * treated the same way, at runtime.
+   */
+  scope?: 'node' | 'document'
   /** Validate a node. Return diagnostics or null */
   validate(node: RedNode, context: AnalyzerContext): Diagnostic | Diagnostic[] | null
 }
@@ -182,12 +200,28 @@ export interface AnalyzerContext {
 
 // ─── Analyze Result ────────────────────────────────────────────
 
+/**
+ * How much of the tree a pass looked at.
+ *
+ * `'full'` — every node was validated afresh. `'window'` — only the nodes an
+ * edit could have changed were: the ones inside the reparse window, the
+ * ancestors on the path down to it, and any node elsewhere whose
+ * document-scope facts (a pairing, a crossing, a colour run) the edit
+ * altered. The diagnostics are complete and identical either way; the scope
+ * says how they were obtained.
+ */
+export type AnalyzeScope = 'full' | 'window'
+
 export interface AnalyzeResult {
   diagnostics: DiagnosticCollection
   /** Time taken in ms */
   duration: number
   /** Number of nodes analyzed */
   nodesAnalyzed: number
+  /** See {@link AnalyzeScope}. */
+  scope: AnalyzeScope
+  /** The span re-validated by a `'window'` pass; `null` for a full one. */
+  window: SourceSpan | null
 }
 
 /**
@@ -293,7 +327,18 @@ const NO_CLOSING_TAG_EXPECTED = new Set<NodeKind>([
  */
 export function isUnclosedTag(node: RedNode, source: string): boolean {
   if (NO_CLOSING_TAG_EXPECTED.has(node.kind)) return false
+  const range = node.range
+  return isUnclosedSpan(range.start, range.end, source)
+}
 
+/**
+ * `isUnclosedTag` on a span already known to belong to a tag-bearing kind.
+ *
+ * Split out so a walk that accumulates offsets from green widths can ask
+ * without reading `node.range` — a read that materializes the pending lazy
+ * shift of every displaced subtree (see `RedNode.setStart`).
+ */
+function isUnclosedSpan(start: number, end: number, source: string): boolean {
   // Por códigos de carácter y sin materializar el nombre: esto corre una vez
   // por nodo de elemento del documento, y `openingTagName` construía un array
   // de captura y una cadena en minúsculas para cada uno, casi siempre solo
@@ -304,7 +349,6 @@ export function isUnclosedTag(node: RedNode, source: string): boolean {
   // empieza DESPUÉS de esa barra, igual que el grupo de captura: un
   // `discarded_tag` es literalmente `[/notice]`, y tomar su nombre desde el
   // corchete daría `/notice`.
-  const start = node.range.start
   if (start < 0 || start >= source.length || source.charCodeAt(start) !== 0x5b /* [ */) return false
   let i = start + 1
   if (source.charCodeAt(i) === 0x2f /* / */) i++
@@ -314,7 +358,7 @@ export function isUnclosedTag(node: RedNode, source: string): boolean {
   // Un `[*]` de lista no lleva cierre.
   if (i - nameStart === 1 && source.charCodeAt(nameStart) === 0x2a /* * */) return false
 
-  return !endsWithClosingTagSpan(source, node.range.end, nameStart, i)
+  return !endsWithClosingTagSpan(source, end, nameStart, i)
 }
 
 /** `[a-zA-Z0-9_*-]`, el alfabeto de nombres de `OPENING_TAG_RE`. */
@@ -372,6 +416,150 @@ export interface CrossedTags {
 /** The whole text of a `discarded_tag` leaf: `[/box]` → `box`. */
 const DISCARDED_CLOSING_TAG = /^\[\/([a-zA-Z0-9_*-]+)\]$/
 
+// ─── Candidates ────────────────────────────────────────────────
+//
+// The document-scope maps — `crossings`, `unknownTags`/`orphanClosers`,
+// `collapsibleGradients` — are functions of a SMALL set of nodes: auto-closed
+// openers and discarded closers, bracketed text leaves, children lists with a
+// run of colours. On a healthy document the sets are empty; on the 547 KB
+// fixture they hold a few hundred entries among 38.000 nodes.
+//
+// A full pass finds them in the same walk that validates. A window pass does
+// not walk the document: it keeps the candidates it did not visit — they sit
+// in adopted subtrees, whose text is byte-identical to what it was — and
+// collects afresh only inside the window. Every record therefore carries the
+// node it came from and the offsets it was collected at, so the next pass can
+// tell an entry that merely moved (same, shifted by the edit) from one whose
+// meaning changed.
+
+interface LiteralCandidate {
+  node: RedNode
+  /** The name as written, lowercased. */
+  tag: string
+  /** `[/tag]` rather than `[tag]`. */
+  close: boolean
+  start: number
+  end: number
+}
+
+interface OpenerCandidate {
+  node: RedNode
+  tag: string
+  start: number
+  /** Where the parser closed it — `range.end`. */
+  end: number
+}
+
+interface CloserCandidate {
+  node: RedNode
+  tag: string
+  start: number
+  end: number
+}
+
+interface GradientRun {
+  /** The node whose children list holds the run. */
+  parent: RedNode
+  /** The run's first colour node — the one the diagnostic is filed on. */
+  node: RedNode
+  /** `node`'s start offset when the run was computed. */
+  start: number
+  item: CollapsibleGradient
+}
+
+interface Candidates {
+  literals: LiteralCandidate[]
+  openers: OpenerCandidate[]
+  closers: CloserCandidate[]
+  gradients: GradientRun[]
+}
+
+function emptyCandidates(): Candidates {
+  return { literals: [], openers: [], closers: [], gradients: [] }
+}
+
+/**
+ * Collect what `node` contributes to the document-scope maps.
+ *
+ * `start` is the node's absolute offset, accumulated by the caller from green
+ * widths; `inCode` says whether an enclosing raw block makes its brackets
+ * content rather than syntax.
+ */
+function collectCandidatesAt(
+  node: RedNode,
+  start: number,
+  inCode: boolean,
+  source: string,
+  out: Candidates,
+): void {
+  const kind = node.kind
+  const width = node.green.width
+
+  if (kind === 'text') {
+    if (inCode) return
+    const text = node.text
+    // Three integer compares before any regex: this runs on every text leaf
+    // of the document, and almost none of them are a bracketed tag.
+    if (
+      text.length >= 3 &&
+      text.charCodeAt(0) === 0x5b /* [ */ &&
+      text.charCodeAt(text.length - 1) === 0x5d /* ] */ &&
+      // A leaf whose text is not its own source span did not come from the
+      // BBCode parser — an HTML import, say — and its offsets would not
+      // point at the characters this reports.
+      source.slice(start, start + width) === text
+    ) {
+      const open = LITERAL_OPEN.exec(text)
+      if (open) {
+        out.literals.push({ node, tag: open[1].toLowerCase(), close: false, start, end: start + width })
+      } else {
+        const close = LITERAL_CLOSE.exec(text)
+        if (close) {
+          out.literals.push({ node, tag: close[1].toLowerCase(), close: true, start, end: start + width })
+        }
+      }
+    }
+    return
+  }
+
+  if (kind === 'discarded_tag') {
+    const match = DISCARDED_CLOSING_TAG.exec(node.text)
+    if (match) out.closers.push({ node, tag: match[1].toLowerCase(), start, end: start + width })
+    return
+  }
+
+  if (!NO_CLOSING_TAG_EXPECTED.has(kind) && isUnclosedSpan(start, start + width, source)) {
+    OPENING_TAG_RE.lastIndex = start
+    const match = OPENING_TAG_RE.exec(source)
+    if (match) out.openers.push({ node, tag: match[1].toLowerCase(), start, end: start + width })
+  }
+
+  const children = node.children
+  if (children.length >= 3) {
+    const items: CollapsibleGradient[] = []
+    if (collapsibleGradientsAt(node.green, start, items) > 0) {
+      // Each run starts at one of the children; items come out in child
+      // order, so one forward cursor over the offsets finds them all.
+      let offset = start + node.green.leadingWidth
+      let i = 0
+      for (const item of items) {
+        while (i < children.length && offset < item.range.start) {
+          offset += children[i].green.width
+          i++
+        }
+        if (i < children.length && offset === item.range.start) {
+          out.gradients.push({ parent: node, node: children[i], start: offset, item })
+        }
+      }
+    }
+  }
+}
+
+/** Pre-order over the document: by start, outer node first at a tie. */
+function byDocumentOrder(a: { start: number; end: number }, b: { start: number; end: number }): number {
+  return a.start - b.start || b.end - a.end
+}
+
 /**
  * Pairs every auto-closed opener with the stranded `[/tag]` that was meant for
  * it, so crossed tags stop being reported as missing ones.
@@ -385,47 +573,34 @@ const DISCARDED_CLOSING_TAG = /^\[\/([a-zA-Z0-9_*-]+)\]$/
  * The pairing mirrors what the parser did rather than guessing at it. Its
  * `autoClosed` is a Set keyed by name and consumed on use, so a stranded
  * `[/tag]` belongs to the most recently opened frame of that name that was
- * already closed by the time it appeared. `walk` is pre-order, so within one
- * name the innermost frame is the last one collected — which is why the search
- * runs backwards and stops at the first unclaimed match.
+ * already closed by the time it appeared. Both lists arrive in document
+ * (pre-)order, so within one name the innermost frame is the last one
+ * collected — which is why the search runs backwards and stops at the first
+ * unclaimed match.
  */
-function findCrossedTags(root: RedNode, source: string): Map<string, CrossedTags> {
-  const openers = new Map<string, { id: string; at: number }[]>()
-  const closers: { tag: string; start: number; end: number }[] = []
-
-  root.walk(node => {
-    if (node.kind === 'discarded_tag') {
-      const match = DISCARDED_CLOSING_TAG.exec(node.text)
-      if (match) {
-        closers.push({
-          tag: match[1].toLowerCase(),
-          start: node.range.start,
-          end: node.range.end,
-        })
-      }
-      return
-    }
-    if (!isUnclosedTag(node, source)) return
-    const tag = openingTagName(node, source)
-    if (!tag) return
-    const list = openers.get(tag)
-    if (list) list.push({ id: node.id, at: node.range.end })
-    else openers.set(tag, [{ id: node.id, at: node.range.end }])
-  })
-
+function pairCrossings(openers: OpenerCandidate[], closers: CloserCandidate[]): Map<string, CrossedTags> {
   const crossings = new Map<string, CrossedTags>()
+  if (openers.length === 0 || closers.length === 0) return crossings
+
+  const byTag = new Map<string, OpenerCandidate[]>()
+  for (const opener of openers) {
+    const list = byTag.get(opener.tag)
+    if (list) list.push(opener)
+    else byTag.set(opener.tag, [opener])
+  }
+
   for (const closer of closers) {
-    const candidates = openers.get(closer.tag)
+    const candidates = byTag.get(closer.tag)
     if (candidates === undefined) continue
     for (let i = candidates.length - 1; i >= 0; i--) {
       const opener = candidates[i]
       // A closer cannot belong to a frame that was still open when it arrived,
       // nor to one another closer already claimed.
-      if (opener.at > closer.start) continue
-      if (crossings.has(opener.id)) continue
-      crossings.set(opener.id, {
+      if (opener.end > closer.start) continue
+      if (crossings.has(opener.node.id)) continue
+      crossings.set(opener.node.id, {
         tag: closer.tag,
-        at: opener.at,
+        at: opener.end,
         closer: { start: closer.start, end: closer.end },
       })
       break
@@ -539,58 +714,29 @@ interface LiteralTagScan {
   orphans: Map<string, string>
 }
 
-function findLiteralTags(root: RedNode, source: string): LiteralTagScan {
-  const opens: { id: string; tag: string; start: number; end: number }[] = []
-  const closes: { id: string; tag: string; start: number; end: number; used: boolean }[] = []
-
-  const visit = (node: RedNode, inCode: boolean): void => {
-    const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
-    if (node.kind === 'text' && !code) {
-      const text = node.text
-      // Three integer compares before any regex: this runs on every text leaf
-      // of the document, and almost none of them are a bracketed tag.
-      if (
-        text.length >= 3 &&
-        text.charCodeAt(0) === 0x5b /* [ */ &&
-        text.charCodeAt(text.length - 1) === 0x5d /* ] */ &&
-        // A leaf whose text is not its own source span did not come from the
-        // BBCode parser — an HTML import, say — and its offsets would not
-        // point at the characters this reports.
-        source.slice(node.range.start, node.range.end) === text
-      ) {
-        const open = LITERAL_OPEN.exec(text)
-        if (open) {
-          opens.push({ id: node.id, tag: open[1].toLowerCase(), start: node.range.start, end: node.range.end })
-        } else {
-          const close = LITERAL_CLOSE.exec(text)
-          if (close) {
-            closes.push({ id: node.id, tag: close[1].toLowerCase(), start: node.range.start, end: node.range.end, used: false })
-          }
-        }
-      }
-    }
-    for (let i = 0; i < node.children.length; i++) visit(node.children[i], code)
-  }
-  visit(root, false)
-
+function pairLiteralTags(literals: LiteralCandidate[]): LiteralTagScan {
   const paired = new Map<string, UnknownTag>()
   const orphans = new Map<string, string>()
+  if (literals.length === 0) return { paired, orphans }
 
-  // `closes` is in document order, so the first unused match is the nearest.
+  // `literals` is in document order, so the first unused match is the nearest.
   //
   // Indexed by tag name, with a cursor per name: the flat scan re-walked the
   // consumed prefix for every opener, which is free on a healthy document —
   // both lists are empty — and quadratic on the one full of unknown pairs.
   // That is exactly the document a checker exists for.
-  const closesByTag = new Map<string, typeof closes>()
-  for (const close of closes) {
-    const list = closesByTag.get(close.tag)
-    if (list) list.push(close)
-    else closesByTag.set(close.tag, [close])
+  const closesByTag = new Map<string, LiteralCandidate[]>()
+  for (const candidate of literals) {
+    if (!candidate.close) continue
+    const list = closesByTag.get(candidate.tag)
+    if (list) list.push(candidate)
+    else closesByTag.set(candidate.tag, [candidate])
   }
   const cursorByTag = new Map<string, number>()
+  const used = new Set<LiteralCandidate>()
 
-  for (const open of opens) {
+  for (const open of literals) {
+    if (open.close) continue
     const candidates = closesByTag.get(open.tag)
     if (candidates === undefined) continue
     let i = cursorByTag.get(open.tag) ?? 0
@@ -603,9 +749,9 @@ function findLiteralTags(root: RedNode, source: string): LiteralTagScan {
       continue
     }
     const close = candidates[i]
-    close.used = true
+    used.add(close)
     cursorByTag.set(open.tag, i + 1)
-    paired.set(open.id, {
+    paired.set(open.node.id, {
       tag: open.tag,
       opener: { start: open.start, end: open.end },
       closer: { start: close.start, end: close.end },
@@ -615,8 +761,8 @@ function findLiteralTags(root: RedNode, source: string): LiteralTagScan {
   // Whatever no opener claimed closes nothing at all. Pairing has to run first:
   // the `[/bold]` of `[bold]x[/bold]` is not an orphan, it is the evidence that
   // made its opener a typo, and `unknown-tag` already reports the pair.
-  for (const close of closes) {
-    if (!close.used) orphans.set(close.id, close.tag)
+  for (const candidate of literals) {
+    if (candidate.close && !used.has(candidate)) orphans.set(candidate.node.id, candidate.tag)
   }
 
   return { paired, orphans }
@@ -765,6 +911,209 @@ function hrefRange(node: RedNode, source: string, href: string): { start: number
   return node.range
 }
 
+// ─── Incremental analysis ──────────────────────────────────────
+//
+// What a window pass keeps from the previous pass, and why each part is
+// enough. The contract it rests on is the incremental parser's: after an edit
+// with red-subtree reuse, every node outside `ReparseResult.window` (and off
+// the path down to it) is the SAME object it was, over the same text, under
+// ancestors of the same kinds. So for those nodes:
+//
+//   - every node-scoped verdict still holds, and only its OFFSETS may have
+//     moved — by exactly the node's own displacement, which `diagStarts`
+//     lets the next pass measure without a walk;
+//   - every document-scope fact they contribute (a bracketed leaf, an
+//     auto-closed opener, a colour run) is still contributed, at shifted
+//     offsets — so `candidates` are kept rather than re-found;
+//   - what CAN change for them is a document-scope verdict whose other half
+//     sits in the window: a `[/bold]` typed for a `[bold]` far above, a
+//     `[/b]` that now pairs with an opener elsewhere, a colour run that grew
+//     or broke at the window's edge. The previous maps are kept so the next
+//     pass can diff them and re-validate exactly the nodes whose entry
+//     changed — nothing more, and (checked differentially against a full
+//     pass on every edit of the fuzz and battery suites) nothing less.
+
+interface DocumentMaps {
+  literal: LiteralTagScan
+  crossings: Map<string, CrossedTags>
+  gradients: Map<string, CollapsibleGradient>
+}
+
+interface AnalysisSnapshot {
+  root: RedNode
+  collection: DiagnosticCollection
+  /** Nodes carrying at least one diagnostic, in document order… */
+  diagNodes: RedNode[]
+  /** …and the start offset each one had when it was validated. */
+  diagStarts: number[]
+  candidates: Candidates
+  maps: DocumentMaps
+  validatorsVersion: number
+  tokensVersion: number
+  /**
+   * A validator declared `'document'` scope, or read `allNodes`: no window
+   * pass can be trusted on top of this one.
+   */
+  documentScoped: boolean
+}
+
+/** Every node of the tree by id — the index `allNodes` hands out. */
+function indexNodes(root: RedNode): Map<string, RedNode> {
+  const index = new Map<string, RedNode>()
+  root.walk(node => { index.set(node.id, node) })
+  return index
+}
+
+/** Whether `node` still hangs from `root` — false for a node an edit replaced. */
+function isAttached(node: RedNode, root: RedNode): boolean {
+  let n: RedNode = node
+  while (n.parent !== null) n = n.parent
+  return n === root
+}
+
+function depthOf(node: RedNode): number {
+  let d = 0
+  for (let n = node.parent; n !== null; n = n.parent) d++
+  return d
+}
+
+function deriveMaps(candidates: Candidates): DocumentMaps {
+  const gradients = new Map<string, CollapsibleGradient>()
+  for (const run of candidates.gradients) gradients.set(run.node.id, run.item)
+  return {
+    literal: pairLiteralTags(candidates.literals),
+    crossings: pairCrossings(candidates.openers, candidates.closers),
+    gradients,
+  }
+}
+
+/**
+ * Walk `node`'s subtree in pre-order, listing every node and collecting its
+ * candidates. Offsets are accumulated from green widths, never read from
+ * `range` — see `isUnclosedSpan`.
+ */
+function collectSubtree(
+  node: RedNode,
+  start: number,
+  inCode: boolean,
+  source: string,
+  out: Candidates,
+  nodes: RedNode[],
+): void {
+  nodes.push(node)
+  collectCandidatesAt(node, start, inCode, source, out)
+  const children = node.children
+  if (children.length === 0) return
+  const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
+  let offset = start + node.green.leadingWidth
+  for (let i = 0; i < children.length; i++) {
+    collectSubtree(children[i], offset, code, source, out, nodes)
+    offset += children[i].green.width
+  }
+}
+
+/**
+ * The nodes a window pass has to look at: the path from the root down to the
+ * window, and everything inside it.
+ *
+ * A child is entered when its span overlaps the window (it is one of the
+ * re-parsed siblings, so its whole subtree is new) or contains it (it is on
+ * the path down, so only the node itself is new and the descent continues).
+ * Adopted siblings touch the window at a boundary and satisfy neither —
+ * except when the window is empty (every re-parsed sibling was deleted),
+ * where the two neighbours are entered and re-validated for nothing, which
+ * is harmless.
+ */
+function descendWindow(
+  node: RedNode,
+  start: number,
+  inCode: boolean,
+  window: SourceSpan,
+  source: string,
+  out: Candidates,
+  nodes: RedNode[],
+): void {
+  nodes.push(node)
+  collectCandidatesAt(node, start, inCode, source, out)
+  const children = node.children
+  if (children.length === 0) return
+  const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
+  let offset = start + node.green.leadingWidth
+  for (let i = 0; i < children.length; i++) {
+    const childStart = offset
+    const childEnd = offset + children[i].green.width
+    if (
+      (childStart < window.end && childEnd > window.start) ||
+      (childStart <= window.start && window.end <= childEnd)
+    ) {
+      descendWindow(children[i], childStart, code, window, source, out, nodes)
+    }
+    offset = childEnd
+  }
+}
+
+function shiftRange(range: Range | null, delta: number): Range | null {
+  return range === null ? null : { start: range.start + delta, end: range.end + delta }
+}
+
+/**
+ * The same diagnostic, `delta` characters further on. A copy, not a
+ * mutation: the previous collection may still be in a subscriber's hands.
+ */
+function shiftDiagnostic(diagnostic: Diagnostic, delta: number): Diagnostic {
+  const shifted: Diagnostic = { ...diagnostic, range: shiftRange(diagnostic.range, delta) }
+  if (diagnostic.related !== undefined) {
+    shifted.related = diagnostic.related.map(r => ({ ...r, range: shiftRange(r.range, delta) }))
+  }
+  if (diagnostic.fixes !== undefined) {
+    shifted.fixes = diagnostic.fixes.map(fix => ({
+      ...fix,
+      operations: fix.operations.map(op =>
+        op.kind === 'insert_text'
+          ? { ...op, position: op.position + delta }
+          : { ...op, range: { start: op.range.start + delta, end: op.range.end + delta } },
+      ),
+    }))
+  }
+  return shifted
+}
+
+// Entry comparisons for the diff, invariant under a uniform shift of the
+// node they are filed on: an entry that merely moved with its node is the
+// same entry. Anything whose other half moved differently — because it sits
+// on the other side of the edit — compares different, and the node is
+// re-validated.
+function sameUnknownTag(a: UnknownTag | undefined, b: UnknownTag | undefined, shift: number): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return (
+    a.tag === b.tag &&
+    a.opener.start + shift === b.opener.start && a.opener.end + shift === b.opener.end &&
+    a.closer.start + shift === b.closer.start && a.closer.end + shift === b.closer.end
+  )
+}
+
+function sameCrossing(a: CrossedTags | undefined, b: CrossedTags | undefined, shift: number): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return (
+    a.tag === b.tag && a.at + shift === b.at &&
+    a.closer.start + shift === b.closer.start && a.closer.end + shift === b.closer.end
+  )
+}
+
+function sameGradient(
+  a: CollapsibleGradient | undefined,
+  b: CollapsibleGradient | undefined,
+  shift: number,
+): boolean {
+  if (a === undefined || b === undefined) return a === b
+  // Everything the diagnostic is built from: where, how many, and the exact
+  // replacement (which encodes the stops, the easing and the run's text).
+  return (
+    a.range.start + shift === b.range.start && a.range.end + shift === b.range.end &&
+    a.colorCount === b.colorCount && a.replacementText === b.replacementText
+  )
+}
+
 // ─── SemanticAnalyzer ──────────────────────────────────────────
 
 export interface SemanticAnalyzerOptions {
@@ -803,11 +1152,20 @@ export class SemanticAnalyzer {
   private _tokens?: TokenSource
   private _tokenResolver?: TokenResolverFn
 
+  // ─── Incremental state ──────────────────────────────────
+  //
+  // A window pass is only valid on top of a pass that ran the same validators
+  // against the same tokens: either changing invalidates every kept verdict.
+  private _validatorsVersion = 0
+  private _tokensVersion = 0
+  private _snapshot: AnalysisSnapshot | null = null
+
   get tokens(): TokenSource | undefined {
     return this._tokens
   }
 
   set tokens(val: TokenSource | undefined) {
+    if (val !== this._tokens) this._tokensVersion++
     this._tokens = val
     this._tokenResolver = toTokenResolver(val)
   }
@@ -838,8 +1196,8 @@ export class SemanticAnalyzer {
   register(validator: Validator): void {
     this.validators.set(validator.code, validator)
     this._dispatchDirty = true
+    this._validatorsVersion++
   }
-
 
   /**
    * Remove a validator.
@@ -847,6 +1205,15 @@ export class SemanticAnalyzer {
   unregister(code: string): void {
     this.validators.delete(code)
     this._dispatchDirty = true
+    this._validatorsVersion++
+  }
+
+  /** Whether any registered validator declared `'document'` scope. */
+  private hasDocumentScopedValidator(): boolean {
+    for (const validator of this.validators.values()) {
+      if (validator.scope === 'document') return true
+    }
+    return false
   }
 
   /**
@@ -877,7 +1244,11 @@ export class SemanticAnalyzer {
   }
 
   /**
-   * Analyze a Red Tree and produce diagnostics.
+   * Analyze a Red Tree and produce diagnostics — every node, from scratch.
+   *
+   * Also the base a later {@link analyzeWindow} builds on: the pass remembers
+   * which nodes carry diagnostics and which ones feed the document-scope
+   * maps, so the next edit can re-validate its window alone.
    */
   analyze(
     root: RedNode,
@@ -898,64 +1269,298 @@ export class SemanticAnalyzer {
       }
     }
     const startTime = performance.now()
-    const diagnostics = createDiagnosticCollection()
-    let nodesAnalyzed = 0
+    if (this._dispatchDirty) this.rebuildDispatch()
 
-    // `allNodes` is a getter so the Map is only built if a validator asks for
-    // it — see the note on `AnalyzerContext.allNodes`. `root` is captured, so
-    // the walk that builds it happens at most once per analyze.
-    let allNodesCache: Map<string, RedNode> | null = null
-    let crossingsCache: Map<string, CrossedTags> | null = null
-    let literalTagCache: LiteralTagScan | null = null
-    let collapsibleGradientsCache: Map<string, CollapsibleGradient> | null = null
-    const literalTags = (): LiteralTagScan => {
-      if (literalTagCache === null) literalTagCache = findLiteralTags(root, source)
-      return literalTagCache
+    // One walk lists the nodes and collects the candidates; the maps are
+    // derived from those before any validator runs, so a validator asking
+    // for `crossings` on the first node already sees the whole document.
+    // The gradient runs used to be found by a second walk over the green
+    // tree plus a `findNodeAtOffset` per run (1.9 ms for 600 runs on the
+    // 547 KB fixture); they are picked up per children list here instead.
+    const candidates = emptyCandidates()
+    const nodes: RedNode[] = []
+    collectSubtree(root, root.range.start, false, source, candidates, nodes)
+    const maps = deriveMaps(candidates)
+
+    const diagnostics = createDiagnosticCollection()
+    const flags = { sawAllNodes: false }
+    const context = this.makeContext(root, source, diagnostics, maps, flags)
+    this.validateNodes(nodes, context, diagnostics)
+
+    // Diagnostic-bearing nodes come out in pass order, which is pre-order —
+    // the same order the collection's items are in.
+    const diagNodes: RedNode[] = []
+    const diagStarts: number[] = []
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i]
+      if (node.diagnostics.length > 0) {
+        diagNodes.push(node)
+        diagStarts.push(node.range.start)
+      }
     }
-    const context: AnalyzerContext = {
+    this._snapshot = {
+      root,
+      collection: diagnostics,
+      diagNodes,
+      diagStarts,
+      candidates,
+      maps,
+      validatorsVersion: this._validatorsVersion,
+      tokensVersion: this._tokensVersion,
+      documentScoped: flags.sawAllNodes || this.hasDocumentScopedValidator(),
+    }
+
+    const duration = performance.now() - startTime
+    return {
+      diagnostics,
+      duration,
+      nodesAnalyzed: nodes.length,
+      scope: 'full',
+      window: null,
+      get allNodes(): Map<string, RedNode> { return indexNodes(root) },
+    }
+  }
+
+  /**
+   * Re-validate only what an edit could have changed, on top of the previous
+   * pass over this analyzer.
+   *
+   * `root` must be the tree the previous pass's root turned into through
+   * incremental reparses WITH red-subtree reuse — that is what makes every
+   * node outside `window` (the union of those reparses' windows, carried
+   * into `root`'s coordinates) the same object over the same text. The
+   * `DocumentModel` tracks exactly that and calls this only when it holds;
+   * anyone else should prefer `DocumentModel.analyzeIncremental`.
+   *
+   * Returns `null` when no window pass can be trusted: there is no previous
+   * pass, the validators or the tokens changed since it, or a validator with
+   * document scope is registered (see `Validator.scope`). The caller runs a
+   * full `analyze` then. The result's diagnostics are complete — the whole
+   * document's, identical to what a full pass would produce — and come out
+   * in document order like a full pass's do.
+   *
+   * What happens, in order:
+   *   1. descend the window (see `descendWindow`), collecting its candidates;
+   *   2. keep every previous candidate outside it that is still in the tree,
+   *      at its current offsets; derive the maps from kept plus fresh;
+   *   3. diff the maps against the previous ones for nodes outside the
+   *      window, and mark the nodes whose entry changed for re-validation;
+   *   4. move the kept diagnostics of displaced nodes by their displacement;
+   *   5. validate the window nodes and the marked ones;
+   *   6. assemble the collection from every diagnostic-bearing node.
+   */
+  analyzeWindow(root: RedNode, source: string, window: SourceSpan): IndexedAnalyzeResult | null {
+    const snapshot = this._snapshot
+    if (snapshot === null || snapshot.documentScoped) return null
+    if (
+      snapshot.validatorsVersion !== this._validatorsVersion ||
+      snapshot.tokensVersion !== this._tokensVersion
+    ) return null
+    const startTime = performance.now()
+    if (this._dispatchDirty) this.rebuildDispatch()
+
+    // ── 1. The window ──
+    const fresh = emptyCandidates()
+    const visited: RedNode[] = []
+    descendWindow(root, root.range.start, false, window, source, fresh, visited)
+    const visitedSet = new Set<RedNode>(visited)
+
+    // ── 2. Kept candidates, at their current offsets ──
+    // `shiftById` remembers how far each kept candidate moved, for the diff.
+    const previous = snapshot.candidates
+    const kept = emptyCandidates()
+    const keptById = new Map<string, RedNode>()
+    const shiftById = new Map<string, number>()
+    for (const c of previous.literals) {
+      if (visitedSet.has(c.node) || !isAttached(c.node, root)) continue
+      const range = c.node.range
+      kept.literals.push({ node: c.node, tag: c.tag, close: c.close, start: range.start, end: range.end })
+      keptById.set(c.node.id, c.node)
+      shiftById.set(c.node.id, range.start - c.start)
+    }
+    for (const c of previous.openers) {
+      if (visitedSet.has(c.node) || !isAttached(c.node, root)) continue
+      const range = c.node.range
+      kept.openers.push({ node: c.node, tag: c.tag, start: range.start, end: range.end })
+      keptById.set(c.node.id, c.node)
+      shiftById.set(c.node.id, range.start - c.start)
+    }
+    for (const c of previous.closers) {
+      if (visitedSet.has(c.node) || !isAttached(c.node, root)) continue
+      const range = c.node.range
+      kept.closers.push({ node: c.node, tag: c.tag, start: range.start, end: range.end })
+    }
+    // A run belongs to its parent's children list: kept when the parent is
+    // untouched, recomputed (in `fresh`) when the parent was visited, gone
+    // when the parent was replaced. Runs of the latter two kinds may still
+    // be filed on a node outside the window — an adopted child of a rebuilt
+    // ancestor — and those nodes are the ones the diff below has to look at.
+    const affectedGradients = new Map<RedNode, number>()
+    for (const run of previous.gradients) {
+      if (!visitedSet.has(run.parent) && isAttached(run.parent, root)) {
+        const start = run.node.range.start
+        const shift = start - run.start
+        kept.gradients.push({
+          parent: run.parent,
+          node: run.node,
+          start,
+          item: shift === 0
+            ? run.item
+            : { ...run.item, range: { start: run.item.range.start + shift, end: run.item.range.end + shift } },
+        })
+        continue
+      }
+      if (!visitedSet.has(run.node) && isAttached(run.node, root)) {
+        affectedGradients.set(run.node, run.node.range.start - run.start)
+      }
+    }
+    for (const run of fresh.gradients) {
+      if (!visitedSet.has(run.node) && !affectedGradients.has(run.node)) {
+        affectedGradients.set(run.node, 0)
+      }
+    }
+
+    const candidates: Candidates = {
+      literals: kept.literals.concat(fresh.literals).sort(byDocumentOrder),
+      openers: kept.openers.concat(fresh.openers).sort(byDocumentOrder),
+      closers: kept.closers.concat(fresh.closers).sort(byDocumentOrder),
+      gradients: kept.gradients.concat(fresh.gradients),
+    }
+    const maps = deriveMaps(candidates)
+
+    // ── 3. The diff: nodes outside the window whose entry changed ──
+    const extra: RedNode[] = []
+    const extraSet = new Set<RedNode>()
+    const revalidate = (node: RedNode): void => {
+      if (visitedSet.has(node) || extraSet.has(node)) return
+      extraSet.add(node)
+      extra.push(node)
+    }
+    const old = snapshot.maps
+    const diffIds = (a: ReadonlyMap<string, unknown>, b: ReadonlyMap<string, unknown>, same: (id: string, shift: number) => boolean): void => {
+      const check = (id: string): void => {
+        const node = keptById.get(id)
+        if (node === undefined) return
+        if (!same(id, shiftById.get(id) ?? 0)) revalidate(node)
+      }
+      for (const id of a.keys()) check(id)
+      for (const id of b.keys()) if (!a.has(id)) check(id)
+    }
+    diffIds(old.literal.paired, maps.literal.paired, (id, shift) =>
+      sameUnknownTag(old.literal.paired.get(id), maps.literal.paired.get(id), shift))
+    diffIds(old.literal.orphans, maps.literal.orphans, id =>
+      old.literal.orphans.get(id) === maps.literal.orphans.get(id))
+    diffIds(old.crossings, maps.crossings, (id, shift) =>
+      sameCrossing(old.crossings.get(id), maps.crossings.get(id), shift))
+    for (const [node, shift] of affectedGradients) {
+      if (!sameGradient(old.gradients.get(node.id), maps.gradients.get(node.id), shift)) revalidate(node)
+    }
+
+    // ── 4. Kept diagnostics follow their nodes ──
+    const bearing: RedNode[] = []
+    for (let i = 0; i < snapshot.diagNodes.length; i++) {
+      const node = snapshot.diagNodes[i]
+      if (visitedSet.has(node) || extraSet.has(node) || !isAttached(node, root)) continue
+      const delta = node.range.start - snapshot.diagStarts[i]
+      if (delta !== 0) {
+        const shifted = new Array<Diagnostic>(node.diagnostics.length)
+        for (let k = 0; k < shifted.length; k++) shifted[k] = shiftDiagnostic(node.diagnostics[k], delta)
+        node.diagnostics = shifted
+      }
+      bearing.push(node)
+    }
+
+    // ── 5. Validate ──
+    const produced = createDiagnosticCollection()
+    const flags = { sawAllNodes: false }
+    const context = this.makeContext(root, source, produced, maps, flags)
+    this.validateNodes(visited, context, produced)
+    this.validateNodes(extra, context, produced)
+    for (let i = 0; i < visited.length; i++) if (visited[i].diagnostics.length > 0) bearing.push(visited[i])
+    for (let i = 0; i < extra.length; i++) if (extra[i].diagnostics.length > 0) bearing.push(extra[i])
+
+    // ── 6. Assemble, in document order ──
+    // Pre-order by position: an ancestor shares its start with its first
+    // child and its end with its last, so depth breaks the tie. Zero-width
+    // nodes never carry diagnostics, so no two siblings ever tie.
+    const ordered = bearing.map(node => {
+      const range = node.range
+      return { node, start: range.start, end: range.end, depth: depthOf(node) }
+    })
+    ordered.sort((a, b) => a.start - b.start || b.end - a.end || a.depth - b.depth)
+    const diagnostics = createDiagnosticCollection()
+    const diagNodes: RedNode[] = new Array(ordered.length)
+    const diagStarts: number[] = new Array(ordered.length)
+    for (let i = 0; i < ordered.length; i++) {
+      const entry = ordered[i]
+      diagNodes[i] = entry.node
+      diagStarts[i] = entry.start
+      const own = entry.node.diagnostics
+      for (let k = 0; k < own.length; k++) addDiagnostic(diagnostics, own[k])
+    }
+
+    this._snapshot = {
+      root,
+      collection: diagnostics,
+      diagNodes,
+      diagStarts,
+      candidates,
+      maps,
+      validatorsVersion: this._validatorsVersion,
+      tokensVersion: this._tokensVersion,
+      documentScoped: flags.sawAllNodes,
+    }
+
+    const duration = performance.now() - startTime
+    return {
+      diagnostics,
+      duration,
+      nodesAnalyzed: visited.length + extra.length,
+      scope: 'window',
+      window,
+      get allNodes(): Map<string, RedNode> { return indexNodes(root) },
+    }
+  }
+
+  /**
+   * The context validators see. The maps are ready-made; `allNodes` is
+   * built on demand and, being the one cross-document index a validator can
+   * reach without declaring itself, its use is recorded (see
+   * `Validator.scope`).
+   */
+  private makeContext(
+    root: RedNode,
+    source: string,
+    diagnostics: DiagnosticCollection,
+    maps: DocumentMaps,
+    flags: { sawAllNodes: boolean },
+  ): AnalyzerContext {
+    let allNodesCache: Map<string, RedNode> | null = null
+    return {
       get allNodes(): Map<string, RedNode> {
-        if (allNodesCache === null) {
-          allNodesCache = new Map<string, RedNode>()
-          root.walk(node => { allNodesCache!.set(node.id, node) })
-        }
+        flags.sawAllNodes = true
+        if (allNodesCache === null) allNodesCache = indexNodes(root)
         return allNodesCache
       },
-      get crossings(): ReadonlyMap<string, CrossedTags> {
-        if (crossingsCache === null) crossingsCache = findCrossedTags(root, source)
-        return crossingsCache
-      },
-      get unknownTags(): ReadonlyMap<string, UnknownTag> {
-        return literalTags().paired
-      },
-      get orphanClosers(): ReadonlyMap<string, string> {
-        return literalTags().orphans
-      },
-      get collapsibleGradients(): ReadonlyMap<string, CollapsibleGradient> {
-        if (collapsibleGradientsCache === null) {
-          collapsibleGradientsCache = new Map<string, CollapsibleGradient>()
-          if (root.green) {
-            const detected = findCollapsibleGradients(root.green)
-            for (const item of detected) {
-              const targetNode = root.findNodeAtOffset(item.range.start)
-              if (targetNode) {
-                collapsibleGradientsCache.set(targetNode.id, item)
-              }
-            }
-          }
-        }
-        return collapsibleGradientsCache
-      },
+      get crossings(): ReadonlyMap<string, CrossedTags> { return maps.crossings },
+      get unknownTags(): ReadonlyMap<string, UnknownTag> { return maps.literal.paired },
+      get orphanClosers(): ReadonlyMap<string, string> { return maps.literal.orphans },
+      get collapsibleGradients(): ReadonlyMap<string, CollapsibleGradient> { return maps.gradients },
       diagnostics,
       source,
     }
+  }
 
-    if (this._dispatchDirty) this.rebuildDispatch()
+  /** Run every applicable validator over `nodes`, in order. */
+  private validateNodes(
+    nodes: readonly RedNode[],
+    context: AnalyzerContext,
+    diagnostics: DiagnosticCollection,
+  ): void {
     const always = this._always
     const byKind = this._byKind
-
-    root.walk(node => {
-      nodesAnalyzed++
-
+    for (let n = 0; n < nodes.length; n++) {
+      const node = nodes[n]
       // Clear here rather than in a pass of its own, and only when there is
       // something to clear: a fresh `[]` per node meant an allocation for every
       // node in the document, and almost none of them carry diagnostics.
@@ -970,15 +1575,6 @@ export class SemanticAnalyzer {
           runValidator(specific[i], node, context, diagnostics)
         }
       }
-    })
-
-    const duration = performance.now() - startTime
-
-    return {
-      diagnostics,
-      duration,
-      nodesAnalyzed,
-      get allNodes(): Map<string, RedNode> { return context.allNodes },
     }
   }
 

@@ -158,81 +158,101 @@ export class GradientAnalyzer implements AnalyzerPass {
     nodeStart: number = 0,
     minConfidence: number = 0.6,
   ): void {
+    const children = node.children as GreenNode[]
+    if (children.length === 0) return
+    this.collapsibleGradientsAt(node, nodeStart, sink, minConfidence)
+    // Los desplazamientos se acumulan sobre la marcha, que es lo mismo que
+    // hace `childOffsets` pero sin el array.
+    let offset = nodeStart + node.leadingWidth
+    for (let i = 0; i < children.length; i++) {
+      this.collectCollapsibleGradients(children[i], sink, offset, minConfidence)
+      offset += children[i].width
+    }
+  }
+
+  /**
+   * The collapsible runs among the DIRECT children of `node`, and nothing
+   * below them.
+   *
+   * A run is a property of one children list: which siblings are `color`,
+   * what sits between them, what each one wraps. That is what makes it the
+   * unit the incremental analysis can work with — an edit rebuilds the child
+   * lists on the path down to it and nothing else, so only those lists can
+   * have gained or lost a run (see `SemanticAnalyzer.analyzeWindow`). The
+   * full scan above is this, applied to every node in pre-order; running it
+   * per list keeps the two paths producing the same items in the same order.
+   *
+   * Returns the number of runs appended to `sink`. `nodeStart` is the absolute
+   * offset of `node`, so the ranges come out in document coordinates.
+   */
+  collapsibleGradientsAt(
+    node: GreenNode,
+    nodeStart: number,
+    sink: CollapsibleGradient[],
+    minConfidence: number = 0.6,
+  ): number {
     // El corte por arriba: la inmensa mayoría de los nodos del documento son
     // hojas o no tienen suficientes hijos `color` seguidos como para formar
     // un degradado. `childOffsets` asigna un array por nodo y
     // `extractSequences` otro más; hacerlo para todos era pagar dos
     // asignaciones por nodo del árbol para descartarlos acto seguido.
     const children = node.children as GreenNode[]
-    if (children.length === 0) return
-    if (countColorChildren(children) < MIN_SEQUENCE_LENGTH) {
-      // Los desplazamientos se acumulan sobre la marcha, que es lo mismo que
-      // hace `childOffsets` pero sin el array.
-      let offset = nodeStart + node.leadingWidth
-      for (let i = 0; i < children.length; i++) {
-        this.collectCollapsibleGradients(children[i], sink, offset, minConfidence)
-        offset += children[i].width
-      }
-      return
-    }
+    if (children.length === 0) return 0
+    if (countColorChildren(children) < MIN_SEQUENCE_LENGTH) return 0
 
     const offsets = childOffsets(node, nodeStart)
-    {
-      const sequences = extractSequences(children, 'color', extractHex)
+    const sequences = extractSequences(children, 'color', extractHex)
+    let found = 0
 
-      for (const seq of sequences) {
-        const colors = seq.values as string[]
-        if (colors.length < MIN_SEQUENCE_LENGTH) continue
+    for (const seq of sequences) {
+      const colors = seq.values as string[]
+      if (colors.length < MIN_SEQUENCE_LENGTH) continue
 
-        let textLen = 0
-        const textChunks: string[] = []
-        for (let i = seq.startIdx; i < seq.endIdx; i++) {
-          const child = children[i]
-          if (child.kind === 'color') {
-            for (const textChild of child.children as GreenNode[]) {
-              if (textChild.kind === 'text') {
-                textLen += textChild.text.length
-                textChunks.push(textChild.text)
-              } else if (textChild.kind === 'spacing' || textChild.kind === 'empty_line') {
-                textChunks.push('\n')
-              }
+      let textLen = 0
+      const textChunks: string[] = []
+      for (let i = seq.startIdx; i < seq.endIdx; i++) {
+        const child = children[i]
+        if (child.kind === 'color') {
+          for (const textChild of child.children as GreenNode[]) {
+            if (textChild.kind === 'text') {
+              textLen += textChild.text.length
+              textChunks.push(textChild.text)
+            } else if (textChild.kind === 'spacing' || textChild.kind === 'empty_line') {
+              textChunks.push('\n')
             }
-          } else if (child.kind === 'text') {
-            textChunks.push(child.text)
           }
-        }
-
-        const combinedText = textChunks.join('')
-        const hasBreaks = checkFormattingBreaks(children, seq, 'color')
-        const { stops, easing } = this.detectStops(colors)
-        const diag = this.buildDiagnostics(colors, stops)
-        const { score: rawScore } = this.calculateRawScore(diag, hasBreaks)
-        const confidence = sigmoid(rawScore, SIGMOID_STEEPNESS)
-
-        if (confidence >= minConfidence && stops.length >= 2) {
-          const range = {
-            start: offsets[seq.startIdx],
-            end: offsets[seq.endIdx],
-          }
-          const replacementText = formatGradientTag(stops, colors, easing, combinedText)
-          sink.push({
-            range,
-            colors,
-            stops,
-            easing,
-            combinedText,
-            replacementText,
-            confidence,
-            colorCount: colors.length,
-          })
+        } else if (child.kind === 'text') {
+          textChunks.push(child.text)
         }
       }
-    }
 
-    const kids = node.children as GreenNode[]
-    for (let i = 0; i < kids.length; i++) {
-      this.collectCollapsibleGradients(kids[i], sink, offsets[i], minConfidence)
+      const combinedText = textChunks.join('')
+      const hasBreaks = checkFormattingBreaks(children, seq, 'color')
+      const { stops, easing } = this.detectStops(colors)
+      const diag = this.buildDiagnostics(colors, stops)
+      const { score: rawScore } = this.calculateRawScore(diag, hasBreaks)
+      const confidence = sigmoid(rawScore, SIGMOID_STEEPNESS)
+
+      if (confidence >= minConfidence && stops.length >= 2) {
+        const range = {
+          start: offsets[seq.startIdx],
+          end: offsets[seq.endIdx],
+        }
+        const replacementText = formatGradientTag(stops, colors, easing, combinedText)
+        sink.push({
+          range,
+          colors,
+          stops,
+          easing,
+          combinedText,
+          replacementText,
+          confidence,
+          colorCount: colors.length,
+        })
+        found++
+      }
     }
+    return found
   }
 
   // ── Sequence Detection ──────────────────────────────────────────
@@ -527,5 +547,20 @@ export function findCollapsibleGradients(
   minConfidence = 0.6,
 ): CollapsibleGradient[] {
   return new GradientAnalyzer().findCollapsibleGradients(tree, minConfidence)
+}
+
+const sharedAnalyzer = new GradientAnalyzer()
+
+/**
+ * The collapsible runs among the direct children of `node`, whose absolute
+ * start is `nodeStart`. See {@link GradientAnalyzer.collapsibleGradientsAt}.
+ */
+export function collapsibleGradientsAt(
+  node: GreenNode,
+  nodeStart: number,
+  sink: CollapsibleGradient[],
+  minConfidence = 0.6,
+): number {
+  return sharedAnalyzer.collapsibleGradientsAt(node, nodeStart, sink, minConfidence)
 }
 

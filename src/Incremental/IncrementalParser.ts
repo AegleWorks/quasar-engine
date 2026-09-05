@@ -55,8 +55,18 @@
 import { RedNode } from '../Syntax/RedNode'
 import { GreenNode } from '../Syntax/GreenNode'
 import { spliceGreen, withChildrenSpliced, type SpineStep } from '../Syntax/greenEdit'
-import { tagToNodeKind } from '../BBCode/BBCodeToGreenNode'
+import { isKnownTagName } from '../BBCode/BBCodeToGreenNode'
+import { BracketDepthIndex } from './BracketIndex'
 import type { TextChange } from './ChangeTracker'
+
+/**
+ * A span of the source, `[start, end)`, in the coordinates of the text the
+ * result describes.
+ */
+export interface SourceSpan {
+  start: number
+  end: number
+}
 
 export interface EditOperation {
   kind: 'insert' | 'delete' | 'replace'
@@ -97,6 +107,25 @@ export interface ReparseResult {
   path: 'incremental' | 'full_rebuild'
   /** When `full_rebuild`, why the incremental path was declined. */
   reason?: FallbackReason
+  /**
+   * The span of `newSource` that went through the parser, in NEW coordinates,
+   * or `null` after a full rebuild (where the answer is "all of it").
+   *
+   * This is the contract the incremental semantic analysis is built on. The
+   * red tree that comes back is derived from a green tree that shares every
+   * subtree outside this span by reference with the previous one, so — with
+   * red-subtree reuse — every red node outside the span is the SAME object it
+   * was before the edit, and everything anyone computed about it (its
+   * diagnostics, above all) is still true of it, up to a shift in position.
+   * The nodes inside the span, plus the ancestors on the path down to it
+   * (rebuilt because their child lists changed), are the only ones that are
+   * new. `SemanticAnalyzer.analyzeWindow` re-validates exactly those.
+   *
+   * The span is closed on the widened window, not on the edit: the parser
+   * re-parses the sibling on each side of the change too (see
+   * `findReparseWindow`), and those siblings are new nodes as well.
+   */
+  window: SourceSpan | null
 }
 
 export type FallbackReason =
@@ -169,13 +198,26 @@ const ORPHAN_CLOSE_RE = /^\[\/([a-zA-Z0-9_*-]+)\]$/
  * Can this window be parsed on its own and mean the same thing it means in
  * context? Four ways it cannot:
  *
- *  - A closing tag with no opener inside the window, whose name matches an
- *    ANCESTOR. In isolation it is literal text; in the whole document it
- *    closes that ancestor, which moves the ancestor's own boundary. An orphan
- *    that matches no ancestor is text either way and is perfectly safe — being
- *    conservative here cost the incremental path most of its opportunities,
- *    since a half-typed `[/color]` is the single most common transient state
- *    while editing.
+ *  - A closing tag with no opener inside the window, for a tag the parser
+ *    KNOWS. In isolation it is literal text; in the whole document it may be
+ *    something else, and the window cannot tell which:
+ *      · if the name matches an ANCESTOR it closes that ancestor, which moves
+ *        the ancestor's own boundary;
+ *      · otherwise it is a `discarded_tag` — invisible, not exported — exactly
+ *        when the parser auto-closed a tag of that name EARLIER in the
+ *        document and no later `[/name]` has claimed it since (see
+ *        `autoClosed` in `Parser.ts`). That is a fact about the prefix, which
+ *        a window parse never sees: the differential found a `[/b]` typed
+ *        after `[quote][b]x[/quote]` coming back as visible text where the
+ *        full parse discards it.
+ *    A closer for a tag the parser does NOT know is text either way and is
+ *    perfectly safe — and that is the common case while editing: a half-typed
+ *    `[/colo` matches nothing, and a finished `[/color]` normally closes a
+ *    `[color]` that is inside the window or above it. Only a stray closer of
+ *    a real tag pays with a rebuild, and only while it sits in the window.
+ *    Plugin tags are the one blind spot: `isKnownTagName` sees the built-in
+ *    dialects, not a document's registry, so a stray closer of a plugin tag
+ *    is treated as text. The ancestor half of the rule shares that limit.
  *  - A lone `[` with no `]` after it. The lexer's bracket matching would find
  *    a `]` beyond the window.
  *  - An unclosed `[code]`. Raw blocks swallow everything up to their closing
@@ -209,24 +251,35 @@ function regionIsSelfContained(
   // Everything the guard needs survives into the tree, because the parser now
   // keeps what it used to drop: a bare `[` and an orphaned `[/tag]` are both
   // `text` leaves holding exactly their own source.
+  //
+  // Leaves inside a raw block are content, not syntax: `[code][/b][/code]`
+  // holds a text leaf that IS `[/b]`, and the lexer never matched brackets
+  // in there to begin with. The flag rides the stack beside the node.
   const stack: GreenNode[] = [region]
+  const inCode: boolean[] = [false]
   while (stack.length > 0) {
     const node = stack.pop()!
+    const code = inCode.pop()! || node.kind === 'code' || node.kind === 'inline_code'
 
     if (node.children.length === 0) {
-      if (node.kind === 'text') {
+      if (node.kind === 'text' && !code) {
         // The lexer emits a bare '[' as text exactly when it found no matching
         // bracket — the one case where its decision depends on what follows.
         if (node.text === '[') return false
 
+        // A stray closer of a real tag: an ancestor's, or a discarded one —
+        // see the header. `isKnownTagName` spans every dialect, so a tag the
+        // active dialect happens not to know costs a rebuild rather than a
+        // wrong tree.
         const orphan = ORPHAN_CLOSE_RE.exec(node.text)
-        // Compare by node kind, not tag name: `[centre]` and `[center]` are
-        // the same element and either spelling closes it.
-        if (orphan !== null && ancestorKinds.has(tagToNodeKind(orphan[1]))) return false
+        if (orphan !== null && isKnownTagName(orphan[1])) return false
       }
       continue
     }
-    for (const child of node.children as readonly GreenNode[]) stack.push(child)
+    for (const child of node.children as readonly GreenNode[]) {
+      stack.push(child)
+      inCode.push(code)
+    }
   }
 
   // Tags still open at the end of the window are exactly the rightmost chain of
@@ -250,29 +303,6 @@ function regionIsSelfContained(
   return true
 }
 
-/**
- * Does every `[` before `end` find its `]` before `end` too?
- *
- * If one does not, the lexer's bracket matching for it scans onward into the
- * region we are about to re-parse — and an edit that adds a `]` there (or
- * deletes a `[` that was keeping the nesting depth up) changes what that
- * OUTSIDE bracket means. The region would be re-parsed correctly and the text
- * before it would silently become something else.
- *
- * A plain depth count is enough and is exact for this question: the lexer
- * pairs brackets with a stack, so a `[` is unmatched precisely when the depth
- * never returns to its level.
- */
-function bracketsCloseBefore(source: string, end: number): boolean {
-  let depth = 0
-  for (let i = 0; i < end; i++) {
-    const c = source.charCodeAt(i)
-    if (c === 91 /* [ */) depth++
-    else if (c === 93 /* ] */ && depth > 0) depth--
-  }
-  return depth === 0
-}
-
 export interface IncrementalParserOptions {
   /** Override `MIN_SOURCE_LENGTH`. Set to 0 to always attempt a splice. */
   minSourceLength?: number
@@ -285,6 +315,25 @@ export class IncrementalParser {
   private readonly maxRegionFraction: number
 
   /**
+   * Bracket-depth summary of the source, for the boundary check below.
+   *
+   * Keyed on the green root it was last synchronised with: a reparse whose
+   * `oldGreen` is that root brings the index across the edit by re-reading a
+   * few KB around it; any other root (a `rebuild`, a model handed a foreign
+   * tree) rebuilds it with one scan — the same scan every keystroke used to
+   * pay. See `BracketDepthIndex` for why the summary is exact.
+   */
+  private readonly brackets = new BracketDepthIndex()
+  private bracketsRoot: GreenNode | null = null
+  /**
+   * Whether, within the current `reparse` call, the index has been brought to
+   * describe `newSource`. Explicit rather than inferred: a length comparison
+   * would confuse an unsynchronised index over an older text of the same
+   * length (insert one character, delete one) with a synchronised one.
+   */
+  private bracketsSynced = false
+
+  /**
    * The thresholds are constructor options because they are performance
    * tuning, not semantics: the tree that comes out is the same either way, so
    * a caller with a different document profile — or a test that wants to
@@ -294,6 +343,57 @@ export class IncrementalParser {
   constructor(options: IncrementalParserOptions = {}) {
     this.minSourceLength = options.minSourceLength ?? MIN_SOURCE_LENGTH
     this.maxRegionFraction = options.maxRegionFraction ?? MAX_REGION_FRACTION
+  }
+
+  /**
+   * Characters the last boundary check actually read — the tail of one index
+   * piece, never the prefix. Exposed so a test can pin the bound.
+   */
+  get lastBoundaryScan(): number {
+    return this.brackets.lastScanned
+  }
+
+  /**
+   * Does every `[` before `end` find its `]` before `end` too?
+   *
+   * If one does not, the lexer's bracket matching for it scans onward into
+   * the region we are about to re-parse — and an edit that adds a `]` there
+   * (or deletes a `[` that was keeping the nesting depth up) changes what that
+   * OUTSIDE bracket means. The region would be re-parsed correctly and the
+   * text before it would silently become something else.
+   *
+   * A clamped depth count is exact for this question: the lexer pairs
+   * brackets with a stack, so a `[` is unmatched precisely when the depth
+   * never returns to its level. The count used to be a scan of the whole
+   * prefix on every keystroke — 22% of a keystroke with the caret at the end
+   * of a post, 1.4 ms on the 547 KB fixture. The index answers it from piece
+   * summaries, reading at most one piece of text.
+   *
+   * The index is brought across the edit here, not earlier: the paths that
+   * return before this point never needed it, and on the next call the
+   * root-key mismatch simply rebuilds it. The caller re-keys it on whatever
+   * green root it returns.
+   */
+  private bracketsCloseBefore(
+    oldGreen: GreenNode,
+    change: TextChange,
+    newSource: string,
+    end: number,
+  ): boolean {
+    const inSync = this.bracketsRoot === oldGreen
+    // Unkeyed while it is being moved: should the parse callback throw
+    // halfway through this call, no later call can mistake the half-moved
+    // index for a description of any tree.
+    this.bracketsRoot = null
+    if (inSync) {
+      this.brackets.applyChange(newSource, change.start, change.end, change.text.length)
+    } else {
+      this.brackets.rebuild(newSource)
+    }
+    // Describes `newSource` from here on, whatever the outcome; the key is
+    // set once the root that owns that text exists (see `keyed`).
+    this.bracketsSynced = true
+    return this.brackets.depthAt(newSource, end) === 0
   }
 
   /**
@@ -313,6 +413,18 @@ export class IncrementalParser {
     const startTime = performance.now()
     const delta = change.text.length - (change.end - change.start)
 
+    // Whatever the outcome, the bracket index ends up keyed on the tree whose
+    // text it describes — or on nothing, so the next call rebuilds it. A call
+    // that returns before the boundary check never moved the index, and the
+    // tree it returns describes a text the index does not; the key it had
+    // (the previous root) is useless from here on, since the next call comes
+    // in with this call's root.
+    this.bracketsSynced = false
+    const keyed = (result: ReparseResult): ReparseResult => {
+      this.bracketsRoot = this.bracketsSynced ? result.green : null
+      return result
+    }
+
     const fullRebuild = (reason: FallbackReason, tFind: number): ReparseResult => {
       const t0 = performance.now()
       const green = parseCallback(newSource)
@@ -321,7 +433,7 @@ export class IncrementalParser {
       const red = buildRedCallback(green)
       const tBuild = performance.now() - t1
       const total = performance.now() - startTime
-      return {
+      return keyed({
         green,
         red,
         affectedNodes: [red],
@@ -336,7 +448,8 @@ export class IncrementalParser {
         },
         path: 'full_rebuild',
         reason,
-      }
+        window: null,
+      })
     }
 
     if (newSource.length < this.minSourceLength) {
@@ -373,7 +486,7 @@ export class IncrementalParser {
     if (region.length > (newSource.length + 1) * this.maxRegionFraction) {
       return fullRebuild('region-too-large', tFind)
     }
-    if (!bracketsCloseBefore(newSource, windowStart)) {
+    if (!this.bracketsCloseBefore(oldGreen, change, newSource, windowStart)) {
       return fullRebuild('open-bracket-before', tFind)
     }
     const tBoundary = performance.now() - tBoundary0
@@ -405,7 +518,7 @@ export class IncrementalParser {
     const tBuild = performance.now() - tBuild0
 
     const total = performance.now() - startTime
-    return {
+    return keyed({
       green: newGreenRoot,
       red: newRed,
       affectedNodes: [newRed],
@@ -419,7 +532,9 @@ export class IncrementalParser {
         other: Math.max(0, total - tFind - tBoundary - tParse - tBuild - tMutate),
       },
       path: 'incremental',
-    }
+      // The region, in the coordinates of the text it now describes.
+      window: { start: windowStart, end: windowEnd + delta },
+    })
   }
 
   /**

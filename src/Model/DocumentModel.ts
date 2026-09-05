@@ -584,6 +584,8 @@ export class DocumentModel {
       diagnostics: result.diagnostics,
       duration: result.duration,
       nodesAnalyzed: result.nodesAnalyzed,
+      scope: result.scope,
+      window: result.window,
     }
 
     // Attaching diagnostics to nodes used to happen here, and needed an id→node
