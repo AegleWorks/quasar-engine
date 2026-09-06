@@ -1,6 +1,6 @@
 {
   "name": "@miliastry/quasar",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "description": "Quasar Document Engine - Advanced BBCode/Markdown/HTML AST Engine",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
