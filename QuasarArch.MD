@@ -2071,4 +2071,4 @@ class MyTransformer implements Transformer {
 
 > *Este documento fue generado mediante análisis estructural del código fuente de Quasar. Cada afirmación está respaldada por la implementación real en `packages/quasar/src/`. Para la referencia más actualizada, consulta los archivos fuente directamente.*
 >
-> *Quasar es software libre bajo licencia MIT. Copyright (c) 2026 hxovc.*
+> *Copyright (c) 2026 hxovc.*
