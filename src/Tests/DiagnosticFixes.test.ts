@@ -118,6 +118,30 @@ describe('correcciones de diagnóstico', () => {
     })
   })
 
+  describe('box-missing-equals', () => {
+    it('añade = al [box] que no lo lleva', () => {
+      const source = '[box]contenido[/box]'
+      expect(applyFix(source, onlyFix(source, 'box-missing-equals'))).toBe('[box=]contenido[/box]')
+    })
+
+    it('no cambia el render: [box] y [box=] renderizan idéntico en Quasar', () => {
+      const source = '[box]contenido[/box]'
+      const fixed = applyFix(source, onlyFix(source, 'box-missing-equals'))
+      expect(renderNormalized(fixed)).toBe(renderNormalized(source))
+    })
+
+    it('deja el documento sin ese hallazgo', () => {
+      const source = '[box]contenido[/box]'
+      const fixed = applyFix(source, onlyFix(source, 'box-missing-equals'))
+      expect(diagnose(fixed).map(d => d.code)).not.toContain('box-missing-equals')
+    })
+
+    it('no se emite si el box ya lleva =', () => {
+      expect(diagnose('[box=]contenido[/box]').map(d => d.code)).not.toContain('box-missing-equals')
+      expect(diagnose('[box=Mi Titulo]contenido[/box]').map(d => d.code)).not.toContain('box-missing-equals')
+    })
+  })
+
   describe('lo que NO se corrige solo', () => {
     it('nested-tags-in-code no trae corrección automática', () => {
       // Quitar las etiquetas cambiaría la intención del autor, que puede

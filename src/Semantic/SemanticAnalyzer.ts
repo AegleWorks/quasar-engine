@@ -2213,6 +2213,49 @@ export class SemanticAnalyzer {
         return diagnostics.length > 0 ? diagnostics : null
       },
     })
+
+    // ── Box missing '=' validator ────────────────────────────────
+    // In osu!, [box] without '=' is not parsed as a collapsible box.
+    // Miliastry can preview it as a default-titled box, but osu! forum compatibility
+    // requires [box=] (or [box=Title]).
+    this.register({
+      code: 'box-missing-equals',
+      severity: 'warning',
+      kinds: ['box'],
+      validate: (node, ctx) => {
+        if (node.text.startsWith('=')) return null
+        const openEnd = node.innerStart > node.range.start ? node.innerStart : node.range.start + 5
+        if (node.range.start < 0 || openEnd > ctx.source.length) return null
+        const openTag = ctx.source.slice(node.range.start, openEnd)
+        if (openTag.includes('=')) return null
+
+        const fixes: DiagnosticFix[] = [
+          {
+            description: "Add '=' to [box]",
+            isAutomatic: true,
+            operations: [
+              {
+                kind: 'replace_text',
+                range: { start: node.range.start, end: openEnd },
+                newText: '[box=]',
+              },
+            ],
+          },
+        ]
+
+        return createDiagnostic(
+          'box-missing-equals',
+          "[box] without '=' can be previewed in Miliastry, but osu! requires [box=] to parse it correctly",
+          'warning',
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: { start: node.range.start, end: openEnd },
+            fixes,
+          },
+        )
+      },
+    })
   }
 
   /**
