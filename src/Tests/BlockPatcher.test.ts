@@ -223,6 +223,30 @@ describe('patchBlocksInto — keyed reconciliation', () => {
     expect(stripIds(el.innerHTML).replace(/ open=""/g, '')).toBe(stripIds(elExpected.innerHTML))
   })
 
+  it('modificar un box sin titulo [box] agregándole titulo [box=Titulo] actualiza el summary y conserva el nodo', () => {
+    const model = new BBCodeDocumentModel({ source: '[box]contenido[/box]' })
+    const el = document.createElement('div')
+    patchBlocksInto(el, model.redRoot!, { renderer })
+
+    const box = el.querySelector('details')!
+    expect(box).not.toBeNull()
+    box.open = true
+    expect(box.querySelector('summary')?.textContent).toBe('Box')
+
+    // El usuario añade título al box: [box=Mi Titulo Nuevo]contenido[/box]
+    model.applyTextUpdate('[box=Mi Titulo Nuevo]contenido[/box]')
+    model.ensureAnalyzed()
+
+    const stats = patchBlocksInto(el, model.redRoot!, { renderer })
+    expect(stats.mode).toBe('blocks')
+
+    // El nodo es el MISMO, sigue abierto y el summary se actualizó correctamente
+    expect(el.querySelector('details')).toBe(box)
+    expect(box.open).toBe(true)
+    expect(box.querySelector('summary')?.textContent).toBe('Mi Titulo Nuevo')
+    expect(box.querySelector('.bbcode-box-body')?.textContent).toBe('contenido')
+  })
+
   it('un documento nuevo en el mismo contenedor (ids regenerados) cae a full rebuild', () => {
     const modelA = new BBCodeDocumentModel({ source: 'a\n\nb\n\nc' })
     const modelB = new BBCodeDocumentModel({ source: 'x\n\ny\n\nz\n\nw' })

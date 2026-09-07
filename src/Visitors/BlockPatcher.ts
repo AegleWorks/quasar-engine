@@ -41,7 +41,7 @@
 
 import { RedNode } from '../Syntax/RedNode'
 import { HTMLRenderer } from './HTMLRenderer'
-import { morphHTML } from './DOMMorpher'
+import { morphHTML, morphElement } from './DOMMorpher'
 import type { TextChangeRange } from '../Incremental/ChangeTracker'
 
 export interface PatchBlocksOptions {
@@ -279,7 +279,6 @@ function shouldMorphInPlace(
   return (
     run.kind === 'element' &&
     !!run.node.id &&
-    run.node.children.length > 0 &&
     canMorphInPlace(run.node) &&
     renderedTag(run.html) === element.tagName
   )
@@ -469,13 +468,19 @@ function reconcileKeyed(
       }
 
       if (element.nodeType === 1 && shouldMorphInPlace(element as Element, run)) {
-        // Element with children and a matching tag: morph its inner content in
-        // place, preserving the element (and runtime state like an open
-        // `<details>`). Tag mismatch (kind change at a stable slot) or wrapper
-        // kinds (code/svg/imagemap) go the replace path below.
-        morphHTML(element as HTMLElement, renderer.renderChildren(run.node))
+        // Element with a matching tag: morph its attributes and children in
+        // place via morphElement, preserving the element identity and runtime state
+        // (such as an open <details>, its <summary> and title, or media playback).
+        // Tag mismatch (kind change at a stable slot) or wrapper kinds
+        // (code/svg/imagemap) go the replace path below.
+        const newEl = nodeFromHtml(run.html)
+        if (newEl && newEl.nodeType === 1 && (newEl as Element).tagName === (element as Element).tagName) {
+          morphElement(element as Element, newEl as Element)
+        } else {
+          container.replaceChild(newEl, element)
+        }
       } else {
-        // Text run, an element leaf (img/video/audio/`<br>`), a kind whose tag
+        // Text run, an element leaf (img/video/audio/<br>), a kind whose tag
         // changed, or a wrapper renderer kind: the node's own structure must
         // change — replace outright.
         container.replaceChild(nodeFromHtml(run.html), element)
@@ -909,7 +914,12 @@ function reconcileWindowed(
       }
 
       if (element.nodeType === 1 && shouldMorphInPlace(element as Element, run)) {
-        morphHTML(element as HTMLElement, renderer.renderChildren(run.node))
+        const newEl = nodeFromHtml(run.html)
+        if (newEl && newEl.nodeType === 1 && (newEl as Element).tagName === (element as Element).tagName) {
+          morphElement(element as Element, newEl as Element)
+        } else {
+          container.replaceChild(newEl, element)
+        }
       } else {
         container.replaceChild(nodeFromHtml(run.html), element)
       }
