@@ -215,6 +215,21 @@ function blockKey(node: RedNode, index: number): string {
   return node.id ?? `__block_${index}`
 }
 
+/**
+ * Blocks whose HTML is NOT a function of the node alone.
+ *
+ * A newline leaf renders `<br>` or nothing depending on which tags surround
+ * it — `[/box]\n` loses the newline, `text\n` keeps it (see
+ * `HTMLRenderer.isNewlineSwallowed`). The block cache is keyed by node
+ * identity, so reordering blocks without touching them keeps every id and
+ * every cached fragment while changing what the newlines between them mean.
+ * Re-rendering them unconditionally costs a couple of sibling hops and keeps
+ * the patched DOM equal to a full render, which is the whole contract.
+ */
+function isContextSensitive(node: RedNode): boolean {
+  return node.kind === 'spacing' || node.kind === 'empty_line'
+}
+
 /** Build a DOM node from an HTML fragment (first child), decoding entities. */
 function nodeFromHtml(html: string): Node {
   const t = document.createElement('template')
@@ -400,7 +415,7 @@ function reconcileKeyed(
   let patched = 0
   try {
     runs = buildRuns(blocks, keys, (node, key) => {
-      if (cache.lastNode.get(key) === node) {
+      if (cache.lastNode.get(key) === node && !isContextSensitive(node)) {
         return { html: cache.lastHtml.get(key) ?? '', kind: cache.lastClass.get(key) ?? 'none' }
       }
       const html = renderer.render(node)
@@ -644,7 +659,7 @@ function reconcileWindowed(
   let runs: PatchRun[]
   try {
     runs = buildRuns(blocks, keys, (node, key) => {
-      if (cache.lastNode.get(key) === node) {
+      if (cache.lastNode.get(key) === node && !isContextSensitive(node)) {
         return { html: cache.lastHtml.get(key) ?? '', kind: cache.lastClass.get(key) ?? 'none' }
       }
       const html = renderer.render(node)

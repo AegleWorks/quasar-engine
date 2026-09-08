@@ -199,12 +199,49 @@ function hasAttrValue(value: unknown): boolean {
   return value !== undefined && value !== null && String(value) !== ''
 }
 
-function normalizeColorToHex(color: string): string {
+/**
+ * Expande un cuerpo hexadecimal a los 6 dígitos que exige osu, o `null` si no
+ * es un hex de longitud reconocible (3, 4, 6 u 8).
+ *
+ * El canal alfa se descarta a propósito: osu no soporta transparencia en
+ * ninguna forma, así que la alternativa a perderlo es publicar un `[color=…]`
+ * que su parser rechaza y deja como texto literal en la página.
+ */
+function expandHexForOsu(body: string): string | null {
+  if (!/^[0-9a-fA-F]+$/.test(body)) return null
+  switch (body.length) {
+    case 3:
+      return body[0] + body[0] + body[1] + body[1] + body[2] + body[2]
+    case 4:
+      // RGBA corto: expandimos RGB y tiramos el alfa.
+      return body[0] + body[0] + body[1] + body[1] + body[2] + body[2]
+    case 6:
+      // Ya es legal: se devuelve tal cual, sin tocar mayúsculas del autor.
+      return body
+    case 8:
+      // RGBA largo: los dos últimos dígitos son el alfa.
+      return body.slice(0, 6)
+    default:
+      return null
+  }
+}
+
+/**
+ * `target` decide si además de convertir `rgb()` hay que adaptar el hex a la
+ * gramática de osu (`BBCodeForDB::parseColour`), que sólo acepta `#` + 6
+ * dígitos hex o una secuencia puramente alfabética. Para 'miliastry' y 'lyne'
+ * el comportamiento es el de siempre: no se reescribe nada.
+ */
+function normalizeColorToHex(color: string, target: ExportTarget = 'miliastry'): string {
   if (!color) return color
   const trimmed = color.trim()
   // Un hex ya es canónico: bajarlo a minúsculas reescribía `[color=#FF0000]`
   // del autor en cada exportación, y `Analysis/RoundTrip` fija lo contrario.
-  if (trimmed.startsWith('#')) return trimmed
+  if (trimmed.startsWith('#')) {
+    if (target !== 'osu') return trimmed
+    const expanded = expandHexForOsu(trimmed.slice(1))
+    return expanded === null ? trimmed : `#${expanded}`
+  }
 
   const rgbMatch = trimmed.match(/^rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i)
   if (rgbMatch) {
@@ -212,6 +249,15 @@ function normalizeColorToHex(color: string): string {
     const g = parseInt(rgbMatch[2], 10).toString(16).padStart(2, '0')
     const b = parseInt(rgbMatch[3], 10).toString(16).padStart(2, '0')
     return `#${r}${g}${b}`.toLowerCase()
+  }
+
+  // Hex desnudo: osu exige el `#`, así que `ff0000` se publicaría roto. Sólo
+  // lo tratamos como hex si trae algún dígito; una palabra puramente
+  // alfabética (`red`, y también `beef`, que es hex válido) ya matchea la
+  // alternativa alfabética de osu y no hay que tocarla.
+  if (target === 'osu' && /\d/.test(trimmed)) {
+    const expanded = expandHexForOsu(trimmed)
+    if (expanded !== null) return `#${expanded}`
   }
 
   return trimmed
@@ -365,7 +411,7 @@ export class BBCodeExporter extends Visitor<string> {
           if (this.shouldResolveTokens() && col.startsWith('$')) {
             col = resolveTokenValue(col, this.tokenResolver)
           }
-          out = `[color=${normalizeColorToHex(col)}]${out}[/color]`
+          out = `[color=${normalizeColorToHex(col, this.target)}]${out}[/color]`
         }
         if (style.fontSize) {
           let size = style.fontSize
@@ -476,7 +522,7 @@ export class BBCodeExporter extends Visitor<string> {
         if (this.shouldResolveTokens() && color.startsWith('$')) {
           color = resolveTokenValue(color, this.tokenResolver)
         }
-        return `=${normalizeColorToHex(color)}`
+        return `=${normalizeColorToHex(color, this.target)}`
       } else if (node.kind === 'font' && hasAttrValue(node.metadata.font)) {
         let font = String(node.metadata.font)
         if (this.shouldResolveTokens() && font.startsWith('$')) {
@@ -589,7 +635,7 @@ export class BBCodeExporter extends Visitor<string> {
         if (this.shouldResolveTokens() && col.startsWith('$')) {
           col = resolveTokenValue(col, this.tokenResolver)
         }
-        return `=${normalizeColorToHex(col)}`
+        return `=${normalizeColorToHex(col, this.target)}`
       }
       if (this.shouldResolveTokens() && text.startsWith('=')) {
         let val = text.slice(1)

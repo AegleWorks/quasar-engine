@@ -34,6 +34,9 @@ export interface BoxDrawerOptions {
 const DEFAULT_DURATION_MS = 400
 /** Floor so an interruption near the end still reads as motion, not a snap. */
 const MIN_DURATION_MS = 120
+/** Clase de estado abierto del spoilerbox de osu, puesta en el contenedor. */
+const OSU_OPEN_CLASS = 'js-spoilerbox--open'
+
 /** easeOutCubic — fast to start, settles softly, no overshoot. */
 const DEFAULT_EASING = 'cubic-bezier(0.33, 1, 0.68, 1)'
 
@@ -50,7 +53,7 @@ interface DrawerState {
 }
 
 /** In-flight state per element; a WeakMap so morphed-away nodes are freed. */
-const running = new WeakMap<HTMLDetailsElement, DrawerState>()
+const running = new WeakMap<Element, DrawerState>()
 
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined'
@@ -65,12 +68,14 @@ function prefersReducedMotion(): boolean {
  * Exported so hosts that toggle boxes programmatically (a keyboard command, an
  * "expand all" action) go through the same animation as a click.
  */
-export function toggleBoxWithDrawer(
-  details: HTMLDetailsElement,
+function animateDrawer(
+  details: HTMLElement,
+  isOpen: () => boolean,
+  setOpen: (v: boolean) => void,
   options: BoxDrawerOptions = {}
 ): void {
   if (typeof details.animate !== 'function' || prefersReducedMotion()) {
-    details.open = !details.open
+    setOpen(!isOpen())
     return
   }
 
@@ -85,7 +90,7 @@ export function toggleBoxWithDrawer(
   // `details.open`: a closing box is kept open so its content stays visible, so
   // reading the attribute would report "open" and close it a second time,
   // making a mid-close click impossible to reverse.
-  const opening = previous ? !previous.opening : !details.open
+  const opening = previous ? !previous.opening : !isOpen()
 
   previous?.animation.cancel()
 
@@ -94,14 +99,14 @@ export function toggleBoxWithDrawer(
   // while the box grows or shrinks over it.
   let collapsed: number
   let expanded: number
-  if (details.open) {
+  if (isOpen()) {
     expanded = details.getBoundingClientRect().height
-    details.open = false
+    setOpen(false)
     collapsed = details.getBoundingClientRect().height
-    details.open = true
+    setOpen(true)
   } else {
     collapsed = details.getBoundingClientRect().height
-    details.open = true
+    setOpen(true)
     expanded = details.getBoundingClientRect().height
   }
 
@@ -133,12 +138,42 @@ export function toggleBoxWithDrawer(
   const settle = (finished: boolean) => {
     if (running.get(details)?.animation !== animation) return
     running.delete(details)
-    if (finished) details.open = opening
+    if (finished) setOpen(opening)
     details.style.overflow = restoreOverflow
   }
 
   animation.addEventListener('finish', () => settle(true))
   animation.addEventListener('cancel', () => settle(false))
+}
+
+/**
+ * Animate one `<details>` to its opposite state. Exported so hosts that toggle
+ * boxes programmatically go through the same animation as a click.
+ */
+export function toggleBoxWithDrawer(
+  details: HTMLDetailsElement,
+  options: BoxDrawerOptions = {}
+): void {
+  animateDrawer(details, () => details.open, (v) => { details.open = v }, options)
+}
+
+/**
+ * Lo mismo para la caja del dialecto osu, que no es un `<details>`: es
+ * `div.js-spoilerbox > a.js-spoilerbox__link + div.js-spoilerbox__body`, y su
+ * estado abierto es la clase `js-spoilerbox--open` en el contenedor. Marcado
+ * distinto, misma animación — y la misma razón para vivir aquí: Quasar es
+ * quien emite el marcado, así que también define cómo se abre.
+ */
+export function toggleSpoilerboxWithDrawer(
+  box: HTMLElement,
+  options: BoxDrawerOptions = {}
+): void {
+  animateDrawer(
+    box,
+    () => box.classList.contains(OSU_OPEN_CLASS),
+    (v) => box.classList.toggle(OSU_OPEN_CLASS, v),
+    options
+  )
 }
 
 /**
@@ -157,6 +192,17 @@ export function bindBoxDrawer(
 ): () => void {
   const handleClick = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null
+
+    // Dialecto osu: el marcado es div > a + div, sin <details> que interceptar.
+    const osuLink = target?.closest('.js-spoilerbox__link')
+    if (osuLink) {
+      const box = osuLink.closest('.js-spoilerbox')
+      if (!(box instanceof HTMLElement) || !root.contains(box)) return
+      e.preventDefault()   // el <a href="#"> saltaria al principio del documento
+      toggleSpoilerboxWithDrawer(box, options)
+      return
+    }
+
     const summary = target?.closest('summary')
     if (!summary) return
 

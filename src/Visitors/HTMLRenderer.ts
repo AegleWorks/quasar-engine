@@ -30,10 +30,21 @@ import {
 } from '../Tokens'
 
 export interface HTMLRendererOptions {
-  /** 
-   * Replicate osu! forum BBCode spacing quirks. 
-   * Defaults to true for full compatibility with Miliastry. 
-   * Set to false for a more logical, predictable rendering engine.
+  /**
+   * Replicate osu! forum BBCode spacing quirks.
+   *
+   * NO LO LEE NADIE desde que el motor implementa las reglas reales de
+   * consumo de saltos (ver {@link HTMLRenderer.NEWLINE_RULES}). Sólo gobernaba
+   * dos heurísticas sobre `[code]` que resultaron ser falsas — osu no se come
+   * ningún salto ANTES de un bloque, y el resto de las reglas nunca estuvo
+   * condicionado. El espaciado ya no es opcional: Miliastry es "osu con
+   * esteroides" y rompe líneas igual, así que apagarlo no tendría a qué
+   * volver.
+   *
+   * Se conserva porque es API pública del renderer y quitarlo rompería a quien
+   * lo pase. Es candidato a borrarse en la próxima ruptura de versión.
+   *
+   * @deprecated Sin efecto. El espaciado de osu es ahora incondicional.
    */
   osuBehaviour?: boolean
   /** Registry for resolving custom tags */
@@ -219,6 +230,25 @@ export class HTMLRenderer extends Visitor<string> {
    */
   private tableDepth = 0
 
+  /**
+   * ¿Estamos emitiendo el vocabulario de clases de osu!?
+   *
+   * osu estiliza box, spoilerbox, notice, imagemap, youtube, los alineados y
+   * los perfiles POR NOMBRE DE CLASE, no por estilo inline. Sobre una userpage
+   * real el HTML de Quasar salía sin estilo porque emitía su propio
+   * vocabulario (`<details>`, `.notice`, `.imagemap-container`…). Bajo
+   * `dialect: 'osu'` se emiten las clases y la estructura de osu; el resto de
+   * dialectos conserva la suya, que es la que sus hojas de estilo esperan.
+   */
+  private isOsu(): boolean {
+    return this.options.dialect === 'osu'
+  }
+
+  /** osu recorta los saltos pegados a la apertura y al cierre de box/notice. */
+  private static trimOsuEdges(html: string): string {
+    return html.replace(/^[\t ]*\r?\n/, '').replace(/\r?\n[\t ]*$/, '')
+  }
+
   private idAttr(node: RedNode): string {
     if (HTMLRenderer.idMode === 'none') return ''
     if (HTMLRenderer.idMode === 'all') return ` data-node-id="${node.id}"`
@@ -340,7 +370,7 @@ export class HTMLRenderer extends Visitor<string> {
       case 'strikethrough': return this.wrapInline('s', node)
       case 'inline_code': return this.wrapInline('code', node, 'class="inline"')
       case 'spoiler': return this.wrapInline('span', node, 'class="spoiler"')
-      case 'color': return this.wrapInline('span', node, this.colorStyle(node))
+      case 'color': return this.renderColor(node)
       case 'font_size': return this.wrapInline('span', node, this.fontSizeStyle(node))
       case 'font': return this.wrapInline('span', node, this.fontStyle(node))
       case 'url': return this.renderLink(node, 'url')
@@ -349,9 +379,9 @@ export class HTMLRenderer extends Visitor<string> {
       case 'image': return this.renderImage(node)
       case 'video': return this.renderVideo(node)
       case 'audio': return this.renderAudio(node)
-      case 'center': return this.wrapBlock('div', node, 'style="text-align:center;"')
-      case 'right': return this.wrapBlock('div', node, 'style="text-align:right;"')
-      case 'left': return this.wrapBlock('div', node, 'style="text-align:left;"')
+      case 'center': return this.renderAlignAs(node, 'center')
+      case 'right': return this.renderAlignAs(node, 'right')
+      case 'left': return this.renderAlignAs(node, 'left')
       // Sigue siendo siempre `h2`, como antes: el nivel de BBCode no mapea al
       // de HTML y un `[heading=9]` daría un `<h9>` inválido. `data-bare-level`
       // sólo anota que el 2 lo puso el renderer, para que el camino de vuelta
@@ -441,12 +471,10 @@ export class HTMLRenderer extends Visitor<string> {
       case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
       case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
-        if (this.options.osuBehaviour && this.isNextCodeBlock(node)) return '\n'
-        if (this.isTrailingBlockBoundary(node)) return '\n'
-        return this.isPrevBlockBoundary(node) ? '\n' : `<br${this.idAttr(node)}>`
+        if (this.isNewlineSwallowed(node)) return '\n'
+        return `<br${this.idAttr(node)}>`
       case 'empty_line':
-        if (this.options.osuBehaviour && this.isImmediateEmptyLineBeforeCode(node)) return '\n'
-        if (this.isTrailingBlockBoundary(node)) return '\n'
+        if (this.isNewlineSwallowed(node)) return '\n'
         return `<div class="bb-empty-line"${this.idAttr(node)}><br></div>`
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un
@@ -481,64 +509,223 @@ export class HTMLRenderer extends Visitor<string> {
     }
   }
 
+  // ─── Newline swallowing ─────────────────────────────────
+  //
+  // osu! turns newlines into `<br />` with one flat rule at the very end of
+  // `BBCodeFromDB::toHTML` — `str_replace("\n", '<br />')`. Every subtlety
+  // lives BEFORE that line: each block pass is a regex that eats the newlines
+  // touching its own tags, so those newlines are simply gone by the time the
+  // flat rule runs. The amount eaten differs per tag, and the asymmetries are
+  // not decorative:
+  //
+  //   parseBox      `\[box=…\]\n*`   `\n*\[/box\]\n?`
+  //   parseCode     `\[code\]\n*`    `\n*\[/code\]\n?`
+  //   parseNotice   `\[notice\]\n*`  `\n*\[/notice\]\n?`
+  //   parseList     `\s*\[\*\]`      `\s*\[/list\]\n?\n?`
+  //   parseQuote    `\[quote…\]\s*`  `\s*\[/quote\]\n?\n?`
+  //   parseHeading  —                `\[/heading\]\n?`
+  //   parseImagemap —                `\[/imagemap\]\n?`
+  //   parseAlignment  strtr of `[centre]\n` and `[/centre]\n` — exactly one
+  //
+  // Quasar used to approximate all of that with two neighbourhood heuristics
+  // (`isPrevBlockBoundary` / `isTrailingBlockBoundary`) that treated every
+  // block alike, so they over-ate at `[centre]`/`[/imagemap]` and under-ate at
+  // `[/list]`/`[/quote]`. This models the real rules instead.
+  //
+  // Deliberately NOT gated on the dialect: Miliastry is "osu with steroids"
+  // and has to break lines the same way. Blocks that only exist in Miliastry
+  // (tables, gallery, columns, scroll, …) have no osu counterpart to copy, so
+  // they keep the legacy behaviour via {@link HTMLRenderer.LEGACY_BLOCK_RULE}.
+
+  /** How many newlines a construct swallows around its own tags. */
+  private static readonly NEWLINE_RULES: Record<string, {
+    /** Newlines eaten right after the opening tag. */
+    afterOpen: 'all' | 'whitespace' | 'one' | 'none'
+    /** Newlines eaten right before the closing tag. */
+    beforeClose: 'all' | 'whitespace' | 'none'
+    /** Whitespace eaten right before the OPENING tag (`\s*\[\*\]`). */
+    beforeOpen: 'whitespace' | 'none'
+    /** Newlines eaten right after the closing tag. */
+    afterClose: number
+  }> = {
+    // `\n*` inside both edges, one newline after the close.
+    box:        { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
+    boxw:       { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
+    spoilerbox: { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
+    notice:     { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
+    wnotice:    { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
+    code:       { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
+    // `\s*` — not just newlines — and TWO newlines after the close.
+    quote:      { afterOpen: 'whitespace', beforeClose: 'whitespace', beforeOpen: 'none', afterClose: 2 },
+    // `[list]` itself eats nothing after its opening tag: the pass that eats
+    // is `\s*\[\*\]`, which needs an item to follow. `[list]\n\nloose text`
+    // keeps both newlines; `[list]\n[*]a` loses one to the item, not the list.
+    list:       { afterOpen: 'none', beforeClose: 'whitespace', beforeOpen: 'none', afterClose: 2 },
+    // `\s*\[\*\]`. The matching `[/*]` of the table exists only in legacy
+    // phpBB rows — `BBCodeForDB` never emits one — so the item's close is
+    // width-less here and its two-newline budget is unreachable by design;
+    // `[*]a\n\n[*]b` loses both newlines to the NEXT item's `\s*`, which is
+    // the same output by a different route.
+    list_item:  { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'whitespace', afterClose: 0 },
+    // strtr with `[centre]\n` / `[/centre]\n`: exactly one on each outer edge,
+    // and nothing before the close — `x\n[/centre]` really does keep its `<br>`.
+    center:     { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
+    left:       { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
+    right:      { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
+    align:      { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
+    heading:    { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
+    imagemap:   { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
+    // `[img]` is inline in osu and swallows nothing at all.
+    image:      { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 0 },
+    document:   { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 0 },
+  }
+
+  /**
+   * What a Miliastry-only block does. This is what the old
+   * `isPrevBlockBoundary` / `isTrailingBlockBoundary` pair did for every block:
+   * eat the first newline after the open, every newline before the close, and
+   * the first newline after the close.
+   */
+  private static readonly LEGACY_BLOCK_RULE = {
+    afterOpen: 'one', beforeClose: 'all', beforeOpen: 'none', afterClose: 1,
+  } as const
+
+  /**
+   * Containers whose opening tag occupies no source text, so a backwards scan
+   * has to walk straight through them.
+   */
+  private static readonly WIDTHLESS_OPEN = new Set(['paragraph', 'group'])
+
+  /**
+   * Same for the closing side. `list_item` is here because `[/*]` is never
+   * written: an item ends where the next `[*]` or the `[/list]` begins, so
+   * `\s*\[/list\]` sees the newline that Quasar stores inside the item.
+   */
+  private static readonly WIDTHLESS_CLOSE = new Set(['paragraph', 'group', 'list_item'])
+
+  private newlineRule(kind: string) {
+    const rule = HTMLRenderer.NEWLINE_RULES[kind]
+    if (rule) return rule
+    return this.BLOCK_TAGS.has(kind) ? HTMLRenderer.LEGACY_BLOCK_RULE : null
+  }
+
+  private static isNewlineNode(node: RedNode): boolean {
+    return node.kind === 'spacing' || node.kind === 'empty_line'
+  }
+
+  private static isBlankText(node: RedNode): boolean {
+    return node.kind === 'text' && node.children.length === 0 && node.text.trim() === ''
+  }
+
+  /**
+   * Whether this `spacing` / `empty_line` leaf is eaten by a neighbouring tag
+   * and therefore renders nothing.
+   *
+   * Each leaf is exactly ONE source newline (the parser splits a run into one
+   * node per `\n`), so the four scans below can be read straight off the
+   * regexes they mirror. A newline eaten by any of them is eaten: osu's passes
+   * run in a fixed order, but since a consumed newline is consumed whichever
+   * pass claimed it, the union is enough — the per-pass order only matters for
+   * a budget that could be spent elsewhere, and budgets here are counted from
+   * the tag outwards, exactly as `\n?\n?` counts.
+   */
+  private isNewlineSwallowed(node: RedNode): boolean {
+    return this.eatenByOpeningTag(node)
+      || this.eatenByClosingTag(node)
+      || this.eatenAfterClosingTag(node)
+      || this.eatenBeforeOpeningTag(node)
+  }
+
+  /** `\[box\]\n*`, `\[quote\]\s*`, `[centre]\n`. */
+  private eatenByOpeningTag(node: RedNode): boolean {
+    let cur: RedNode = node
+    let newlinesBetween = 0
+    let blankBetween = false
+    for (;;) {
+      const prev = cur.previousSibling
+      if (prev) {
+        if (HTMLRenderer.isNewlineNode(prev)) { newlinesBetween++; cur = prev; continue }
+        if (HTMLRenderer.isBlankText(prev)) { blankBetween = true; cur = prev; continue }
+        return false
+      }
+      const parent = cur.parent
+      if (!parent) return false
+      if (HTMLRenderer.WIDTHLESS_OPEN.has(parent.kind)) { cur = parent; continue }
+      const rule = this.newlineRule(parent.kind)
+      if (!rule) return false
+      switch (rule.afterOpen) {
+        case 'whitespace': return true
+        // `\n*` matches newlines only: a stray space breaks the run.
+        case 'all': return !blankBetween
+        case 'one': return !blankBetween && newlinesBetween === 0
+        default: return false
+      }
+    }
+  }
+
+  /** `\n*\[/box\]`, `\s*\[/quote\]`, `\s*\[/list\]`. */
+  private eatenByClosingTag(node: RedNode): boolean {
+    let cur: RedNode = node
+    let blankBetween = false
+    for (;;) {
+      const next = cur.nextSibling
+      if (next) {
+        if (HTMLRenderer.isNewlineNode(next)) { cur = next; continue }
+        if (HTMLRenderer.isBlankText(next)) { blankBetween = true; cur = next; continue }
+        return false
+      }
+      const parent = cur.parent
+      if (!parent) return false
+      if (HTMLRenderer.WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
+      const rule = this.newlineRule(parent.kind)
+      if (!rule) return false
+      switch (rule.beforeClose) {
+        case 'whitespace': return true
+        case 'all': return !blankBetween
+        default: return false
+      }
+    }
+  }
+
+  /** `\[/box\]\n?`, `\[/list\]\n?\n?`. */
+  private eatenAfterClosingTag(node: RedNode): boolean {
+    let cur: RedNode = node
+    let newlinesBetween = 0
+    for (;;) {
+      const prev = cur.previousSibling
+      if (!prev) {
+        const parent = cur.parent
+        if (parent && HTMLRenderer.WIDTHLESS_OPEN.has(parent.kind)) { cur = parent; continue }
+        return false
+      }
+      if (HTMLRenderer.isNewlineNode(prev)) { newlinesBetween++; cur = prev; continue }
+      // Descend to whatever real closing tag sits immediately to our left.
+      let closer: RedNode = prev
+      while (HTMLRenderer.WIDTHLESS_CLOSE.has(closer.kind) && closer.children.length > 0) {
+        closer = closer.children[closer.children.length - 1]
+      }
+      const rule = this.newlineRule(closer.kind)
+      return rule !== null && newlinesBetween < rule.afterClose
+    }
+  }
+
+  /** `\s*\[\*\]` — the only pass that eats whitespace BEFORE an opening tag. */
+  private eatenBeforeOpeningTag(node: RedNode): boolean {
+    let cur: RedNode = node
+    for (;;) {
+      const next = cur.nextSibling
+      if (next) {
+        if (HTMLRenderer.isNewlineNode(next) || HTMLRenderer.isBlankText(next)) { cur = next; continue }
+        return this.newlineRule(next.kind)?.beforeOpen === 'whitespace'
+      }
+      const parent = cur.parent
+      if (!parent) return false
+      if (HTMLRenderer.WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
+      return false
+    }
+  }
+
   // ─── Render Helpers ─────────────────────────────────────
-
-  /** osu! quirk: newlines immediately preceding a [code] block are completely ignored */
-  private isNextCodeBlock(node: RedNode): boolean {
-    let next = node.nextSibling
-    while (next && (next.kind === 'spacing' || next.kind === 'empty_line')) {
-      next = next.nextSibling
-    }
-    return next?.kind === 'code'
-  }
-
-  /** Checks if this is the LAST empty_line right before a code block (skipping only spacing) */
-  private isImmediateEmptyLineBeforeCode(node: RedNode): boolean {
-    let next = node.nextSibling
-    while (next && next.kind === 'spacing') {
-      next = next.nextSibling
-    }
-    return next?.kind === 'code'
-  }
-
-  private isPrevBlockBoundary(node: RedNode): boolean {
-    let prev = node.previousSibling
-    while (prev) {
-      if (prev.kind === 'spacing' || prev.kind === 'empty_line') {
-        prev = prev.previousSibling
-        continue
-      }
-      if (prev.kind === 'text' && prev.text.trim() === '') {
-        prev = prev.previousSibling
-        continue
-      }
-      break
-    }
-    
-    if (prev && this.BLOCK_TAGS.has(prev.kind) && prev.kind !== 'image' && prev.kind !== 'imagemap') return true
-    if (!prev && node.parent && this.BLOCK_TAGS.has(node.parent.kind) && node.parent.kind !== 'image' && node.parent.kind !== 'imagemap') return true
-
-    return false
-  }
-
-  private isTrailingBlockBoundary(node: RedNode): boolean {
-    let next = node.nextSibling
-    while (next) {
-      if (next.kind === 'spacing' || next.kind === 'empty_line') {
-        next = next.nextSibling
-        continue
-      }
-      if (next.kind === 'text' && next.text.trim() === '') {
-        next = next.nextSibling
-        continue
-      }
-      break
-    }
-    if (!next && node.parent && this.BLOCK_TAGS.has(node.parent.kind) && node.parent.kind !== 'document') {
-      return true
-    }
-    return false
-  }
 
   private renderError(node: RedNode): string {
     const errorMsg = this.escapeHtml((node.metadata?.message as string) || node.text || 'Syntax Error')
@@ -600,6 +787,45 @@ export class HTMLRenderer extends Visitor<string> {
 
   /** Read a metadata field, falling back to the raw tag attribute. */
 
+  /**
+   * Lo único que osu! acepta en `[color=…]`.
+   *
+   * Su `BBCodeForDB::parseColour` sella el tag con un uid sólo si el valor
+   * matchea `#[[:xdigit:]]{6}` o `[[:alpha:]]+` — nada más. No valida que el
+   * nombre sea un color CSS de verdad (`banana` pasa), pero `#fff`, `#ffffffff`,
+   * `rgb(...)`, `$token` o un hex sin `#` no pasan. Sin uid, la segunda pasada
+   * no ve el tag y el opener *y* el closer quedan como texto en la página.
+   */
+  private static readonly OSU_COLOR_RE = /^(?:#[0-9a-fA-F]{6}|[a-zA-Z]+)$/
+
+  /**
+   * `[color]` con el vocabulario de cada dialecto.
+   *
+   * Miliastry (y Lyne) aceptan a propósito más que osu: `#RGB`, `#RGBA`, un
+   * `$token` de diseño, nombres propios. Bajo `dialect: 'osu'` eso es una
+   * mentira: el editor pintaría color donde la página publicada muestra el
+   * BBCode crudo. Así que replicamos lo que hace osu — literal el opener,
+   * literal el closer, y los hijos renderizados normalmente en el medio.
+   *
+   * El chequeo mira el texto crudo del atributo, no el valor saneado: osu
+   * matchea sobre la fuente, así que `[color="#ffffff"]` (con comillas) también
+   * se le escapa.
+   */
+  private renderColor(node: RedNode): string {
+    if (this.options.dialect === 'osu') {
+      const text = node.text || ''
+      const eq = text.indexOf('=')
+      // Sin `=` en el texto el nodo no vino del parser de BBCode (import de
+      // HTML, por ejemplo): ahí el único valor disponible es el de metadata.
+      const raw = eq >= 0 ? text.slice(eq + 1) : (text ? '' : nodeAttrValue(node, 'color'))
+      if (!HTMLRenderer.OSU_COLOR_RE.test(raw)) {
+        const opener = eq >= 0 ? `[color${text}]` : `[${text || 'color'}]`
+        return this.escapeHtml(opener) + this.renderChildren(node) + this.escapeHtml('[/color]')
+      }
+    }
+    return this.wrapInline('span', node, this.colorStyle(node))
+  }
+
   private colorStyle(node: RedNode): string {
     const color = sanitizeColor(nodeAttrValue(node, 'color'), this.tokenResolver)
     return color ? `style="color:${color};"` : ''
@@ -653,6 +879,15 @@ export class HTMLRenderer extends Visitor<string> {
         const ext = link.external ? ' target="_blank" rel="noopener noreferrer"' : ''
         return `<strong${entity}><a${this.idAttr(node)} href="${this.escapeHtml(link.href)}"${ext}>${content}</a></strong>`
       }
+    }
+    if (type === 'profile' && this.isOsu()) {
+      // Sacado de los fixtures `basic_profile*` de osu-web, no adivinado: el
+      // enlace es un `<a>` pelado (nada de `<strong>`), y `data-user-id` lleva
+      // el id numérico cuando `[profile=N]` lo trae y `@` + el texto crudo
+      // cuando no. El href es ese mismo valor, URL-encoded.
+      const key = val || `@${this.collectNodeText(node)}`
+      const href = `https://osu.ppy.sh/users/${encodeURIComponent(key)}`
+      return `<a${this.idAttr(node)}${entity} class="user-name js-usercard" data-user-id="${this.escapeHtml(key)}" href="${href}">${content}</a>`
     }
     if (type === 'profile') {
       const url = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
@@ -717,7 +952,11 @@ export class HTMLRenderer extends Visitor<string> {
     if (ytMatch) id = ytMatch[1]
     // `data-youtube` es lo que deja al converter HTML→BBCode reconocer este
     // iframe. Sin él el vídeo volvía como un `group` vacío: se perdía entero.
-    return `<iframe${this.idAttr(node)} class="bb-youtube" data-youtube="${this.escapeHtml(id)}" src="https://www.youtube.com/embed/${this.escapeHtml(id)}" frameborder="0" allowfullscreen></iframe>`
+    // Las clases de osu van en el iframe mismo, no en un div contenedor: son
+    // las que le dan la caja 16:9. Y su `src` lleva siempre `?rel=0`.
+    const cls = this.isOsu() ? 'u-embed-wide u-embed-wide--bbcode' : 'bb-youtube'
+    const rel = this.isOsu() ? '?rel=0' : ''
+    return `<iframe${this.idAttr(node)} class="${cls}" data-youtube="${this.escapeHtml(id)}" src="https://www.youtube.com/embed/${this.escapeHtml(id)}${rel}" frameborder="0" allowfullscreen></iframe>`
   }
 
   private renderAudio(node: RedNode): string {
@@ -753,6 +992,13 @@ export class HTMLRenderer extends Visitor<string> {
       const content = this.renderChildren(node)
       const warningIcon = warning ? `<span aria-hidden class="bb-notice-mark"${markStyle}>⚠</span>` : ''
       return `<div${this.idAttr(node)} class="notice bb-cut-panel bb-notice${warning ? ' bb-wnotice' : ''}" role="note"${styleAttr}>${warningIcon}<div class="bb-notice-body">${content}</div></div>`
+    }
+
+    // osu pinta el aviso con `.well` a secas — no hay ninguna clase `notice`
+    // en su hoja de estilos, que es por lo que el bloque salía desnudo.
+    if (this.isOsu()) {
+      const content = HTMLRenderer.trimOsuEdges(this.renderChildren(node))
+      return `<div${this.idAttr(node)} class="well">${content}</div>`
     }
 
     return this.wrapBlock('div', node, 'class="notice"')
@@ -882,7 +1128,22 @@ export class HTMLRenderer extends Visitor<string> {
   private renderAlign(node: RedNode): string {
     const alignVal = (String(node.metadata?.align ?? '') || nodeAttrValue(node) || 'center').trim().toLowerCase()
     const validAlign = alignVal === 'left' || alignVal === 'right' ? alignVal : 'center'
-    return this.wrapBlock('div', node, `style="text-align:${validAlign};"`)
+    return this.renderAlignAs(node, validAlign)
+  }
+
+  /**
+   * `[centre]` / `[left]` / `[right]` (y `[align=…]`).
+   *
+   * osu! no usa `text-align` inline: estiliza el bloque por nombre de clase,
+   * con la grafía británica `centre`. Fuera del dialecto osu el estilo inline
+   * se mantiene, porque ni Miliastry ni Lyne traen esas reglas.
+   */
+  private renderAlignAs(node: RedNode, align: 'center' | 'left' | 'right'): string {
+    if (this.isOsu()) {
+      const name = align === 'center' ? 'centre' : align
+      return this.wrapBlock('div', node, `class="bbcode__align-${name}"`)
+    }
+    return this.wrapBlock('div', node, `style="text-align:${align};"`)
   }
 
   private renderEffect(node: RedNode): string {
@@ -1052,7 +1313,32 @@ export class HTMLRenderer extends Visitor<string> {
     return `<blockquote${this.idAttr(node)}>${content}</blockquote>`
   }
 
+  /**
+   * La estructura exacta que `bbcode-spoilerbox` de osu-web espera.
+   *
+   * El toggle de osu es JS: `js-spoilerbox__link` es el gancho del click y
+   * `js-spoilerbox__body` el panel que abre. Si falta cualquiera de las dos
+   * clases el box queda mudo, así que la estructura no es decorativa.
+   */
+  private renderOsuSpoilerbox(node: RedNode, title: string, extra: string): string {
+    const content = HTMLRenderer.trimOsuEdges(this.renderChildren(node))
+    return `<div${this.idAttr(node)} class="js-spoilerbox bbcode-spoilerbox"${extra}>` +
+      `<a class="js-spoilerbox__link bbcode-spoilerbox__link" href="#">` +
+      `<span class="bbcode-spoilerbox__link-icon"></span>` +
+      `<span class="bbcode-spoilerbox__link-text">${title}</span></a>` +
+      `<div class="js-spoilerbox__body bbcode-spoilerbox__body">${content}</div></div>`
+  }
+
+  /** El rótulo de un box bajo osu: el del autor, o `SPOILER` en mayúsculas. */
+  private osuBoxTitle(node: RedNode): string {
+    return this.hasOwnTitle(node) ? this.renderTitle(node, 'SPOILER') : 'SPOILER'
+  }
+
   private renderSpoilerbox(node: RedNode): string {
+    if (this.isOsu()) {
+      // Un [spoilerbox] sin título propio se rotula SPOILER, en mayúsculas.
+      return this.renderOsuSpoilerbox(node, this.osuBoxTitle(node), this.bareTitleAttr(node))
+    }
     const title = this.renderTitle(node, 'Spoiler')
     const bare = this.bareTitleAttr(node)
     const content = this.renderChildren(node)
@@ -1068,6 +1354,11 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderBox(node: RedNode): string {
+    if (this.isOsu()) {
+      // osu no distingue box de spoilerbox: es la misma construcción, y sin
+      // título propio rotula SPOILER igual que `[spoilerbox]`.
+      return this.renderOsuSpoilerbox(node, this.osuBoxTitle(node), this.bareTitleAttr(node))
+    }
     const title = this.renderTitle(node, 'Box')
     const bare = this.bareTitleAttr(node)
     const content = this.renderChildren(node)
@@ -1092,9 +1383,19 @@ export class HTMLRenderer extends Visitor<string> {
    * escrito y devolvía `[box=Box]`.
    */
   private bareTitleAttr(node: RedNode): string {
+    return this.hasOwnTitle(node) ? '' : ' data-bare-title="1"'
+  }
+
+  /**
+   * ¿El título del box lo escribió el autor, o es el relleno del parser?
+   *
+   * `BBCodeToGreenNode` ya deja `metadata.title = 'Box'`/`'Spoiler'` para un
+   * tag pelado, así que el `fallback` de `renderTitle` nunca llega a usarse:
+   * quien quiera otro rótulo por defecto tiene que preguntar por aquí.
+   */
+  private hasOwnTitle(node: RedNode): boolean {
     const raw = node.metadata?.rawTitle
-    const hasOwnTitle = raw !== undefined ? String(raw) !== '' : node.metadata?.title !== undefined
-    return hasOwnTitle ? '' : ' data-bare-title="1"'
+    return raw !== undefined ? String(raw) !== '' : node.metadata?.title !== undefined
   }
 
   private renderTitle(node: RedNode, fallback: string): string {
@@ -1218,7 +1519,24 @@ export class HTMLRenderer extends Visitor<string> {
         areaUrl = 'https://' + areaUrl
       }
 
+      if (this.isOsu()) {
+        // osu posiciona por CSS (`.imagemap__link` ya es absolute), así que el
+        // style inline lleva sólo las cuatro coordenadas. Un destino `#` no es
+        // un enlace: emite un `span` con la misma clase, para que la zona siga
+        // mostrando su `title` sin navegar a ninguna parte.
+        const pos = `left:${x}%;top:${y}%;width:${w}%;height:${h}%;`
+        const title = ` title="${this.escapeHtml(label)}"`
+        areas += url === '#'
+          ? `<span class="imagemap__link" style="${pos}"${title}></span>`
+          : `<a class="imagemap__link" href="${this.escapeHtml(areaUrl)}" style="${pos}"${title}></a>`
+        continue
+      }
       areas += `<a${this.idAttr(node)} href="${this.escapeHtml(areaUrl)}" target="_blank" rel="noopener" class="imagemap-area bbcode-imap-area" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;" title="${this.escapeHtml(label || 'Link')}"></a>`
+    }
+
+    if (this.isOsu()) {
+      return `<div${this.idAttr(node)} class="imagemap">` +
+        `<img class="imagemap__image" loading="lazy" src="${this.escapeHtml(imageUrl)}" alt="">${areas}</div>`
     }
 
     return `<div${this.idAttr(node)} class="imagemap-container bbcode-imagemap" style="position:relative;display:inline-block;"><img src="${this.escapeHtml(imageUrl)}" alt="imagemap" style="max-width:100%;height:auto;display:block;">${areas}</div>`

@@ -286,3 +286,164 @@
   min-height: 12px;
   padding: 0;
 }
+
+/* ─── Vocabulario de clases del dialecto osu ──────────────────────────────
+ *
+ * Con `dialect: 'osu'` el renderer emite los nombres de clase reales de osu!
+ * (`well`, `js-spoilerbox`, `imagemap__link`, …) en vez de los de Miliastry
+ * (`notice`, `imagemap-container`, …). Sobre osu.ppy.sh eso basta: su propia
+ * hoja los pinta. Fuera de ahí —el preview de la app, el HTML autónomo de
+ * `scripts/osu-inject.ts`— no hay nadie, y estas reglas son ese nadie.
+ *
+ * ── Un solo parámetro, como osu ──────────────────────────────────────
+ *
+ * osu! no hardcodea sus colores: define `--base-hue` y deriva todo con
+ * `hsl()`, porque el usuario elige el tono de su tema. Medirlos y copiar el
+ * resultado congelaría UN tema concreto. Así que aquí se reproduce la
+ * mecánica, no la foto: los pares saturación/luminosidad son fijos por rol
+ * (la familia `b` es fondo al 10%, la `l` enlaces al 40%) y el tono entra por
+ * variable.
+ *
+ * `var(--base-hue, 338)` consume el tono del documento cuando existe —en la
+ * página real de osu existe, y ahí gana el del usuario— y si no cae a 338.
+ *
+ * Ese respaldo NO es el tono de osu (253), y es deliberado: esta hoja se
+ * consume sobre todo DENTRO de Miliastry, cuyo modo osu tiene fondo rosado
+ * (`#2a1f23`, tono 338) y acento `--accent-pink` (~332). Cayendo al 253 se
+ * mezclaban morados de osu sobre un fondo rosa nuestro, que se veía «casi
+ * bien» y por eso no saltaba. Un host puede fijar `--base-hue` para forzar
+ * otro.
+ *
+ * Las reglas de arriba (`.notice`, `.imagemap-container`, `.imagemap-area`)
+ * siguen vivas: son los nombres que emiten los dialectos miliastry y lyne.
+ * Esta sección añade, no reemplaza.
+ */
+
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) {
+  --osu-hue: var(--base-hue, 338);
+  --osu-bg-deep: hsl(var(--osu-hue), 10%, 15%);   /* fondo hundido */
+  --osu-border:  hsl(var(--osu-hue), 10%, 40%);   /* borde sobre ese fondo */
+  --osu-link:    hsl(var(--osu-hue), 40%, 75%);   /* enlaces, perfiles, cajas */
+  --osu-link-hi: hsl(var(--osu-hue), 40%, 80%);   /* el mismo, al pasar */
+  --osu-text:    hsl(var(--osu-hue), 40%, 100%);  /* texto sobre fondo hundido */
+}
+
+/* Los enlaces de osu son del mismo morado que los perfiles, no azules. El
+ * azul de la sección base es el look de Miliastry, así que sólo se pisa
+ * cuando el preview declara el dialecto osu. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] a { color: var(--osu-link); }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] a:hover { color: var(--osu-link-hi); border-bottom-color: var(--osu-link-hi); }
+
+/* Notice — osu lo llama `well` */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .well {
+  padding: 19px;
+  border: 2px solid var(--osu-border);
+  border-radius: 4px;
+  background: var(--osu-bg-deep);
+  color: var(--osu-text);
+  text-align: center;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.05);
+}
+
+/* Spoilerbox — estructura div > a(icono + texto) + div(cuerpo) */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox { display: block; }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--osu-link);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link:hover { color: var(--osu-link-hi); border-bottom: none; }
+
+/* El icono de osu es un glifo de Font Awesome 5, que no distribuimos. Este es
+ * un triángulo CSS equivalente: apunta a la derecha cerrado y rota al abrir.
+ * osu cambia de glifo en vez de rotar; el efecto leído es el mismo. Hereda
+ * `currentColor`, así que sigue al tono sin declarar nada. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link-icon {
+  display: block;
+  position: relative;
+  flex: none;
+  width: 20px;
+  height: 21px;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link-icon::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transform: translateY(-50%);
+  transform-origin: 2px 50%;
+  transition: transform 0.12s ease;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .js-spoilerbox--open .bbcode-spoilerbox__link-icon::before {
+  transform: translateY(-50%) rotate(90deg);
+}
+
+/* El cuerpo arranca oculto. Lo abre la clase `js-spoilerbox--open` en el
+ * CONTENEDOR, que pone `bindBoxDrawer`. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__body {
+  display: none;
+  margin: 10px 0 0;
+  padding: 0 0 0 20px;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .js-spoilerbox--open > .bbcode-spoilerbox__body { display: block; }
+
+/* Imagemap — el contenedor ancla; los enlaces van absolutos con el
+ * left/top/width/height en % que el renderer escribe en el style inline.
+ * Sin el `position: relative` los enlaces caen al flujo. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap {
+  display: inline-block;
+  position: relative;
+  max-width: max-content;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap__image {
+  display: inline;
+  max-width: 100%;
+  vertical-align: middle;
+}
+/* Transparentes en reposo, como en osu. El realce al pasar por encima es
+ * nuestro: en un editor conviene ver dónde están las áreas, y no altera la
+ * apariencia estática. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap__link {
+  display: block;
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: background-color 0.08s linear, box-shadow 0.08s linear;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .imagemap__link:hover {
+  background: hsl(var(--osu-hue), 40%, 75%, 0.22);
+  box-shadow: inset 0 0 0 1.5px var(--osu-link);
+  border-bottom: none;
+}
+
+/* Alineación */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode__align-centre { display: block; text-align: center; }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode__align-left   { display: block; text-align: left; }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode__align-right  { display: block; text-align: right; }
+
+/* Perfil */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .user-name {
+  display: inline;
+  color: var(--osu-link);
+  font-weight: 700;
+  text-decoration: none;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .user-name:hover { color: var(--osu-link-hi); border-bottom: none; }
+
+/* YouTube */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .u-embed-wide--bbcode {
+  display: inline-block;
+  width: 100%;
+  max-width: 425px;
+  aspect-ratio: 16 / 9;
+  border: 0;
+}
