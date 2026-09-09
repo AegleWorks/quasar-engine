@@ -169,7 +169,7 @@ export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as Quas
 export * from './Edits'
 
 // ── BBCode Bridge ──
-export { BBCodeDocumentModel } from './BBCode/BBCodeDocumentModel'
+export { BBCodeDocumentModel, renderForumBBCode } from './BBCode/BBCodeDocumentModel'
 export type { BBCodeDocumentModelOptions } from './BBCode/BBCodeDocumentModel'
 export {
   bbBlocksToRedTree,
@@ -361,4 +361,7 @@ export type {
   TokenResolverFn,
   TokenSource,
 } from './Tokens/index'
+
+// ── Audio Runtime ──
+export { setupLyneAudioRuntime, bindLyneAudio } from './Visuals/LyneAudio'
 

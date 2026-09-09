@@ -32,7 +32,7 @@ import { greenToRedNode, greenToRedNodeReusing, type BBCodeDialect } from './BBC
 import { parseTokensToGreen } from './Parser'
 import { scanBBCode } from '../Lexer/BBCodeLexer'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
-import { HTMLRenderer } from '../Visitors/HTMLRenderer'
+import { HTMLRenderer, type HTMLRendererOptions } from '../Visitors/HTMLRenderer'
 
 export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
   /** Source BBCode text to parse */
@@ -111,6 +111,39 @@ export class BBCodeDocumentModel extends DocumentModel {
   }
 
   /**
+   * Fast-path read-only rendering for forum posts, comments, and static views.
+   *
+   * Completely bypasses semantic analysis (linter), undo stack allocations, and
+   * editor node ids (idMode: 'none') to maximize throughput and minimize memory.
+   */
+  static renderForum(
+    source: string,
+    options: HTMLRendererOptions & { dialect?: BBCodeDialect } = {}
+  ): string {
+    const previousIdMode = HTMLRenderer.idMode
+    HTMLRenderer.idMode = 'none'
+    try {
+      const dialect = options.dialect ?? (options.theme === 'lyne' ? 'lyne' : 'miliastry')
+      const doc = new BBCodeDocumentModel({
+        source: source || ' ',
+        dialect,
+        autoAnalyze: false,
+        maxUndo: 0,
+        incremental: false,
+      })
+      if (!doc.redRoot) return ''
+      const renderer = new HTMLRenderer({
+        ...options,
+        dialect,
+        registry: options.registry ?? doc.tagRegistry,
+      })
+      return renderer.render(doc.redRoot)
+    } finally {
+      HTMLRenderer.idMode = previousIdMode
+    }
+  }
+
+  /**
    * Parse BBCode text directly to a GreenNode tree using the
    * DocumentEngine's built-in BBCode Lexer + Parser.
    * No dependency on the deprecated old parser.
@@ -176,3 +209,5 @@ export class BBCodeDocumentModel extends DocumentModel {
     return new BBCodeExporter(this.tagRegistry, exportTarget).export(root)
   }
 }
+
+export const renderForumBBCode = BBCodeDocumentModel.renderForum

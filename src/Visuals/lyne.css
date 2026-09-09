@@ -31,10 +31,17 @@
   --color-accent: #2EE6E2;
   --color-accent-bright: #68FFF8;
   --color-warning: #FFC34D;
+  --color-danger: #FF3B5C;
   --color-text-primary: #FFFFFF;
   --color-text-mid: #9EACD4;
   --color-text-dim: #606C8F;
   --color-hairline: rgba(255, 255, 255, 0.12);
+  --color-hairline-bright: rgba(142, 155, 196, 0.35);
+  --color-surface: #0B1024;
+  --color-surface-bright: #141C3C;
+  --color-inset-well: #080D20;
+  --color-on-accent: #05060F;
+  --cut-control: 10px;
   --font-display: var(--font-syne-display, "Saira Condensed"), "Saira Condensed", sans-serif;
   --font-body: var(--font-syne-body, "Saira"), "Saira", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-numeric: var(--font-syne-mono, "IBM Plex Mono"), "IBM Plex Mono", monospace;
@@ -914,9 +921,256 @@
   margin: 4px 0 !important;
 }
 
-/* Audio: replica el .bbAudio original de Lyne (bloque centrado, ancho máx). */
-.bb-audio {
-  display: block !important;
+/* ─── Audio: LINE chrome redesign (spec docs/design-spec/bbcode-audio-player) ── */
+.bbcode-preview-lyne .lx-audio,
+.bbcode-preview.theme-lyne .lx-audio,
+[data-theme='syne'] .lx-audio,
+[data-dialect='lyne'] .lx-audio,
+.lx-audio {
+  --c: var(--cut-control, 10px);
+  display: inline-block !important;
+  width: 100% !important;
+  max-width: 560px !important;
+  margin: 14px 0 !important;
+  background:
+    linear-gradient(180deg, var(--color-surface-bright, #141C3C) 0%, var(--color-surface, #0B1024) 38%, var(--color-inset-well, #080D20) 100%) !important;
+  border: 1px solid var(--color-hairline-bright, rgba(142, 155, 196, 0.35)) !important;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c)) !important;
+  position: relative;
+  font-family: var(--font-body, "Saira", sans-serif);
+  transition: border-color 120ms cubic-bezier(0.16, 1.0, 0.3, 1.0);
+  text-align: left;
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+.lx-audio audio {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  clip: rect(0, 0, 0, 0) !important;
+}
+.lx-audio:hover {
+  border-color: rgba(46, 230, 226, 0.45) !important;
+}
+.lx-audio.is-playing {
+  border-color: rgba(46, 230, 226, 0.6) !important;
+}
+
+/* thin accent baseline — the "catch line" motif; fills with progress */
+.lx-audio .lx-track {
+  position: relative;
+  height: 12px;
+  cursor: pointer;
+  background:
+    repeating-linear-gradient(-45deg, rgba(142,155,196,0.10) 0 2px, transparent 2px 9px),
+    var(--color-inset-well, #080D20);
+}
+.lx-audio .lx-track .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: linear-gradient(90deg, rgba(46,230,226,0.10), rgba(46,230,226,0.22));
+  border-right: 2px solid var(--color-accent, #2EE6E2);
+  box-shadow: 0 0 12px rgba(46, 230, 226, 0.55);
+}
+.lx-audio .lx-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px 12px;
+}
+.lx-audio .lx-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  background: var(--color-accent, #2EE6E2);
+  color: var(--color-on-accent, #05060F);
+  cursor: pointer;
+  border: none;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  transition: background 120ms cubic-bezier(0.16, 1.0, 0.3, 1.0), transform 120ms cubic-bezier(0.16, 1.0, 0.3, 1.0);
+}
+.lx-audio .lx-btn:hover {
+  background: var(--color-accent-bright, #7FF5F0);
+}
+.lx-audio .lx-btn:active {
+  transform: scale(0.94);
+}
+.lx-audio .lx-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--color-on-accent, #05060F);
+}
+
+.lx-audio .lx-title {
+  flex: 1;
+  min-width: 0;
+}
+.lx-audio .lx-title .name {
+  font-family: var(--font-display, "Saira Condensed", sans-serif);
+  font-weight: 600;
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-primary, #F2F5FF);
+}
+.lx-audio .lx-title .label {
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--color-text-dim, #8E9BC4);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+}
+.lx-audio .lx-title .label .dot {
+  width: 5px;
+  height: 5px;
+  background: var(--color-text-dim, #8E9BC4);
+  flex: none;
+  transition: background 120ms;
+}
+.lx-audio.is-playing .lx-title .label .dot {
+  background: var(--color-accent, #2EE6E2);
+  box-shadow: 0 0 6px rgba(46,230,226,0.9);
+  animation: lx-beat 606ms infinite;
+}
+@keyframes lx-beat {
+  0% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+
+.lx-audio .lx-vol {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.lx-audio .lx-vol-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-dim, #8E9BC4);
+  transition: color 120ms cubic-bezier(0.16, 1.0, 0.3, 1.0);
+}
+.lx-audio .lx-vol-btn:hover {
+  color: var(--color-accent, #2EE6E2);
+}
+.lx-audio .lx-vol-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+.lx-audio .lx-vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 56px;
+  height: 4px;
+  background: var(--color-inset-well, #080D20);
+  border: 1px solid var(--color-hairline, rgba(142, 155, 196, 0.25));
+  outline: none;
+  cursor: pointer;
+  border-radius: 0;
+  vertical-align: middle;
+}
+.lx-audio .lx-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 12px;
+  background: var(--color-accent, #2EE6E2);
+  clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px);
+  cursor: pointer;
+  transition: transform 120ms, background 120ms;
+}
+.lx-audio .lx-vol-slider::-moz-range-thumb {
+  width: 8px;
+  height: 12px;
+  border: none;
+  border-radius: 0;
+  background: var(--color-accent, #2EE6E2);
+  clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px);
+  cursor: pointer;
+}
+.lx-audio .lx-vol-slider:hover::-webkit-slider-thumb {
+  background: var(--color-accent-bright, #7FF5F0);
+  transform: scaleY(1.15);
+}
+.lx-audio .lx-vol-slider:hover::-moz-range-thumb {
+  background: var(--color-accent-bright, #7FF5F0);
+}
+
+.lx-audio .lx-time {
+  flex: none;
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--color-text-mid, #AAB6DE);
+  font-variant-numeric: tabular-nums;
+}
+.lx-audio .lx-time .cur {
+  color: var(--color-text-primary, #F2F5FF);
+}
+
+.lx-audio .lx-speed {
+  flex: none;
+  font-family: var(--font-numeric, "IBM Plex Mono", monospace);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-dim, #8E9BC4);
+  background: none;
+  border: 1px solid var(--color-hairline, rgba(142, 155, 196, 0.18));
+  padding: 3px 8px;
+  cursor: pointer;
+  letter-spacing: 1px;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  transition: color 120ms, border-color 120ms;
+}
+.lx-audio .lx-speed:hover {
+  color: var(--color-accent, #2EE6E2);
+  border-color: rgba(46,230,226,0.4);
+}
+.lx-audio .lx-speed.active {
+  color: var(--color-accent, #2EE6E2);
+  border-color: rgba(46,230,226,0.5);
+}
+
+/* states */
+.lx-audio.is-loading .lx-btn svg {
+  opacity: 0.3;
+}
+.lx-audio.is-loading .fill {
+  border-right-color: var(--color-text-dim, #8E9BC4);
+  box-shadow: none;
+}
+.lx-audio.is-error {
+  border-color: rgba(255, 59, 92, 0.5) !important;
+}
+.lx-audio.is-error .fill {
+  border-right-color: var(--color-danger, #FF3B5C);
+  box-shadow: 0 0 12px rgba(255,59,92,0.5);
+}
+.lx-audio.is-error .lx-title .label {
+  color: var(--color-danger, #FF3B5C);
+}
+
+/* Fallback si se usa audio nativo directo */
+audio.bb-audio {
+  display: inline-block !important;
   width: 100% !important;
   max-width: 420px !important;
   margin: 10px 0 !important;

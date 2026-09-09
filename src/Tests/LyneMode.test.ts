@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
+import { BBCodeDocumentModel, renderForumBBCode } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
+import { bindLyneAudio } from '../Visuals/LyneAudio'
 
 describe('Lyne Mode & Dialect Isolation', () => {
   describe('Mode: osu (strict isolation)', () => {
@@ -172,6 +173,69 @@ describe('Lyne Mode & Dialect Isolation', () => {
       expect(html).toContain('class="bb-notice-body"')
     })
 
+    it('renders custom lx-audio player with cyberpunk chrome and volume slider in lyne mode', () => {
+      const doc = new BBCodeDocumentModel({
+        source: '[centre][audio]https://example.com/synth_track.mp3[/audio][/centre]',
+        mode: 'lyne',
+      })
+      const renderer = new HTMLRenderer({ theme: 'lyne', dialect: 'lyne' })
+      const html = renderer.render(doc.root!)
+      expect(html).toContain('class="lx-audio bb-audio"')
+      expect(html).toContain('class="lx-track"')
+      expect(html).toContain('class="lx-btn"')
+      expect(html).toContain('class="lx-vol"')
+      expect(html).toContain('class="lx-vol-slider"')
+      expect(html).toContain('value="0.2"')
+      expect(html).toContain('synth_track.mp3')
+      expect(html).toContain('data-src="https://example.com/synth_track.mp3"')
+      expect(html).toContain('<audio preload="metadata" src="https://example.com/synth_track.mp3"></audio>')
+    })
+
+    it('enforces 20% default volume globally on both lyne and native audio elements', () => {
+      const container = document.createElement('div')
+      container.innerHTML = `
+        <div class="lx-audio bb-audio">
+          <audio src="https://example.com/a.mp3"></audio>
+          <div class="lx-vol">
+            <button class="lx-vol-btn" type="button"></button>
+            <input type="range" class="lx-vol-slider" min="0" max="1" step="0.01" value="0.2" />
+          </div>
+        </div>
+        <audio class="bb-audio" src="https://example.com/b.mp3" controls></audio>
+      `
+      document.body.appendChild(container)
+      const cleanup = bindLyneAudio(container)
+
+      const lyneAudio = container.querySelector<HTMLAudioElement>('.lx-audio audio')!
+      const nativeAudio = container.querySelector<HTMLAudioElement>('audio.bb-audio')!
+      const slider = container.querySelector<HTMLInputElement>('.lx-vol-slider')!
+      const volBtn = container.querySelector<HTMLButtonElement>('.lx-vol-btn')!
+
+      // Both must be initialized to 0.2 (20%)
+      expect(lyneAudio.volume).toBeCloseTo(0.2)
+      expect(nativeAudio.volume).toBeCloseTo(0.2)
+      expect(slider.value).toBe('0.2')
+
+      // Changing slider adjusts audio volume
+      slider.value = '0.65'
+      slider.dispatchEvent(new Event('input', { bubbles: true }))
+      expect(lyneAudio.volume).toBeCloseTo(0.65)
+
+      // Clicking mute button mutes and sets slider to 0
+      volBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(lyneAudio.muted).toBe(true)
+      expect(slider.value).toBe('0')
+
+      // Clicking again restores previous volume
+      volBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(lyneAudio.muted).toBe(false)
+      expect(lyneAudio.volume).toBeCloseTo(0.65)
+      expect(slider.value).toBe('0.65')
+
+      cleanup()
+      container.remove()
+    })
+
     it('exports correctly with target lyne', () => {
       const input = '[wnotice=#ff0000]Be careful[/wnotice]'
       const doc = new BBCodeDocumentModel({
@@ -286,6 +350,19 @@ describe('Lyne Mode & Dialect Isolation', () => {
       } finally {
         HTMLRenderer.idMode = prev
       }
+    })
+
+    it('renders forums ultralight without semantic analysis or data-node-id via renderForumBBCode', () => {
+      const html = renderForumBBCode('[b]Bold[/b] and [notice]Notice text[/notice]', {
+        dialect: 'lyne',
+        theme: 'lyne',
+      })
+      // Correct HTML emitted
+      expect(html).toContain('<strong>Bold</strong>')
+      expect(html).toContain('class="notice bb-cut-panel bb-notice"')
+      expect(html).toContain('Notice text')
+      // No editor attributes
+      expect(html).not.toContain('data-node-id')
     })
   })
 })

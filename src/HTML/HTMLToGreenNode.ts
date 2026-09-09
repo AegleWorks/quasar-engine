@@ -189,6 +189,14 @@ function domToGreenTree(root: HTMLElement): GreenNode {
                }
             });
           }
+          else if (el.classList.contains('lx-audio')) {
+            kind = 'audio';
+            const audioSrc = el.getAttribute('data-src') || el.querySelector('audio')?.getAttribute('src') || '';
+            if (audioSrc) {
+              children.push(greenLeaf('text', audioSrc));
+              currentOffset += audioSrc.length;
+            }
+          }
           else if (el.style.textAlign === 'center') kind = 'center';
           else if (el.style.textAlign === 'right') kind = 'right';
           else if (el.style.textAlign === 'left') kind = 'left';

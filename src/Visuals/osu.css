@@ -73,7 +73,7 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote {
   padding: 0 0 0 20px;
   margin: 0 0 20px 0;
-  border-left: 2px solid #D194B3;
+  border-left: 2px solid var(--osu-accent);
   color: #ffffff;
   font-style: normal;
   background: none;
@@ -83,8 +83,8 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) pre {
   padding: 10px;
   margin-bottom: 10px;
-  background: #1C1719;
-  border: 1px solid #43383A;
+  background: var(--osu-code-bg);
+  border: 1px solid var(--osu-code-border);
   border-radius: 8px;
   overflow-x: auto;
 }
@@ -150,7 +150,7 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) details summary {
   cursor: pointer;
   font-weight: 600;
-  color: #D194B3;
+  color: var(--osu-accent);
   font-size: 13px;
   user-select: none;
 }
@@ -176,7 +176,7 @@
   display: list-item;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) li::marker {
-  color: #D194B3;
+  color: var(--osu-accent);
 }
 
 /* ─── Media ──────────────────────────────────────────── */
@@ -195,7 +195,11 @@
   border-radius: 8px;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) audio {
+  /* inline-block: el preflight de Tailwind fuerza `audio{display:block}`
+   * y eso rompe el centrado por `text-align:center` de [centre]. */
+  display: inline-block;
   width: 100%;
+  max-width: 420px;
 }
 
 /* ─── Image Map ──────────────────────────────────────── */
@@ -268,7 +272,7 @@
   display: inline-block;
   transform: rotate(-5deg) scale(0.95);
   font-style: italic;
-  color: #F0A0C0;
+  color: var(--osu-bloom);
 }
 
 /* ─── Semantic Spacing ───────────────────────────────── */
@@ -319,6 +323,20 @@
  * Esta sección añade, no reemplaza.
  */
 
+/* Qué sigue al tono y qué no: EL CONTENIDO SIGUE, LAS SEÑALES NO.
+ *
+ * Lo que el BBCode pinta —citas, listas, código, cajas, enlaces— se deriva de
+ * `--osu-hue`, porque su color no significa nada por sí mismo: es la piel del
+ * documento. Lo que comunica un estado conserva su color fijo, porque ahí el
+ * color ES el mensaje: el rojo de `.media-error`, el negro sobre negro de
+ * `.spoiler` (que en osu es literalmente eso), el rosa de selección de las
+ * áreas de imagemap —una ayuda de edición, no contenido— y el degradado
+ * deliberadamente multicolor de `.sparkle`. Los blancos y los `rgba()`
+ * neutros tampoco: son veladuras, no color.
+ *
+ * Si vienes a "terminar el trabajo" convirtiendo los que quedan, esto es el
+ * porqué de que sigan ahí.
+ */
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) {
   --osu-hue: var(--base-hue, 338);
   --osu-bg-deep: hsl(var(--osu-hue), 10%, 15%);   /* fondo hundido */
@@ -326,6 +344,116 @@
   --osu-link:    hsl(var(--osu-hue), 40%, 75%);   /* enlaces, perfiles, cajas */
   --osu-link-hi: hsl(var(--osu-hue), 40%, 80%);   /* el mismo, al pasar */
   --osu-text:    hsl(var(--osu-hue), 40%, 100%);  /* texto sobre fondo hundido */
+
+  /* ── La escalera real de osu ──────────────────────────────────────────
+   * Leída de su página en vivo (`--hsl-*` sobre `.bbcode`), no deducida:
+   * osu define --base-hue y estos pares de saturación/luminosidad, y su
+   * `bbcode.less` asigna un rol a cada elemento. Los cinco alias de arriba
+   * son estos mismos: bg-deep = b5, border = b1, link = l2, link-hi = l1,
+   * text = c1. Se nombran los roles aparte para poder citar la hoja de osu
+   * por su nombre cuando se ajusta un elemento concreto. */
+  --osu-b1: hsl(var(--osu-hue), 10%, 40%);
+  --osu-b5: hsl(var(--osu-hue), 10%, 15%);
+  --osu-b6: hsl(var(--osu-hue), 10%, 10%);
+  --osu-c2: hsl(var(--osu-hue), 40%, 90%);
+  --osu-l1: hsl(var(--osu-hue), 40%, 80%);
+  --osu-l3: hsl(var(--osu-hue), 40%, 70%);
+
+  /* El acento del cuerpo en el look de MILIASTRY: filo de las citas,
+   * marcador de lista, título de `details`. Era el literal `#D194B3`, que es
+   * exactamente hsl(330,40%,70%) — o sea `l3`. osu usa otros roles en esos
+   * mismos elementos; ver el bloque `[data-dialect="osu"]` más abajo. */
+  --osu-accent:      var(--osu-l3);
+  /* Superficie del bloque de código y su filo, look de Miliastry. Eran
+   * `#1C1719` —hsl(336,10%,10%), que es `b6`— y `#43383A`. Este último
+   * estaba en el tono 349, fuera de la familia; al derivarlo se corrige. */
+  --osu-code-bg:     var(--osu-b6);
+  --osu-code-border: hsl(var(--osu-hue),  9%, 24%);
+  /* Adorno `.flower`: era `#F0A0C0`, hsl(336,73%,78%). Es de Miliastry, osu
+   * no tiene nada parecido. */
+  --osu-bloom:       hsl(var(--osu-hue), 73%, 78%);
+}
+
+/* ─── Semantic Spacing ───────────────────────────────── */
+
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-sp {
+  display: block;
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-para {
+  display: block;
+  height: 1em;
+  min-height: 12px;
+  padding: 0;
+}
+
+/* ─── Vocabulario de clases del dialecto osu ──────────────────────────────
+ *
+ * Con `dialect: 'osu'` el renderer emite los nombres de clase reales de osu!
+ * (`well`, `js-spoilerbox`, `imagemap__link`, …) en vez de los de Miliastry
+ * (`notice`, `imagemap-container`, …). Sobre osu.ppy.sh eso basta: su propia
+ * hoja los pinta. Fuera de ahí —el preview de la app, el HTML autónomo de
+ * `scripts/osu-inject.ts`— no hay nadie, y estas reglas son ese nadie.
+ *
+ * ── Un solo parámetro, como osu ──────────────────────────────────────
+ *
+ * osu! no hardcodea sus colores: define `--base-hue` y deriva todo con
+ * `hsl()`, porque el usuario elige el tono de su tema. Medirlos y copiar el
+ * resultado congelaría UN tema concreto. Así que aquí se reproduce la
+ * mecánica, no la foto: los pares saturación/luminosidad son fijos por rol
+ * (la familia `b` es fondo al 10%, la `l` enlaces al 40%) y el tono entra por
+ * variable.
+ *
+ * `var(--base-hue, 338)` consume el tono del documento cuando existe —en la
+ * página real de osu existe, y ahí gana el del usuario— y si no cae a 338.
+ *
+ * Ese respaldo NO es el tono de osu (253), y es deliberado: esta hoja se
+ * consume sobre todo DENTRO de Miliastry, cuyo modo osu tiene fondo rosado
+ * (`#2a1f23`, tono 338) y acento `--accent-pink` (~332). Cayendo al 253 se
+ * mezclaban morados de osu sobre un fondo rosa nuestro, que se veía «casi
+ * bien» y por eso no saltaba. Un host puede fijar `--base-hue` para forzar
+ * otro.
+ *
+ * Las reglas de arriba (`.notice`, `.imagemap-container`, `.imagemap-area`)
+ * siguen vivas: son los nombres que emiten los dialectos miliastry y lyne.
+ * Esta sección añade, no reemplaza.
+ */
+
+/* Qué sigue al tono y qué no: EL CONTENIDO SIGUE, LAS SEÑALES NO.
+ *
+ * Lo que el BBCode pinta —citas, listas, código, cajas, enlaces— se deriva de
+ * `--osu-hue`, porque su color no significa nada por sí mismo: es la piel del
+ * documento. Lo que comunica un estado conserva su color fijo, porque ahí el
+ * color ES el mensaje: el rojo de `.media-error`, el negro sobre negro de
+ * `.spoiler` (que en osu es literalmente eso), el rosa de selección de las
+ * áreas de imagemap —una ayuda de edición, no contenido— y el degradado
+ * deliberadamente multicolor de `.sparkle`. Los blancos y los `rgba()`
+ * neutros tampoco: son veladuras, no color.
+ *
+ * Si vienes a "terminar el trabajo" convirtiendo los que quedan, esto es el
+ * porqué de que sigan ahí.
+ */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) {
+  --osu-hue: var(--base-hue, 338);
+  --osu-bg-deep: hsl(var(--osu-hue), 10%, 15%);   /* fondo hundido */
+  --osu-border:  hsl(var(--osu-hue), 10%, 40%);   /* borde sobre ese fondo */
+  --osu-link:    hsl(var(--osu-hue), 40%, 75%);   /* enlaces, perfiles, cajas */
+  --osu-link-hi: hsl(var(--osu-hue), 40%, 80%);   /* el mismo, al pasar */
+  --osu-text:    hsl(var(--osu-hue), 40%, 100%);  /* texto sobre fondo hundido */
+
+  /* El acento del cuerpo: filo de las citas, marcador de lista, título de
+   * `details`. Era el literal `#D194B3`, que es exactamente hsl(330,40%,70%). */
+  --osu-accent:      hsl(var(--osu-hue), 40%, 70%);
+  /* Superficie del bloque de código y su filo. Eran `#1C1719` —hsl(336,10%,10%)—
+   * y `#43383A`. Este último estaba en el tono 349, fuera de la familia; al
+   * derivarlo del tono se corrige de paso. */
+  --osu-code-bg:     hsl(var(--osu-hue), 10%, 10%);
+  --osu-code-border: hsl(var(--osu-hue),  9%, 24%);
+  /* Adorno `.flower`: era `#F0A0C0`, hsl(336,73%,78%). */
+  --osu-bloom:       hsl(var(--osu-hue), 73%, 78%);
 }
 
 /* Los enlaces de osu son del mismo morado que los perfiles, no azules. El
@@ -333,6 +461,52 @@
  * cuando el preview declara el dialecto osu. */
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] a { color: var(--osu-link); }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] a:hover { color: var(--osu-link-hi); border-bottom-color: var(--osu-link-hi); }
+
+/* ── Roles de osu para el cuerpo del documento ────────────────────────────
+ * Fuente: `resources/css/bbcode.less` de osu-web, cruzada con la escalera
+ * medida en su página. Estos elementos tienen en Miliastry el acento rosa
+ * (`--osu-accent`), que es el look de la casa; bajo el dialecto osu mandan
+ * los roles de osu, igual que ya pasa arriba con los enlaces.
+ */
+
+/* La cita no lleva acento: el texto Y la barra son `c2`, y la barra la pinta
+ * osu con un ::before de 2px redondeado. El borde izquierdo da el mismo
+ * resultado a esta anchura. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] blockquote {
+  color: var(--osu-c2);
+  border-left-color: var(--osu-c2);
+}
+
+/* El bloque de código es `b5` y NO lleva borde. El nuestro usaba `b6` con un
+ * filo, que es más oscuro y más marcado que el de osu. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] pre {
+  background: var(--osu-b5);
+  border: none;
+}
+
+/* El código en línea también es `b5`, plano: ni veladura blanca ni filo. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] code.inline {
+  background: var(--osu-b5);
+  border: none;
+  padding: 1px 4px;
+}
+
+/* `[heading]` no es blanco en osu, es `l1`. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] h2 {
+  color: var(--osu-l1);
+}
+
+/* osu no le da color al marcador de lista: hereda el del texto. El rosa es
+ * cosa nuestra. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] li::marker {
+  color: inherit;
+}
+
+/* El spoiler de osu es negro puro sobre negro puro, no un gris. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] .spoiler {
+  background: #000;
+  color: #000;
+}
 
 /* Notice — osu lo llama `well` */
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .well {
@@ -346,7 +520,11 @@
 }
 
 /* Spoilerbox — estructura div > a(icono + texto) + div(cuerpo) */
-.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox { display: block; }
+/* osu no le pone caja propia al contenedor: el `margin: 8px 0` que trae
+ * `features/BBCode/styles.css` para el look de Miliastry sumaba 16px por
+ * caja (19 en una userpage real). Se declara a cero en vez de confiar en
+ * la especificidad, que aquí sólo ganaba en `display`. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox { display: block; margin: 0; padding: 0; }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link {
   display: inline-flex;
   align-items: center;
@@ -354,6 +532,18 @@
   font-weight: 700;
   text-decoration: none;
   cursor: pointer;
+  /* osu lo deja al 100%; `features/BBCode/styles.css` lo baja a 0.85em para el
+   * look de Miliastry. Bajo este dialecto manda el de osu. */
+  font-size: 1em;
+  line-height: inherit;
+  /* Un `inline-flex` se alinea sobre la línea base del texto, así que el
+   * navegador reserva hueco para los descendentes DEBAJO y la caja crece de
+   * 21px a 26px. osu no lo sufre porque su icono es un glifo de fuente, que
+   * aporta una línea base real; el nuestro es un triángulo CSS sin texto y la
+   * base se sintetiza desde el borde inferior. Alinear arriba elimina el
+   * hueco: el enlace es el único contenido de su línea, así que `top` no
+   * cambia nada más. Medido: 26px -> 21px, que es lo que mide en osu. */
+  vertical-align: top;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link:hover { color: var(--osu-link-hi); border-bottom: none; }
 

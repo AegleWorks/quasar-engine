@@ -25,6 +25,7 @@
 
 export { bindBoxDrawer, toggleBoxWithDrawer } from './BoxDrawer'
 export type { BoxDrawerOptions } from './BoxDrawer'
+export { setupLyneAudioRuntime, bindLyneAudio } from './LyneAudio'
 
 export const visualThemes = [
   {

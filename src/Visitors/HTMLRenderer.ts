@@ -964,6 +964,31 @@ export class HTMLRenderer extends Visitor<string> {
     if (this.options.mediaProxy && src) {
       src = this.options.mediaProxy(src)
     }
+    const isLyne = this.options.theme === 'lyne' || this.options.dialect === 'lyne'
+    if (isLyne) {
+      const rawName = src.split('?')[0].split('#')[0].split('/').filter(Boolean).pop() || 'audio_track.mp3'
+      let fileName = rawName
+      try {
+        fileName = decodeURIComponent(rawName)
+      } catch {}
+      return `<div${this.idAttr(node)} class="lx-audio bb-audio" data-src="${this.escapeHtml(src)}">`
+        + `<audio preload="metadata" src="${this.escapeHtml(src)}"></audio>`
+        + `<div class="lx-track" role="progressbar" aria-label="Audio progress"><div class="fill"></div></div>`
+        + `<div class="lx-row">`
+        + `<button type="button" class="lx-btn" aria-label="Play"><svg viewBox="0 0 16 16"><path d="M3 1.5 14 8 3 14.5z"/></svg></button>`
+        + `<div class="lx-title">`
+        + `<div class="name">${this.escapeHtml(fileName)}</div>`
+        + `<div class="label"><span class="dot"></span> <span class="status-text">audio</span></div>`
+        + `</div>`
+        + `<div class="lx-vol">`
+        + `<button type="button" class="lx-vol-btn" aria-label="Mute"><svg viewBox="0 0 16 16"><path d="M10.707 11.182A4.5 4.5 0 0 0 12.025 8a4.5 4.5 0 0 0-1.318-3.182L10 5.525A3.5 3.5 0 0 1 11.025 8 3.5 3.5 0 0 1 10 10.475zM6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06"/></svg></button>`
+        + `<input type="range" class="lx-vol-slider" min="0" max="1" step="0.01" value="0.2" aria-label="Volume" style="background:linear-gradient(to right, var(--color-accent, #2EE6E2) 20%, var(--color-inset-well, #080D20) 20%);" />`
+        + `</div>`
+        + `<button type="button" class="lx-speed" aria-label="Playback speed">1.0×</button>`
+        + `<div class="lx-time"><span class="cur">0:00</span> / <span class="total">–:––</span></div>`
+        + `</div>`
+        + `</div>`
+    }
     return `<audio${this.idAttr(node)} controls src="${this.escapeHtml(src)}" class="bb-audio"></audio>`
   }
 
