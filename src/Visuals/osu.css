@@ -11,7 +11,7 @@
  * Uso:
  *   import 'MiliastryPlatform/DocumentEngine/Visuals/osu.css'
  *   // o vía JS: import { osuCSS } from './Visuals'
- *   // y luego injectarlo como <style>{osuCSS}</style>
+ *   // y luego inyectarlo en un bloque <style>
  */
 
 /* ─── Base ───────────────────────────────────────────── */
