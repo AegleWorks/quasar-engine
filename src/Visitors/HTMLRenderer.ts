@@ -818,7 +818,10 @@ export class HTMLRenderer extends Visitor<string> {
       // Sin `=` en el texto el nodo no vino del parser de BBCode (import de
       // HTML, por ejemplo): ahí el único valor disponible es el de metadata.
       const raw = eq >= 0 ? text.slice(eq + 1) : (text ? '' : nodeAttrValue(node, 'color'))
-      if (!HTMLRenderer.OSU_COLOR_RE.test(raw)) {
+      const candidate = (raw.startsWith('$') && this.tokenResolver)
+        ? resolveTokenValue(raw, this.tokenResolver)
+        : raw
+      if (!HTMLRenderer.OSU_COLOR_RE.test(candidate)) {
         const opener = eq >= 0 ? `[color${text}]` : `[${text || 'color'}]`
         return this.escapeHtml(opener) + this.renderChildren(node) + this.escapeHtml('[/color]')
       }
