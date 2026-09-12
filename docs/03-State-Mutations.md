@@ -1,9 +1,9 @@
 # 3. State & Mutations (`Transactions/`)
 
-Modificaciones atómicas y seguras sobre el árbol `RedNode`.
+Atomic and safe mutation pipelines operating on the `RedNode` tree.
 
 ## `Transaction`
-Agrupa un arreglo de primitivas `Operation` en una sola unidad atómica para ser aplicada de forma segura al `RedRoot`. Si una operación falla, todo el bloque se descarta, manteniendo la integridad estructural del documento.
+Batches an array of atomic `Operation` primitives into a single transaction applied atomically to the `RedRoot`. If any individual operation fails, the entire transaction rolls back, preserving document structural integrity.
 
 ## `UndoManager`
-Mantiene la pila de deshacer (undo) y rehacer (redo) emparejando las operaciones ejecutadas con sus respectivos estados inversos.
+Maintains undo and redo stacks, pairing committed operations with corresponding inverse mutations or text snapshots for deterministic rollbacks.

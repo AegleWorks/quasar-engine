@@ -1,6 +1,6 @@
-# Índice de QuasarEngine
+# QuasarEngine Index
 
-- [Inicio](./Home.md)
+- [Home](./Home.md)
 - [1. Core Architecture](./01-Core-Architecture.md)
 - [2. Syntax & Parsing](./02-Syntax-Parsing.md)
 - [3. State & Mutations](./03-State-Mutations.md)

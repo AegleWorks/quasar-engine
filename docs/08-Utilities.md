@@ -1,8 +1,8 @@
 # 8. Utilities (`Utils/`)
 
-Funciones independientes, matemáticas y herramientas de soporte que asisten al motor en tareas específicas.
+Stateless mathematical helpers and specialized utilities supporting engine operations.
 
-- **`color`**: Funciones matemáticas puras (sin estado) para parseo e interpolación hexadecimal (`hslToHex`, `mixHex`).
-- **`treeTransformers`**: Wrappers de alto nivel para aplicar, de forma segura y estructurada, efectos del Studio a través de todo un árbol `RedNode`.
-- **`BBCodeGenerator`**: Generación procedural de BBCode (con estilo osu!) para propósitos de mocking, benchmarking y testing masivo automatizado.
-- **`dom-to-svg`**: Lógica de alta fidelidad para capturar layouts y nodos generados en el DOM hacia formato SVG.
+- **`color`**: Pure mathematical functions for color conversions, parsing, and interpolation (`hslToHex`, `mixHex`).
+- **`treeTransformers`**: High-level utility wrappers for safely traversing and applying Studio effects across `RedNode` hierarchies.
+- **`BBCodeGenerator`**: Procedural BBCode generator (osu! dialect) for stress testing, fuzzing, and benchmark suites.
+- **`dom-to-svg`**: High-fidelity DOM capture utility serializing rendered elements into standalone SVG formats.

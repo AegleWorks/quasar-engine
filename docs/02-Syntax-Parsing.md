@@ -1,18 +1,18 @@
 # 2. Syntax & Parsing (`Lexer/` & `Syntax/`)
 
-El pipeline que convierte el texto en BBCode crudo hacia el AST (Abstract Syntax Tree).
+The compilation pipeline transforming raw BBCode text into an Abstract Syntax Tree (AST).
 
 ## `Lexer` & `IncrementalLexer`
-Transforman el string en bruto a un flujo (stream) de tokens, preservando cuidadosamente los `Trivia` (espacios en blanco, saltos de línea).
-El **IncrementalLexer** es una versión optimizada que re-escanea únicamente los bloques modificados del texto original, ahorrando cómputo en documentos extensos.
+Converts raw string input into a token stream while faithfully preserving `Trivia` (leading and trailing whitespace, linebreaks).  
+The **`IncrementalLexer`** optimizes this process by re-scanning only modified source ranges, minimizing computational overhead in large documents.
 
 ## `TreeBuilder`
-Consume los tokens generados por el lexer para construir el árbol inicial de sintaxis.
+Consumes lexer tokens to assemble the initial hierarchical syntax tree.
 
 ## `GreenNode` & `GreenNodePool`
-- **`GreenNode`**: El árbol sintáctico estructural, inmutable. Mapea precisamente el código fuente, comparte estructura y utiliza el patrón *Flyweight*.
-- **`GreenNodePool`**: Sistema de *interning* de strings (patrón flyweight) para los bloques de texto de los `GreenNode`, optimizando drásticamente la memoria.
+- **`GreenNode`**: The immutable, structural syntax tree. Accurately maps source code spans, shares identical subtrees across edits, and employs the *Flyweight* pattern.
+- **`GreenNodePool`**: String interning and flyweight allocation system for `GreenNode` text chunks, drastically reducing memory footprint.
 
 ## `RedNode` & `NodeMatcher`
-- **`RedNode`**: La fachada mutable que envuelve al *Green Tree*. Contiene estado (`version`, `id`) y expone el flag `allowMutation` para actualizaciones bloqueadas por transacciones.
-- **`NodeMatcher`**: Reconcilia los IDs entre el árbol viejo y el nuevo durante el re-parseo incremental.
+- **`RedNode`**: The mutable facade wrapping the underlying *Green Tree*. Holds absolute position state (`version`, `id`) and enforces the `allowMutation` guard for transaction-safe updates.
+- **`NodeMatcher`**: Reconciles and preserves stable node IDs between previous and updated trees during incremental reparsing.

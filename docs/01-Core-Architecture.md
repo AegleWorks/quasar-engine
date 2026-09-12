@@ -1,17 +1,17 @@
 # 1. Core Architecture (`Model/` & `Types/`)
 
-Los tipos fundacionales y la fachada central que orquesta el motor.
+Foundational types and central facade orchestrating the engine.
 
 ## `DocumentModel`
-El punto de entrada principal y centro (hub) del motor. Maneja el **Green Tree** (estructura inmutable) y el **Red Tree** (estado mutable). Expone los métodos para transacciones, consultas y generación de snapshots.
+The primary entry point and orchestrator of the engine. Manages the **Green Tree** (immutable structural syntax tree) and the **Red Tree** (mutable facade with absolute offsets). Exposes methods for atomic transactions, semantic queries, and snapshot generation.
 
 ## `TagRegistry`
-El registro central de todos los tags BBCode soportados. Define schemas, atributos, validaciones lógicas y delegados de renderizado.
+The central registry of supported BBCode tags. Defines syntax schemas, attribute models, semantic validation rules, and rendering delegates.
 
 ## `TagDefinitions`
-Implementaciones nativas de `TagDefinition` que vienen por defecto en el motor (ej: `bold`, `color`, `quote`, `youtube`, `gradient`).
+Native implementations of standard `TagDefinition` rules bundled by default with the engine (e.g., `bold`, `color`, `quote`, `youtube`, `gradient`).
 
-## Tipos Fundacionales
-- **`Types/core`**: Definiciones de nodos base (`NodeId`, `NodeKind`, `DocumentNode`, `DocumentSnapshot`, `DocumentChangeEvent`).
-- **`Types/operations`**: Primitivas de mutación (`Operation`, `InsertNodeOperation`, `ReplaceTextOperation`, etc.).
-- **`Types/tokens`**: Definiciones de salida del Lexer (`Token`, `Trivia`, `TokenStream`).
+## Foundational Types
+- **`Types/core`**: Base AST node definitions (`NodeId`, `NodeKind`, `DocumentNode`, `DocumentSnapshot`, `DocumentChangeEvent`).
+- **`Types/operations`**: Mutation primitives (`Operation`, `InsertNodeOperation`, `ReplaceTextOperation`, etc.).
+- **`Types/tokens`**: Lexer output tokens (`Token`, `Trivia`, `TokenStream`).

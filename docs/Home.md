@@ -1,5 +1,5 @@
 # QuasarEngine Wiki
 
-Bienvenido a la wiki de **QuasarEngine**. Este motor es una pieza de ingeniería construida sobre un árbol sintáctico inmutable *Red-Green* (estilo Roslyn), con un sistema de mutaciones basado en transacciones y un pipeline completamente extensible.
+Welcome to the **QuasarEngine** documentation wiki. Quasar is an optimizing document engine built upon an immutable Roslyn-style *Red-Green* Abstract Syntax Tree, featuring transactional state mutations and a fully extensible compiler pipeline.
 
-Usa el índice (Sidebar) para explorar la arquitectura del motor en detalle. Hemos dividido la documentación en módulos para que sea más fácil de leer, mantener y expandir.
+Use the sidebar navigation to explore the engine's architecture in detail. Documentation is organized into modular sections for maintainability and extensibility.
