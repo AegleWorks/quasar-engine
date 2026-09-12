@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
-import { HTMLRenderer } from '../Visitors/HTMLRenderer'
+import { HTMLRenderer, type HTMLRendererOptions } from '../Visitors/HTMLRenderer'
+import { htmlStringToGreenTree } from '../HTML/HTMLToGreenNode'
+import type { GreenNode } from '../Syntax/GreenNode'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { MarkdownExporter } from '../Visitors/MarkdownExporter'
 
@@ -101,5 +103,42 @@ describe('Box & Spoilerbox Rich Title Support', () => {
     const found = model.redRoot!.findNodeAtOffset(10)
     expect(found).toBeDefined()
     expect(found?.kind === 'text' || found?.kind === 'image').toBe(true)
+  })
+})
+
+describe('Box title line breaks', () => {
+  const render = (source: string, options: HTMLRendererOptions = {}) =>
+    new HTMLRenderer(options).render(new BBCodeDocumentModel({ source }).redRoot!)
+
+  const findKind = (node: GreenNode, kind: string): GreenNode | undefined => {
+    if (node.kind === kind) return node
+    for (const child of node.children) {
+      const found = findKind(child, kind)
+      if (found) return found
+    }
+    return undefined
+  }
+
+  it.each(['miliastry', 'osu', 'lyne'] as const)('breaks a plain multi-line title in the %s dialect', dialect => {
+    expect(render('[box=Line one\nLine two]Body[/box]', { dialect })).toContain('Line one<br />Line two')
+  })
+
+  it('breaks a rich multi-line title', () => {
+    expect(render('[box=[b]Line one[/b]\nLine two]Body[/box]')).toMatch(/Line one<\/strong><br \/>Line two/)
+  })
+
+  it('breaks a spoilerbox title', () => {
+    expect(render('[spoilerbox=Line one\r\nLine two]Body[/spoilerbox]')).toContain('Line one<br />Line two')
+  })
+
+  it('leaves the newline as collapsible whitespace when turned off', () => {
+    const html = render('[box=Line one\nLine two]Body[/box]', { boxTitleLineBreaks: false })
+    expect(html).toContain('Line one\nLine two')
+    expect(html).not.toContain('<br')
+  })
+
+  it('reads the break back when importing the rendered HTML', () => {
+    const html = render('[box=Line one\nLine two]Body[/box]')
+    expect(findKind(htmlStringToGreenTree(html), 'box')?.text).toBe('=Line one\nLine two')
   })
 })

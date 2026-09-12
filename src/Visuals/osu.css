@@ -160,15 +160,34 @@
 
 /* ─── Lists ──────────────────────────────────────────── */
 
+/* An `outside` marker hangs in the list's left padding, so under [centre] or
+ * [right] it stays pinned to the left edge while the text moves away from it.
+ * Aligned blocks switch the marker inside, next to the text. The switch is a
+ * pair of inherited custom properties rather than a descendant selector, so the
+ * NEAREST alignment wins: `[centre][left][list]` goes back to outside.
+ * `initial` restores the fallback declared on the list itself. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode__align-centre,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode__align-right,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) [style*="text-align:center"],
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) [style*="text-align:right"] {
+  --bb-list-position: inside;
+  --bb-list-indent: 0;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode__align-left,
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) [style*="text-align:left"] {
+  --bb-list-position: initial;
+  --bb-list-indent: initial;
+}
+
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) ul {
   margin: 0;
-  padding-left: 24px;
-  list-style: disc outside;
+  padding-left: var(--bb-list-indent, 24px);
+  list-style: disc var(--bb-list-position, outside);
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) ol {
   margin: 0;
-  padding-left: 24px;
-  list-style: decimal outside;
+  padding-left: var(--bb-list-indent, 24px);
+  list-style: decimal var(--bb-list-position, outside);
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) li {
   margin: 0;

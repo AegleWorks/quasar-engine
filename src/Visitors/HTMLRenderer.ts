@@ -71,10 +71,23 @@ export interface HTMLRendererOptions {
   timestampResolver?: (ms: number, label: string) => { href: string; external?: boolean } | null
   /** Design tokens or resolver function */
   tokens?: TokenSource
+  /**
+   * Render newlines inside a box/spoilerbox title as line breaks.
+   *
+   * The parser always keeps them in the title; without this they reach the
+   * HTML as a raw `\n` and collapse into a space, so a multi-line title reads
+   * as one line. osu! breaks the line (its final `nl2br` pass runs over the
+   * title too), but this is not tied to the osu dialect: every dialect honours
+   * it. On by default.
+   */
+  boxTitleLineBreaks?: boolean
 }
 
 /** Saltos de línea a convertir en `<br>` al pintar un efecto. */
 const NEWLINE_RE = /\n/g
+
+/** Saltos de línea de un título de box (ver `boxTitleLineBreaks`). */
+const TITLE_NEWLINE_RE = /\r?\n/g
 
 /** Referencia a un token de diseño dentro de un texto: `$nombre`. */
 const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
@@ -103,6 +116,7 @@ export class HTMLRenderer extends Visitor<string> {
       mentionResolver: options.mentionResolver,
       timestampResolver: options.timestampResolver,
       tokens: options.tokens,
+      boxTitleLineBreaks: options.boxTitleLineBreaks ?? true,
     }
   }
 
@@ -1429,7 +1443,7 @@ export class HTMLRenderer extends Visitor<string> {
   private renderTitle(node: RedNode, fallback: string): string {
     const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
     if (titleNodes && titleNodes.length > 0) {
-      return titleNodes.map(c => this.renderNode(c)).join('')
+      return this.breakTitleLines(titleNodes.map(c => this.renderNode(c)).join(''))
     }
     let title = String(node.metadata?.title ?? nodeAttrValue(node) ?? fallback)
     if (this.tokenResolver) {
@@ -1438,7 +1452,12 @@ export class HTMLRenderer extends Visitor<string> {
         return resolved !== undefined ? resolved : match
       })
     }
-    return this.escapeHtml(title)
+    return this.breakTitleLines(this.escapeHtml(title))
+  }
+
+  /** See {@link HTMLRendererOptions.boxTitleLineBreaks}. */
+  private breakTitleLines(html: string): string {
+    return this.options.boxTitleLineBreaks ? html.replace(TITLE_NEWLINE_RE, '<br />') : html
   }
 
   /**

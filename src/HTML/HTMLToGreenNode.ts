@@ -35,6 +35,21 @@ function normalizeColorToHex(color: string): string {
   return trimmed;
 }
 
+/**
+ * `textContent`, except that a `<br>` reads back as the newline it was rendered
+ * from. A multi-line box title is painted with `<br />`, which has no text of
+ * its own, so plain `textContent` glued its lines together.
+ */
+function textWithLineBreaks(el: Element): string {
+  let text = '';
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType === 3) text += child.nodeValue ?? '';
+    else if (child.nodeName.toLowerCase() === 'br') text += '\n';
+    else if (child.nodeType === 1) text += textWithLineBreaks(child as Element);
+  }
+  return text;
+}
+
 function domToGreenTree(root: HTMLElement): GreenNode {
   let currentOffset = 0;
 
@@ -248,7 +263,7 @@ function domToGreenTree(root: HTMLElement): GreenNode {
           // Leerlo como título del autor devolvía `[box=Box]` desde un `[box]`.
           if (!el.hasAttribute('data-bare-title')) {
             const summary = el.querySelector('summary');
-            if (summary) text = `=${summary.textContent || ''}`;
+            if (summary) text = `=${textWithLineBreaks(summary)}`;
           }
           break;
         }

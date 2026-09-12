@@ -435,18 +435,34 @@
 
 /* ─── Lists & Markers ───────────────────────────────────────────────────── */
 
+/* Centred and right-aligned lists keep the marker next to the text — see the
+ * same rule in osu.css for why it is an inherited custom property. */
+.bbcode-preview-lyne [style*="text-align:center"],
+.bbcode-preview.theme-lyne [style*="text-align:center"],
+.bbcode-preview-lyne [style*="text-align:right"],
+.bbcode-preview.theme-lyne [style*="text-align:right"] {
+  --bb-list-position: inside;
+  --bb-list-indent: 0;
+}
+
+.bbcode-preview-lyne [style*="text-align:left"],
+.bbcode-preview.theme-lyne [style*="text-align:left"] {
+  --bb-list-position: initial;
+  --bb-list-indent: initial;
+}
+
 .bbcode-preview-lyne ul,
 .bbcode-preview.theme-lyne ul {
   margin: 0 !important;
-  padding-left: 20px !important;
-  list-style: disc outside !important;
+  padding-left: var(--bb-list-indent, 20px) !important;
+  list-style: disc var(--bb-list-position, outside) !important;
 }
 
 .bbcode-preview-lyne ol,
 .bbcode-preview.theme-lyne ol {
   margin: 0 !important;
-  padding-left: 20px !important;
-  list-style: decimal outside !important;
+  padding-left: var(--bb-list-indent, 20px) !important;
+  list-style: decimal var(--bb-list-position, outside) !important;
 }
 
 .bbcode-preview-lyne li,
