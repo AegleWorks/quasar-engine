@@ -7,7 +7,7 @@
 
 > Traditional BBCode or Markdown parsers rely on brittle Regex that destroy user formatting, collapse on invalid syntax, and freeze the UI on large documents. **Quasar is different.**
 
-Quasar is the official document engine powering **Miliastry Nova**. It brings the architectural patterns used by modern language compilers (like C#'s *Roslyn* and Apple's *SwiftSyntax*) directly into the browser and desktop using pure TypeScript.
+Quasar is the official document engine powering **Miliastry**. It brings the architectural patterns used by modern language compilers (like C#'s *Roslyn* and Apple's *SwiftSyntax*) directly into the browser and desktop using pure TypeScript.
 
 Instead of translating strings to HTML, Quasar builds a living, immutable **Red-Green Syntax Tree**. It parses documents incrementally in microseconds, guarantees perfect round-tripping (preserving every single space and newline), and allows for real-time visual editing at 140 FPS.
 
@@ -23,10 +23,10 @@ Instead of translating strings to HTML, Quasar builds a living, immutable **Red-
 ## 🚀 Installation
 
 ```bash
-npm install github:hxovc/Miliastry-Quasar#main
+npm install github:AegleWorks/quasar-engine#main
 ```
 
-*(Note: Quasar is currently distributed as a git submodule for Miliastry Nova)*
+*(Note: Quasar is currently distributed as a git submodule of Miliastry)*
 
 ## 📚 Documentation & Architecture
 
@@ -40,6 +40,6 @@ Quasar's internal architecture is highly advanced. If you want to understand how
 
 ## 📜 License
 
-[**Miliastry Source License (MSL-1.0)**](LICENSE) — Copyright (c) 2026 hxovc / Miliastry Team.
+[**Miliastry Source License (MSL-1.1)**](LICENSE) — Copyright (c) 2026 hxovc / Miliastry Team.
 
-Quasar is Source-Available under a custom license designed to protect the Miliastry ecosystem. You can use, modify, and distribute the engine for any project—including standard visual BBCode editors or osu! profile tools—**except** for creating a Competing Product (i.e., a direct clone of Miliastry Nova as an integrated IDE, or a competing standalone engine based on this code).
+Quasar is Source-Available under a custom license designed to protect the Miliastry ecosystem. You can use, modify, and distribute the engine for any project—including standard visual BBCode editors or osu! profile tools—**except** for creating a Competing Product (i.e., a direct clone of Miliastry as an integrated IDE, or a competing standalone engine based on this code).
