@@ -77,6 +77,8 @@ export interface GradientDiagnostics {
   readonly plateauCount: number
   readonly maxPerceptualError: number
   readonly stopCount: number
+  readonly maxStepDelta?: number
+  readonly avgStepDelta?: number
   readonly featureScores: Readonly<Record<string, number>>
 }
 
@@ -230,10 +232,15 @@ export class GradientAnalyzer implements AnalyzerPass {
       const hasBreaks = checkFormattingBreaks(children, seq, 'color')
       const { stops, easing } = this.detectStops(colors)
       const diag = this.buildDiagnostics(colors, stops)
+      const minCharsPerSegment = (colors.length - 1) / (stops.length - 1)
+      const maxDelta = diag.maxStepDelta ?? 0
+      const hasValidInterpolation = colors.length > 3
+        ? minCharsPerSegment >= 1.5 && diag.maxPerceptualError < 0.12 && maxDelta <= 0.45
+        : (stops.length === 2 && diag.monotonic && diag.maxPerceptualError < 0.10 && maxDelta <= 0.40)
       const { score: rawScore } = this.calculateRawScore(diag, hasBreaks)
       const confidence = sigmoid(rawScore, SIGMOID_STEEPNESS)
 
-      if (confidence >= minConfidence && stops.length >= 2) {
+      if (confidence >= minConfidence && stops.length >= 2 && hasValidInterpolation) {
         const range = {
           start: offsets[seq.startIdx],
           end: offsets[seq.endIdx],
@@ -443,21 +450,28 @@ export class GradientAnalyzer implements AnalyzerPass {
     const n = colors.length
     const oklabArray = colors.map(c => hexToOklab(c))
 
-    // 1. Uniform perceptual spacing
+    // 1. Perceptual distances between adjacent colours
     const pDiffs: number[] = []
     for (let i = 1; i < n; i++) {
       pDiffs.push(perceptualDistanceOklab(oklabArray[i - 1], oklabArray[i]))
     }
-    const avgDiff = pDiffs.reduce((a, b) => a + b, 0) / pDiffs.length
-    const diffVariance = pDiffs.reduce((sum, d) => sum + (d - avgDiff) ** 2, 0) / pDiffs.length
-    const uniformSpacing = diffVariance < 0.001  // Tiny variance in perceptual space
+    const avgDiff = pDiffs.length > 0 ? pDiffs.reduce((a, b) => a + b, 0) / pDiffs.length : 0
+    const maxStepDelta = pDiffs.length > 0 ? Math.max(...pDiffs) : 0
+    const diffVariance = pDiffs.length > 0
+      ? pDiffs.reduce((sum, d) => sum + (d - avgDiff) ** 2, 0) / pDiffs.length
+      : 0
 
     // 2. Check monotonic: does each OKLab dimension change in one direction?
     const first = oklabArray[0]
     const last = oklabArray[n - 1]
-    const lDir = Math.sign(last[0] - first[0])
-    const aDir = Math.sign(last[1] - first[1])
-    const bDir = Math.sign(last[2] - first[2])
+    const totalDist = perceptualDistanceOklab(first, last)
+
+    const lSpan = last[0] - first[0]
+    const aSpan = last[1] - first[1]
+    const bSpan = last[2] - first[2]
+    const lDir = Math.abs(lSpan) > 0.02 ? Math.sign(lSpan) : 0
+    const aDir = Math.abs(aSpan) > 0.02 ? Math.sign(aSpan) : 0
+    const bDir = Math.abs(bSpan) > 0.02 ? Math.sign(bSpan) : 0
 
     let violations = 0
     for (let i = 1; i < n; i++) {
@@ -466,34 +480,60 @@ export class GradientAnalyzer implements AnalyzerPass {
       if (lDir !== 0 && Math.sign(curr[0] - prev[0]) !== lDir && Math.abs(curr[0] - prev[0]) > 0.005) violations++
       if (aDir !== 0 && Math.sign(curr[1] - prev[1]) !== aDir && Math.abs(curr[1] - prev[1]) > 0.005) violations++
       if (bDir !== 0 && Math.sign(curr[2] - prev[2]) !== bDir && Math.abs(curr[2] - prev[2]) > 0.005) violations++
+      if (lDir === 0 && Math.abs(curr[0] - first[0]) > 0.04) violations++
+      if (aDir === 0 && Math.abs(curr[1] - first[1]) > 0.04) violations++
+      if (bDir === 0 && Math.abs(curr[2] - first[2]) > 0.04) violations++
     }
-    const monotonic = violations < n * 0.2
+
+    const isShort = n <= 4
+    const isLoopOrBounce = totalDist < 0.04 && maxStepDelta > 0.04
+    const monotonic = !isLoopOrBounce && (
+      isShort
+        ? violations === 0 && (lDir !== 0 || aDir !== 0 || bDir !== 0)
+        : violations < n * 0.2
+    )
+
+    // Spacing is only "uniform" if step variance is tiny AND steps are small gradient steps, not massive leaps
+    const uniformSpacing = diffVariance < 0.001 &&
+      avgDiff <= (isShort ? 0.28 : 0.25) &&
+      maxStepDelta <= (isShort ? 0.30 : 0.35) &&
+      (!isShort || monotonic)
 
     // 3. Count plateaus (consecutive perceptually identical colours).
-    // These are the neighbour distances from step 1, not a new measurement.
     let plateauCount = 0
     for (let i = 0; i < pDiffs.length; i++) {
       if (pDiffs[i] < 0.01) plateauCount++
     }
 
-    // 4. Perceptual error vs ideal OKLab interpolation
+    // 4. Perceptual error vs ideal OKLab interpolation across stops
     let maxPerceptualError = 0
     if (n >= 3 && stops.length >= 2) {
-      // The ramp's endpoints are fixed for the whole loop; only `t` moves.
-      // The mix still round-trips through hex because the comparison is
-      // against a colour that has been quantised to 8 bits per channel, and
-      // dropping that would change the score.
-      const rampFrom = hexToOklab(stops[0].color)
-      const rampTo = hexToOklab(stops[stops.length - 1].color)
+      const stopOklabs = stops.map(s => hexToOklab(s.color))
       for (let i = 0; i < n; i++) {
         const t = n > 1 ? i / (n - 1) : 0
-        const ideal = mixOklabToHex(rampFrom, rampTo, t)
+        let segIdx = 0
+        while (segIdx < stops.length - 2 && stops[segIdx + 1].position < t) {
+          segIdx++
+        }
+        const s0 = stops[segIdx]
+        const s1 = stops[segIdx + 1]
+        const segSpan = s1.position - s0.position
+        const segT = segSpan > 0 ? Math.max(0, Math.min(1, (t - s0.position) / segSpan)) : 0
+        const ideal = mixOklabToHex(stopOklabs[segIdx], stopOklabs[segIdx + 1], segT)
         const error = perceptualDistanceOklab(hexToOklab(ideal), oklabArray[i])
         maxPerceptualError = Math.max(maxPerceptualError, error)
       }
     }
 
-    return { uniformSpacing, monotonic, plateauCount, maxPerceptualError, stopCount: stops.length }
+    return {
+      uniformSpacing,
+      monotonic,
+      plateauCount,
+      maxPerceptualError,
+      stopCount: stops.length,
+      maxStepDelta,
+      avgStepDelta: avgDiff,
+    }
   }
 
   // ── Confidence Scoring ──────────────────────────────────────────
@@ -517,8 +557,13 @@ export class GradientAnalyzer implements AnalyzerPass {
     if (diag.maxPerceptualError < 0.02) score += WEIGHTS.lowPerceptualError
     else if (diag.maxPerceptualError < 0.05) score += WEIGHTS.lowPerceptualError * 0.5
     else {
-      const penalty = WEIGHTS.lowPerceptualError * Math.min(diag.maxPerceptualError * 20, 5)
+      const penalty = WEIGHTS.lowPerceptualError * Math.min(diag.maxPerceptualError * 25, 12)
       score -= penalty
+    }
+
+    const maxDelta = diag.maxStepDelta ?? 0
+    if (maxDelta > 0.35) {
+      score -= Math.min((maxDelta - 0.35) * 2.5, 0.60)
     }
 
     const featureScores = {

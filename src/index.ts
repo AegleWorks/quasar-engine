@@ -23,9 +23,7 @@ export type {
 
 // ── Lexer ──
 export { Lexer, type LexerOptions } from './Lexer/Lexer'
-// Which tags carry literal content. The lexer is the only authority on it;
-// exported so consumers stop keeping their own copy.
-export { BBCODE_RAW_TAGS } from './Lexer/BBCodeLexer'
+export { scanBBCode, BBCODE_RAW_TAGS, type BBCodeToken, type BBCodeOpenToken, type BBCodeCloseToken, type BBCodeTextToken, type BBCodeNewlineToken } from './Lexer/BBCodeLexer'
 export type { Token, TokenKind, Trivia, TriviaKind } from './Types/tokens'
 
 // ── Green/Red Tree ──
@@ -218,6 +216,7 @@ export { MilHibriDocumentModel, type MilHibriDocumentModelOptions } from './MilH
 
 // ── Markdown Bridge ──
 export { MarkdownDocumentModel } from './Markdown/MarkdownDocumentModel'
+export { scanMarkdown, type MarkdownToken } from './Markdown/MarkdownLexer'
 export { markdownAstToGreenTree, markdownAstToRedTree } from './Markdown/MarkdownToGreenNode'
 
 // ── HTML Bridge ──

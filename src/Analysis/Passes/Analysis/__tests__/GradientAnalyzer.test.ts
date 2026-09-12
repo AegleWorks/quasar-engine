@@ -165,10 +165,47 @@ describe('GradientAnalyzer v2', () => {
     const collapsible = analyzer.findCollapsibleGradients(tree)
 
     expect(collapsible).toHaveLength(1)
-    expect(collapsible[0].stops).toHaveLength(5)
     expect(collapsible[0].replacementText).toBe(
       '[gradient=#302E38,#7F9DC7,#F0B7D3,#7F9DC7,#302E38]✩₊˚.⋆☾⋆⁺₊✧₊⁺⋆☽⋆.˚₊✩₊˚.⋆☾⋆⁺₊✧₊⁺⋆☽⋆.˚₊✩[/gradient]',
     )
+  })
+
+  it('correctly collapses valid short 3-color linear gradients', () => {
+    const analyzer = new GradientAnalyzer()
+    const tree1 = greenNode('document', '', [
+      colorNode('#FF0000', 'A'),
+      colorNode('#990044', 'B'),
+      colorNode('#330088', 'C'),
+    ])
+    const tree2 = greenNode('document', '', [
+      colorNode('#00FF00', 'X'),
+      colorNode('#00AA44', 'Y'),
+      colorNode('#004488', 'Z'),
+    ])
+    expect(analyzer.findCollapsibleGradients(tree1)).toHaveLength(1)
+    expect(analyzer.findCollapsibleGradients(tree2)).toHaveLength(1)
+  })
+
+  it('rejects high-contrast or non-monotonic 3-character/symbol sequences as gradients', () => {
+    const analyzer = new GradientAnalyzer()
+    const trollCases = [
+      ['#000000', '#FFFFFF', '#000000'], // Black-White-Black bounce
+      ['#FF0000', '#00FF00', '#FF0000'], // Red-Green-Red bounce
+      ['#000000', '#FFFF00', '#000000'], // High contrast symbol bounce
+      ['#FF0000', '#00FF00', '#0000FF'], // Red-Green-Blue sharp jump
+      ['#050505', '#FAFAFA', '#0A0A0A'], // Sharp spike
+      ['#FF0055', '#00FFFF', '#FF9900'], // Random 3 symbols
+    ]
+
+    for (const hexes of trollCases) {
+      const tree = greenNode(
+        'document',
+        '',
+        hexes.map((hex, i) => colorNode(hex, String.fromCharCode(65 + i))),
+      )
+      const collapsible = analyzer.findCollapsibleGradients(tree)
+      expect(collapsible).toHaveLength(0)
+    }
   })
 })
 
