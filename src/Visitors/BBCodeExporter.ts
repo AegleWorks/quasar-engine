@@ -12,6 +12,7 @@ import { RedNode } from '../Syntax/RedNode'
 import { Visitor } from './Visitor'
 import type { VisitorContext } from './Visitor'
 import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
+import { clampFontSizeValue } from '../Utils/FontSizeLimits'
 import {
   toTokenResolver,
   resolveTokenValue,
@@ -418,7 +419,7 @@ export class BBCodeExporter extends Visitor<string> {
           if (this.shouldResolveTokens() && size.startsWith('$')) {
             size = resolveTokenValue(size, this.tokenResolver)
           }
-          out = `[size=${size}]${out}[/size]`
+          out = `[size=${clampFontSizeValue(size, this.target)}]${out}[/size]`
         }
         // Se pueden seguir sumando estilos dinámicos
       }
@@ -516,7 +517,8 @@ export class BBCodeExporter extends Visitor<string> {
         if (this.shouldResolveTokens() && size.startsWith('$')) {
           size = resolveTokenValue(size, this.tokenResolver)
         }
-        return `=${size}`
+        // The published page caps it anyway; export what it will actually show.
+        return `=${clampFontSizeValue(size, this.target)}`
       } else if (node.kind === 'color' && hasAttrValue(node.metadata.color)) {
         let color = String(node.metadata.color)
         if (this.shouldResolveTokens() && color.startsWith('$')) {

@@ -21,6 +21,7 @@ import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree } from '../RenderPipeline/RenderTree'
 
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { clampFontSizeValue, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
   toTokenResolver,
@@ -357,7 +358,8 @@ export class HTMLRenderer extends Visitor<string> {
       if (style) {
         const inlineStyles = []
         const color = style.color && sanitizeColor(style.color, this.tokenResolver)
-        const fontSize = style.fontSize && sanitizeFontSize(style.fontSize, this.tokenResolver)
+        const rawFontSize = style.fontSize && sanitizeFontSize(style.fontSize, this.tokenResolver)
+        const fontSize = rawFontSize && clampFontSizeValue(rawFontSize, this.options.dialect)
         if (color) inlineStyles.push(`color: ${color}`)
         if (fontSize) inlineStyles.push(`font-size: ${fontSize}%`)
         if (this.isCssKeyword(style.fontWeight)) inlineStyles.push(`font-weight: ${style.fontWeight}`)
@@ -850,7 +852,9 @@ export class HTMLRenderer extends Visitor<string> {
 
   private fontSizeStyle(node: RedNode): string {
     const size = sanitizeFontSize(nodeAttrValue(node, 'size'), this.tokenResolver)
-    return size ? `style="font-size:${size}%;"` : ''
+    // Capped per dialect (see `FontSizeLimits`): osu! stops at 200, so the
+    // editor must not paint a size the published page will never show.
+    return size ? `style="font-size:${clampFontSizeValue(size, this.options.dialect)}%;"` : ''
   }
 
   private fontStyle(node: RedNode): string {
@@ -1685,7 +1689,8 @@ export class HTMLRenderer extends Visitor<string> {
         const safe = sanitizeColor(seg.color, this.tokenResolver)
         out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped
       } else if (seg.size !== undefined) {
-        out += `<span style="font-size:${Math.max(10, Math.min(400, seg.size))}%">${escaped}</span>`
+        const ceiling = maxFontSizeFor(this.options.dialect) ?? 400
+        out += `<span style="font-size:${Math.max(10, Math.min(ceiling, seg.size))}%">${escaped}</span>`
       } else {
         out += escaped
       }

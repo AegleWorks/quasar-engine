@@ -277,6 +277,7 @@ export {
   SEPARATOR_VARIANTS, TABLE_FLAGS, IMG_MODIFIERS,
 } from './Utils/TagVocabulary'
 export type { AttributeVocabulary, VocabularySyntax } from './Utils/TagVocabulary'
+export { maxFontSizeFor, clampFontSizeValue } from './Utils/FontSizeLimits'
 
 // ── Analysis Framework ──
 export {
