@@ -175,7 +175,36 @@ function domToGreenTree(root: HTMLElement): GreenNode {
             const KIND_DE_TAG: Record<string, string> = { img: 'image', youtube: 'video', imagemap: 'imagemap' };
             return greenNode(KIND_DE_TAG[vacio] ?? vacio, '', []);
           }
-          if (el.classList.contains('notice')) kind = 'notice';
+          if (el.classList.contains('notice') || el.classList.contains('well')) kind = 'notice';
+          else if (el.classList.contains('bbcode-spoilerbox')) {
+            // Markup of osu-web (and of our osu-mode renderer): the title sits in
+            // the link, the content in `__body`. A copied userpage only has this.
+            const link = el.querySelector(':scope > .bbcode-spoilerbox__link');
+            const label = link?.querySelector('.bbcode-spoilerbox__link-text') ?? link;
+            const title = label ? textWithLineBreaks(label).trim() : '';
+            if (link) (link as any).__quasar_extracted = true;
+            // osu labels an untitled box SPOILER; that label is not the author's.
+            if (!title || title === 'SPOILER') kind = 'spoilerbox';
+            else { kind = 'box'; text = `=${title}`; }
+          }
+          else if (el.classList.contains('bbcode-spoilerbox__body')) kind = 'bb_text_wrapper';
+          else if (el.classList.contains('bbcode__align-centre')) kind = 'center';
+          else if (el.classList.contains('bbcode__align-right')) kind = 'right';
+          else if (el.classList.contains('bbcode__align-left')) kind = 'left';
+          else if (el.classList.contains('imagemap')) {
+            kind = 'imagemap';
+            const img = el.querySelector('.imagemap__image, img');
+            if (img) children.push(greenLeaf('text', img.getAttribute('src') || ''));
+            const areas = el.querySelectorAll('.imagemap__link');
+            areas.forEach((a) => {
+              const style = (a as HTMLElement).style;
+              const coords = [style.left, style.top, style.width, style.height].map((v) => parseFloat(v || '0'));
+              const href = a.getAttribute('href') || '#';
+              const title = a.getAttribute('title') || '';
+              children.push(greenLeaf('spacing', ''));
+              children.push(greenLeaf('text', `${coords.join(' ')} ${href} ${title}`.trim()));
+            });
+          }
           else if (el.classList.contains('bb-empty-line') || el.classList.contains('bbcode-para')) {
             const hasText = (el.textContent || '').replace(/\u200B/g, '').trim().length > 0;
             kind = hasText ? 'paragraph' : 'empty_line';
@@ -233,7 +262,7 @@ function domToGreenTree(root: HTMLElement): GreenNode {
           else kind = 'group';
           break;
         case 'iframe':
-          if (el.classList.contains('bb-youtube') || el.hasAttribute('data-youtube')) {
+          if (el.classList.contains('bb-youtube') || el.hasAttribute('data-youtube') || /youtube(-nocookie)?\.com\/embed\//.test(el.getAttribute('src') || '')) {
             // El parser produce `video`, no `youtube`, y con el id en un hijo de
             // texto. Emitir otra forma hacía que el exporter no encontrara el tag.
             kind = 'video';
@@ -317,7 +346,7 @@ function domToGreenTree(root: HTMLElement): GreenNode {
       }
 
       // Convert children recursively unless it's a raw block like pre or imagemap
-      if (tag !== 'pre' && !(tag === 'div' && (el.classList.contains('bbcode-imagemap') || el.classList.contains('imagemap-container')))) {
+      if (tag !== 'pre' && kind !== 'imagemap') {
         for (let i = 0; i < node.childNodes.length; i++) {
           const child = node.childNodes[i];
           if ((child as any).__quasar_extracted) continue;
