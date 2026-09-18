@@ -12,3 +12,6 @@ bench-report.txt
 
 !scripts/
 !scripts/copy-css.mjs
+
+# Agent tooling cache
+.atl/
