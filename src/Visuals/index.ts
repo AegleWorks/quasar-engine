@@ -36,8 +36,8 @@ export const visualThemes = [
   },
   {
     id: 'lyne',
-    name: 'Lyne Style',
-    description: 'Estilo visual cyberpunk con cortes a 45° inspirado en Lyne',
+    name: 'SYNE Style',
+    description: 'Estilo visual cyberpunk con cortes a 45° inspirado en SYNE',
     cssFile: 'lyne.css',
   },
 ] as const
