@@ -50,6 +50,24 @@ function textWithLineBreaks(el: Element): string {
   return text;
 }
 
+/**
+ * Elementos que ya marcan una frontera de línea por sí mismos.
+ *
+ * Quien contiene uno de estos es un envoltorio, no una línea: sus hijos ya
+ * aportan las fronteras y no hay que añadir ninguna por encima.
+ */
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'TABLE', 'TR', 'DETAILS', 'HR',
+]);
+
+function hasBlockChild(el: Element): boolean {
+  for (const child of Array.from(el.children)) {
+    if (BLOCK_TAGS.has(child.tagName)) return true;
+  }
+  return false;
+}
+
 function domToGreenTree(root: HTMLElement): GreenNode {
   let currentOffset = 0;
 
@@ -244,6 +262,20 @@ function domToGreenTree(root: HTMLElement): GreenNode {
           else if (el.style.textAlign === 'center') kind = 'center';
           else if (el.style.textAlign === 'right') kind = 'right';
           else if (el.style.textAlign === 'left') kind = 'left';
+          // Un `div`/`p` sin nada que lo identifique sigue siendo un BLOQUE, y
+          // dos bloques hermanos son dos líneas. Cayendo en `group` —que no
+          // emite frontera ninguna— `<div>uno</div><div>dos</div>` volvía como
+          // `unodos`. Se nota al escribir en el WYSIWYG: el navegador envuelve
+          // cada línea nueva en un `div` pelado, así que cada Enter que abría
+          // bloque perdía su salto y el texto se pegaba al anterior.
+          //
+          // Solo para bloques HOJA. Un `div` que contiene otros bloques es un
+          // envoltorio: ahí las fronteras las ponen sus hijos, y convertirlo
+          // en párrafo añadiría un salto que nadie escribió.
+          else if (!hasBlockChild(el)) {
+            const conTexto = (el.textContent || '').replace(/​/g, '').trim().length > 0;
+            kind = conTexto ? 'paragraph' : 'empty_line';
+          }
           else kind = 'group';
           break;
         }
