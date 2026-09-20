@@ -527,14 +527,24 @@
   color: #000;
 }
 
-/* Notice — osu lo llama `well` */
+/* Notice — osu lo llama `well`.
+ *
+ * El `padding: 19px`, el `border-radius: 4px` y ese `box-shadow` con esos
+ * valores exactos son el `.well` de Bootstrap 3 tal cual, que es de donde
+ * osu-web lo hereda. Bootstrap NO declara `text-align`, así que el aviso
+ * alinea como lo que lo rodea.
+ *
+ * Aquí llevaba un `text-align: center` que no sale de ninguna parte: centraba
+ * el contenido aunque el autor no hubiera puesto un `[centre]`. En el corpus
+ * hay 131 `[notice]` que envuelven su contenido en `[centre]` a mano —nadie
+ * escribe eso si la caja ya centra— y otros 297 que no, y esperaban su texto
+ * a la izquierda. */
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .well {
   padding: 19px;
   border: 2px solid var(--osu-border);
   border-radius: 4px;
   background: var(--osu-bg-deep);
   color: var(--osu-text);
-  text-align: center;
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.05);
 }
 
