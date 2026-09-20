@@ -364,6 +364,36 @@ function deletionsFor(
  * Reconciles the visual DOM of a contenteditable container against the original BBCode document AST.
  * Produces minimal, non-destructive surgical edits preserving untouched BBCode blocks and structure.
  */
+/**
+ * Does any node id appear more than once under `container`?
+ *
+ * The pairing below trusts `data-node-id` to name ONE element. A
+ * contenteditable breaks that on its own: pressing Enter inside a block makes
+ * the browser split the element in two and COPY every attribute onto the new
+ * half, id included. Two elements then answer to the same id.
+ *
+ * That silently defeated the `else` branch further down, which already knew to
+ * send a "newly added/split block" to the full serialise — it only ever
+ * triggered for an element with NO id, and a split block has one. Both halves
+ * resolved to the same AST node and each emitted an edit over the same range;
+ * the empty half won. Enter at the start of a `[notice]` left its text on
+ * screen and took it out of the document.
+ *
+ * A duplicate means the DOM no longer describes the tree this reconciler was
+ * given, so nothing incremental can be trusted — which is exactly what the
+ * full path is for, and it serialises the split correctly on its own.
+ */
+function hasDuplicateNodeIds(container: HTMLElement): boolean {
+  const seen = new Set<string>()
+  for (const el of Array.from(container.querySelectorAll('[data-node-id]'))) {
+    const id = el.getAttribute('data-node-id')
+    if (!id) continue
+    if (seen.has(id)) return true
+    seen.add(id)
+  }
+  return false
+}
+
 export function reconcileVisualDOMToBBCode(
   originalSource: string,
   originalAST: RedNode | null,
@@ -382,6 +412,7 @@ export function reconcileVisualDOMToBBCode(
   }
 
   if (!originalAST || !originalSource) return fullFallback()
+  if (hasDuplicateNodeIds(editorContainer)) return fullFallback()
 
   const idMap = buildNodeIdMap(originalAST)
 
