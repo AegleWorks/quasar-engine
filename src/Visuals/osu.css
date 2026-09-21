@@ -203,7 +203,6 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) img {
   max-width: 100%;
   height: auto;
-  border-radius: 8px;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) iframe {
   /* inline-block (no block): el preflight de Tailwind fuerza `iframe{display:block}`
@@ -229,7 +228,6 @@
   position: relative;
   max-width: 100%;
   overflow: hidden;
-  border-radius: 8px;
 }
 
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-imap-area,

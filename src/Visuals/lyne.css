@@ -931,7 +931,6 @@
  * emitiendo su estilo inline desde el renderer. */
 .bb-img {
   max-width: 100% !important;
-  max-height: 420px !important;
   height: auto !important;
   vertical-align: middle !important;
   margin: 4px 0 !important;
