@@ -56,6 +56,8 @@ interface DrawerState {
 const running = new WeakMap<Element, DrawerState>()
 
 function prefersReducedMotion(): boolean {
+  // The app's "Reduce animations" setting; see `@miliastry/lib/reducedMotion`.
+  if (typeof document !== 'undefined' && document.documentElement.hasAttribute('data-reduced-motion')) return true
   return typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
