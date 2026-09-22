@@ -3,6 +3,8 @@ import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { TagRegistry } from '../Model/TagRegistry'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import type { Diagnostic, DiagnosticFix } from '../Types/diagnostics'
+import { registerValidatorFixes } from '../Fixes/validatorFixes'
+import { getCodeFix, getCodeFixMeta } from '../Fixes/CodeFixRegistry'
 
 /**
  * Las correcciones que emiten los validadores.
@@ -52,10 +54,22 @@ function renderNormalized(source: string): string {
 }
 
 function onlyFix(source: string, code: string): DiagnosticFix {
-  const found = diagnose(source).find(d => d.code === code)
+  // Fixes moved out of the analyzer into the Fixes registry (lightbulb
+  // engine): the diagnostic carries `{ code, data }` and the provider rebuilds
+  // the same operations. Every assertion below pins the same outputs as before.
+  registerValidatorFixes()
+  const model = new BBCodeDocumentModel({ source })
+  const found = model.analyze().diagnostics.items.find(d => d.code === code)
   expect(found, `no se emitió ningún '${code}' para ${JSON.stringify(source)}`).toBeDefined()
-  expect(found!.fixes?.length, `'${code}' no trae corrección`).toBeGreaterThan(0)
-  return found!.fixes![0]
+  const node = found!.nodeId ? model.findNode(found!.nodeId) : null
+  const provider = getCodeFix(code)
+  expect(provider, `'${code}' no trae corrección`).toBeDefined()
+  const operations = provider!(found!, { source, node })
+  expect(operations.length, `'${code}' no trae corrección`).toBeGreaterThan(0)
+  const meta = getCodeFixMeta(code)
+  const description =
+    typeof meta?.title === 'function' ? meta.title(found!) : (meta?.title ?? found!.message)
+  return { description, isAutomatic: meta?.isAutomatic ?? false, operations }
 }
 
 describe('correcciones de diagnóstico', () => {

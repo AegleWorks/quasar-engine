@@ -12,6 +12,8 @@ import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 import { CommandRegistry, type Command } from '../Commands'
 import { SemanticAnalyzer, type Validator } from '../Semantic/SemanticAnalyzer'
 import { Linter, type LintRule } from '../Linter/Linter'
+import { registerCodeFix, unregisterCodeFix } from '../Fixes/CodeFixRegistry'
+import { registerRefactoring, unregisterRefactoring } from '../Fixes/RefactoringRegistry'
 import { RenderPipeline, type RenderHook } from '../RenderPipeline/RenderPipeline'
 import { PluginRegistry, type PluginManifest, type PluginContribution } from './PluginRegistry'
 
@@ -76,6 +78,18 @@ export class PluginAPI {
       }
     }
 
+    if (contributions.codeFixes) {
+      for (const fix of contributions.codeFixes) {
+        registerCodeFix(fix.code, fix.provider, fix.meta)
+      }
+    }
+
+    if (contributions.refactorings) {
+      for (const refactoring of contributions.refactorings) {
+        registerRefactoring(refactoring)
+      }
+    }
+
     if (contributions.renderHooks) {
       for (const hook of contributions.renderHooks) {
         this.renderer.register(hook)
@@ -111,6 +125,16 @@ export class PluginAPI {
     if (plugin.contributions.lintRules) {
       for (const rule of plugin.contributions.lintRules) {
         this.linter.unregister(rule.code)
+      }
+    }
+    if (plugin.contributions.codeFixes) {
+      for (const fix of plugin.contributions.codeFixes) {
+        unregisterCodeFix(fix.code)
+      }
+    }
+    if (plugin.contributions.refactorings) {
+      for (const refactoring of plugin.contributions.refactorings) {
+        unregisterRefactoring(refactoring.id)
       }
     }
 

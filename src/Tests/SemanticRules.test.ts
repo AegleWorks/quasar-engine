@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
-import type { Diagnostic } from '../Types/diagnostics'
+import type { Diagnostic, DiagnosticFix } from '../Types/diagnostics'
+import { registerValidatorFixes } from '../Fixes/validatorFixes'
+import { getCodeFix, getCodeFixMeta } from '../Fixes/CodeFixRegistry'
 
 /**
  * The rules the checker gained when the Linter's dead rules were moved into the
@@ -31,6 +33,23 @@ function slice(source: string, d: Diagnostic): string {
 
 function codes(source: string): string[] {
   return diagnose(source).map(d => d.code)
+}
+
+/**
+ * Fixes moved out of the analyzer into the Fixes registry (lightbulb
+ * engine): same operations as before, resolved by code from `{ code, data }`.
+ */
+function registryFix(source: string, code: string): DiagnosticFix {
+  registerValidatorFixes()
+  const model = new BBCodeDocumentModel({ source })
+  const diag = model.analyze().diagnostics.items.find(d => d.code === code)
+  expect(diag, `no '${code}' for ${JSON.stringify(source)}`).toBeDefined()
+  const node = diag!.nodeId ? model.findNode(diag!.nodeId) : null
+  const operations = getCodeFix(code)!(diag!, { source, node })
+  const meta = getCodeFixMeta(code)
+  const description =
+    typeof meta?.title === 'function' ? meta.title(diag!) : (meta?.title ?? diag!.message)
+  return { description, isAutomatic: meta?.isAutomatic ?? false, operations }
 }
 
 describe('invalid-url-protocol', () => {
@@ -70,8 +89,7 @@ describe('missing-url-protocol', () => {
 
   it('fixes itself by prefixing https://, and the fix is safe to batch', () => {
     const src = '[url=www.osu.ppy.sh]click[/url]'
-    const d = find(src, 'missing-url-protocol')
-    const fix = d.fixes![0]
+    const fix = registryFix(src, 'missing-url-protocol')
     expect(fix.isAutomatic).toBe(true)
 
     const op = fix.operations[0]
@@ -108,7 +126,7 @@ describe('empty-link', () => {
 
   it('suggests the href as the label, but never automatically', () => {
     const src = '[url=https://osu.ppy.sh][/url]'
-    const fix = find(src, 'empty-link').fixes![0]
+    const fix = registryFix(src, 'empty-link')
     // Manual: it puts words on screen that the author did not write.
     expect(fix.isAutomatic).toBe(false)
 
@@ -155,7 +173,7 @@ describe('redundant-nesting', () => {
 
   it('unwraps the inner tag, and only ever on request', () => {
     const src = '[b][b]doble[/b][/b]'
-    const fix = find(src, 'redundant-nesting').fixes![0]
+    const fix = registryFix(src, 'redundant-nesting')
     // Manual: unwrapping changes the emitted HTML. "Fix all" promises it never
     // changes the document's output, so this one stays out of the batch.
     expect(fix.isAutomatic).toBe(false)

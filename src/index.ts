@@ -61,7 +61,7 @@ export type { AnalyzeScope } from './Semantic/SemanticAnalyzer'
  * index on first read, so a caller that never asks never pays for the walk.
  */
 export type { IndexedAnalyzeResult } from './Semantic/SemanticAnalyzer'
-export type { Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticFix, FixOperation } from './Types/diagnostics'
+export type { Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticFix, FixOperation, CodeActionKind } from './Types/diagnostics'
 
 // ── Tag Registry ──
 export { TagRegistry, type TagDefinition, type TagHandler } from './Model/TagRegistry'

@@ -53,6 +53,13 @@ import { DocumentEventBus } from '../Events/EventBus'
 import type { DocumentEvent } from '../Events/EventBus'
 import { NodeFactory } from './NodeFactory'
 import { TagRegistry } from './TagRegistry'
+import { fixAll as runFixAll } from '../Fixes/BatchFixer'
+import type {
+  BatchResult,
+  FixAllOptions,
+  FixAllTarget,
+} from '../Fixes/BatchFixer'
+import { applyEditsToSource } from '../Edits/applyEdits'
 
 export interface DocumentModelOptions {
   /** Initial source text */
@@ -647,6 +654,60 @@ export class DocumentModel {
     if (after === before) return false
     this.undoManager.push({ before, after }, label ?? tx.getLabel())
     return true
+  }
+
+  /**
+   * BatchFixer entry — document Fix-All without touching `transact()`.
+   *
+   * This adapter is the real `FixAllTarget` behind the interface U2 left at
+   * interface level: `BatchFixer.fixAll` batches same-`equivalenceKey` fixes
+   * and hands each accepted batch to `target.transact` — the sole edit path,
+   * one call per pass — then re-reads diagnostics for the next pass (multipass
+   * bound `MAX_FIX_ALL_PASSES` with a cycle warning; `project`/`solution`
+   * scope throws `UnimplementedError`).
+   *
+   * Why the batch travels via `applyTextUpdate`, not `transact(Operation[])`:
+   * `Transaction` has no text-span operation kind — all thirteen `Operation`
+   * kinds address nodes or text objects (`insert_node`, `set_text`, …), so a
+   * `SurgicalEdit[]` over source offsets is not expressible as `Operation[]`
+   * today. The smallest coherent wiring is one accepted batch rendered with
+   * `applyEditsToSource` and applied as a single `applyTextUpdate`, which
+   * diffs it to one `TextChange` and runs the incremental pipeline (reparse,
+   * events, debounced analysis) exactly as a typed edit would. No new op
+   * kind, no `transact()` behavior change.
+   *
+   * Two behaviors of `transact()` are preserved explicitly because the
+   * `applyChange` path does not provide them:
+   * - Undo: the adapter pushes a `{ before, after }` snapshot, so Fix-All
+   *   stays undoable like any transaction (no-op batches push nothing).
+   * - Freshness: `getDiagnostics` flushes the debounced post-edit analysis
+   *   first, so every pass decides on the current document's findings.
+   */
+  asFixAllTarget(): FixAllTarget {
+    return {
+      getSource: () => this.source,
+      getDiagnostics: () => {
+        this.ensureAnalyzed()
+        return this._diagnostics?.items ?? []
+      },
+      findNode: (diagnostic) =>
+        diagnostic.nodeId ? (this.findNode(diagnostic.nodeId) ?? null) : null,
+      transact: (edits) => {
+        const before = this.source
+        const after = applyEditsToSource(before, edits)
+        if (after === before) return
+        this.applyTextUpdate(after, 'fix-all')
+        this.undoManager.push({ before, after }, 'Fix all')
+      },
+    }
+  }
+
+  /**
+   * Document Fix-All: apply every fix sharing one `equivalenceKey` through
+   * {@link asFixAllTarget}. See that method for the wiring contract.
+   */
+  fixAll(equivalenceKey: string, options: FixAllOptions = {}): BatchResult {
+    return runFixAll(this.asFixAllTarget(), equivalenceKey, options)
   }
 
   /**

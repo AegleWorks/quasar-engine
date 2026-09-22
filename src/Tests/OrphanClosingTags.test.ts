@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import type { Diagnostic, DiagnosticFix } from '../Types/diagnostics'
+import { registerValidatorFixes } from '../Fixes/validatorFixes'
+import { getCodeFix, getCodeFixMeta } from '../Fixes/CodeFixRegistry'
 
 /**
  * Cierres que no cierran nada.
@@ -31,6 +33,20 @@ function only(source: string, code: string): Diagnostic {
   const found = diagnose(source).filter(d => d.code === code)
   expect(found.length, `se esperaba un único '${code}' en ${JSON.stringify(source)}`).toBe(1)
   return found[0]
+}
+
+/** La corrección por la vía del registro (ya no incrustada en el diagnóstico). */
+function registryFix(source: string): DiagnosticFix {
+  registerValidatorFixes()
+  const model = new BBCodeDocumentModel({ source })
+  const diag = model.analyze().diagnostics.items.find(d => d.code === 'orphan-closing-tag')
+  expect(diag, `se esperaba 'orphan-closing-tag' en ${JSON.stringify(source)}`).toBeDefined()
+  const node = diag!.nodeId ? model.findNode(diag!.nodeId) : null
+  const operations = getCodeFix('orphan-closing-tag')!(diag!, { source, node })
+  const meta = getCodeFixMeta('orphan-closing-tag')
+  const description =
+    typeof meta?.title === 'function' ? meta.title(diag!) : (meta?.title ?? diag!.message)
+  return { description, isAutomatic: meta?.isAutomatic ?? false, operations }
 }
 
 function applyFix(source: string, fix: DiagnosticFix): string {
@@ -106,17 +122,15 @@ describe('cierres huérfanos', () => {
 
   describe('corrección', () => {
     it('borra la etiqueta y solo la etiqueta', () => {
-      const d = only('hola[/b] mundo', 'orphan-closing-tag')
-      expect(applyFix('hola[/b] mundo', d.fixes![0])).toBe('hola mundo')
+      expect(applyFix('hola[/b] mundo', registryFix('hola[/b] mundo'))).toBe('hola mundo')
     })
 
     it('deja el documento sin ese hallazgo', () => {
-      const d = only('hola[/b]', 'orphan-closing-tag')
-      expect(codesOf(applyFix('hola[/b]', d.fixes![0]))).not.toContain('orphan-closing-tag')
+      expect(codesOf(applyFix('hola[/b]', registryFix('hola[/b]')))).not.toContain('orphan-closing-tag')
     })
 
     it('NO es automática: quita algo que la vista previa está mostrando', () => {
-      expect(only('hola[/b]', 'orphan-closing-tag').fixes![0].isAutomatic).toBe(false)
+      expect(registryFix('hola[/b]').isAutomatic).toBe(false)
     })
   })
 })

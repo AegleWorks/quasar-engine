@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import type { Diagnostic, DiagnosticFix } from '../Types/diagnostics'
+import { registerValidatorFixes } from '../Fixes/validatorFixes'
+import { getCodeFix, getCodeFixMeta } from '../Fixes/CodeFixRegistry'
 
 /**
  * Etiquetas cruzadas: los cierres están todos, pero en el orden equivocado.
@@ -25,6 +27,20 @@ function only(source: string, code: string): Diagnostic {
   const found = diagnose(source).filter(d => d.code === code)
   expect(found.length, `se esperaba un único '${code}' en ${JSON.stringify(source)}`).toBe(1)
   return found[0]
+}
+
+/** La corrección por la vía del registro (ya no incrustada en el diagnóstico). */
+function registryFix(source: string): DiagnosticFix {
+  registerValidatorFixes()
+  const model = new BBCodeDocumentModel({ source })
+  const diag = model.analyze().diagnostics.items.find(d => d.code === 'crossed-tags')
+  expect(diag, `se esperaba 'crossed-tags' en ${JSON.stringify(source)}`).toBeDefined()
+  const node = diag!.nodeId ? model.findNode(diag!.nodeId) : null
+  const operations = getCodeFix('crossed-tags')!(diag!, { source, node })
+  const meta = getCodeFixMeta('crossed-tags')
+  const description =
+    typeof meta?.title === 'function' ? meta.title(diag!) : (meta?.title ?? diag!.message)
+  return { description, isAutomatic: meta?.isAutomatic ?? false, operations }
 }
 
 /** El fuente resultante de aplicar un fix, de atrás hacia delante. */
@@ -101,13 +117,11 @@ describe('etiquetas cruzadas', () => {
 
   describe('corrección', () => {
     it('mueve el cierre a donde el parser ya cerraba', () => {
-      const d = only('[b][i]x[/b][/i]', 'crossed-tags')
-      expect(applyFix('[b][i]x[/b][/i]', d.fixes![0])).toBe('[b][i]x[/i][/b]')
+      expect(applyFix('[b][i]x[/b][/i]', registryFix('[b][i]x[/b][/i]'))).toBe('[b][i]x[/i][/b]')
     })
 
     it('deja el documento sin ese hallazgo', () => {
-      const d = only('[b][i]x[/b][/i]', 'crossed-tags')
-      const fixed = applyFix('[b][i]x[/b][/i]', d.fixes![0])
+      const fixed = applyFix('[b][i]x[/b][/i]', registryFix('[b][i]x[/b][/i]'))
       expect(codesOf(fixed)).not.toContain('crossed-tags')
       expect(codesOf(fixed)).not.toContain('unclosed-tag')
     })
@@ -118,8 +132,7 @@ describe('etiquetas cruzadas', () => {
       // se ve: el espacio en blanco que rodeaba al cierre descartado se queda
       // donde estaba, y acaba dentro del contenedor o convertido en línea en
       // blanco. Por eso queda fuera de «Corregir todo».
-      const d = only('[b][i]x[/b][/i]', 'crossed-tags')
-      expect(d.fixes![0].isAutomatic).toBe(false)
+      expect(registryFix('[b][i]x[/b][/i]').isAutomatic).toBe(false)
     })
 
     it('nunca ofrece insertar un cierre duplicado', () => {
@@ -127,7 +140,7 @@ describe('etiquetas cruzadas', () => {
       // `[/notice]` en el mismo offset y dejaban intactos los originales, que
       // se quedaban huérfanos y el parser pintaba como TEXTO LITERAL.
       const fixed = diagnose(CROSSED_POST)
-        .filter(d => d.fixes?.some(f => f.isAutomatic))
+        .filter(d => getCodeFixMeta(d.code)?.isAutomatic)
       expect(fixed).toEqual([])
     })
   })

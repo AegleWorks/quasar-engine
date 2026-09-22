@@ -7,7 +7,7 @@ export type {
 export { createNodeId, createDocumentNode, cloneNode, getNodeText, walkPreOrder, findById } from './core'
 export type {
   Diagnostic, DiagnosticSeverity, DiagnosticTag, DiagnosticCollection,
-  DiagnosticRelatedInfo, DiagnosticFix, FixOperation,
+  DiagnosticRelatedInfo, DiagnosticFix, FixOperation, CodeActionKind,
 } from './diagnostics'
 export { createDiagnosticCollection, createDiagnostic, addDiagnostic, DIAGNOSTIC_SEVERITY } from './diagnostics'
 export type {

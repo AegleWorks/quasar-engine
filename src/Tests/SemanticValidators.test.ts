@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { REFERENCE_DOCUMENT_WITH_GRADIENT } from './referenceDocument'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
+import { registerValidatorFixes } from '../Fixes/validatorFixes'
+import { getCodeFix } from '../Fixes/CodeFixRegistry'
 
 /**
  * Regression: the built-in validators must actually fire.
@@ -144,17 +146,22 @@ describe('SemanticAnalyzer — built-in validators', () => {
     expect(codes('[unknowntag]hola[/unknowntag]')).toEqual(['unknown-tag'])
   })
 
-  it('flags collapsible gradient sequence with a replace_text fix', () => {
+  it('flags collapsible gradient sequence with a replace_text fix from the registry', () => {
+    registerValidatorFixes()
     const source = '[color=#FF0000]H[/color][color=#CC0022]e[/color][color=#990044]l[/color][color=#660066]l[/color][color=#330088]o[/color]'
-    const found = diagnose(source)
+    const model = new BBCodeDocumentModel({ source })
+    const found = model.analyze().diagnostics.items
     const gradDiag = found.find(d => d.code === 'collapsible-gradient')
 
     expect(gradDiag).toBeDefined()
     expect(gradDiag?.severity).toBe('info')
     expect(gradDiag?.range).toEqual({ start: 0, end: source.length })
-    expect(gradDiag?.fixes).toHaveLength(1)
-    expect(gradDiag?.fixes?.[0].operations[0].kind).toBe('replace_text')
-    const op = gradDiag?.fixes?.[0].operations[0] as { kind: 'replace_text'; range: { start: number; end: number }; newText: string }
+    expect(gradDiag?.fixes, 'validator still embeds fixes').toBeUndefined()
+    const node = gradDiag!.nodeId ? model.findNode(gradDiag!.nodeId) : null
+    const operations = getCodeFix('collapsible-gradient')!(gradDiag!, { source, node })
+    expect(operations).toHaveLength(1)
+    expect(operations[0].kind).toBe('replace_text')
+    const op = operations[0] as { kind: 'replace_text'; range: { start: number; end: number }; newText: string }
     expect(op.newText).toContain('Hello')
     expect(op.newText).toContain('[gradient=')
   })

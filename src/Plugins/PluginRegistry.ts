@@ -13,6 +13,14 @@ import type { Command } from '../Commands/Command'
 import type { Validator } from '../Semantic/SemanticAnalyzer'
 import type { LintRule } from '../Linter/Linter'
 import type { RenderHook } from '../RenderPipeline/RenderPipeline'
+import type { CodeFixProvider, CodeFixMeta } from '../Fixes/CodeFixRegistry'
+import type { RefactoringProvider } from '../Fixes/RefactoringRegistry'
+
+export interface CodeFixContribution {
+  code: string
+  provider: CodeFixProvider
+  meta?: CodeFixMeta
+}
 
 export interface PluginManifest {
   name: string
@@ -32,6 +40,10 @@ export interface PluginContribution {
   validators?: Validator[]
   /** Lint rules */
   lintRules?: LintRule[]
+  /** Code fixes, registered in the CodeFixRegistry by diagnostic code */
+  codeFixes?: CodeFixContribution[]
+  /** Context refactorings, registered in the RefactoringRegistry by id */
+  refactorings?: RefactoringProvider[]
   /** Render hooks */
   renderHooks?: RenderHook[]
   /** CSS to inject */

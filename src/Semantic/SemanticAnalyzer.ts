@@ -18,7 +18,6 @@ import type {
   Diagnostic,
   DiagnosticSeverity,
   DiagnosticCollection,
-  DiagnosticFix,
 } from '../Types/diagnostics'
 import {
   createDiagnosticCollection,
@@ -1639,31 +1638,14 @@ export class SemanticAnalyzer {
 
         const suggestion = suggestTag(unknown.tag, getBBCodeTagNames(this.dialect))
 
-        // Not automatic, and for the opposite reason to every other fix here:
-        // those are safe because they do not change the render, and this one
-        // exists precisely to change it. `[bold]x[/bold]` is literal text
-        // today and bold afterwards — which is what the author wanted, but it
-        // is a guess at their intent, so it is theirs to accept.
-        const fixes: DiagnosticFix[] | undefined = suggestion === null ? undefined : [{
-          description: `Replace [${unknown.tag}] with [${suggestion}]`,
-          isAutomatic: false,
-          operations: [
-            // Both ends, or the rename leaves an orphan `[/bold]` that osu!
-            // paints as literal text — the same half-repair `deprecated-tag`
-            // had to learn to avoid.
-            {
-              kind: 'replace_text',
-              range: { start: unknown.opener.start + 1, end: unknown.opener.start + 1 + unknown.tag.length },
-              newText: suggestion,
-            },
-            {
-              kind: 'replace_text',
-              range: { start: unknown.closer.start + 2, end: unknown.closer.start + 2 + unknown.tag.length },
-              newText: suggestion,
-            },
-          ],
-        }]
-
+        // The repair lives in the Fixes registry (`unknown-tag` provider), fed
+        // by `data` below — not embedded here. Not automatic, and for the
+        // opposite reason to every other fix: those are safe because they do
+        // not change the render, and this one exists precisely to change it.
+        // `[bold]x[/bold]` is literal text today and bold afterwards — which
+        // is what the author wanted, but it is a guess at their intent, so it
+        // is theirs to accept. No equivalenceKey: manual findings opt out of
+        // Fix-All.
         return createDiagnostic(
           'unknown-tag',
           `Unknown BBCode tag: [${unknown.tag}] — it renders as literal text`,
@@ -1672,7 +1654,12 @@ export class SemanticAnalyzer {
             nodeId: node.id,
             nodeKind: node.kind,
             range: node.range,
-            fixes,
+            data: {
+              tag: unknown.tag,
+              suggestion,
+              openerName: { start: unknown.opener.start + 1, end: unknown.opener.start + 1 + unknown.tag.length },
+              closerName: { start: unknown.closer.start + 2, end: unknown.closer.start + 2 + unknown.tag.length },
+            },
             related: [{
               message: `Its closing [/${unknown.tag}]`,
               range: { start: unknown.closer.start, end: unknown.closer.end },
@@ -1725,15 +1712,15 @@ export class SemanticAnalyzer {
             nodeId: node.id,
             nodeKind: node.kind,
             range: node.range,
-            // Manual, like the other two repairs that alter what is displayed.
-            // Deleting it is what osu! already does, so the published post does
-            // not move — but this preview does, and a `[/notice]` alone on its
-            // line leaves its newline behind exactly as `crossed-tags` does.
-            fixes: [{
-              description: `Delete [/${tag}]`,
-              isAutomatic: false,
-              operations: [{ kind: 'delete_range', range: { start: node.range.start, end: node.range.end } }],
-            }],
+            // Manual, like the other repairs that alter what is displayed.
+            // Deleting it is what osu! already does, so the published post
+            // does not move — but this preview does. The `orphan-closing-tag`
+            // provider deletes exactly this range; no equivalenceKey, so it
+            // stays out of Fix-All.
+            data: {
+              tag,
+              range: { start: node.range.start, end: node.range.end },
+            },
           },
         )
       },
@@ -1760,20 +1747,11 @@ export class SemanticAnalyzer {
         const found = DEPRECATED_TAGS[spelling]
         if (!found || found.kind !== node.kind) return null
 
-        // Renombrar es dos ediciones, no una: apertura y cierre. Se emiten
-        // ambas en el MISMO fix para que se apliquen como una sola operación —
-        // aplicar media deja un `[/strike]` huérfano en el documento.
-        const operations: DiagnosticFix['operations'] = [
-          {
-            kind: 'replace_text',
-            range: { start: node.range.start + 1, end: node.range.start + 1 + spelling.length },
-            newText: found.replacement,
-          },
-        ]
-        const closing = closingTagNameRange(node, ctx.source, spelling)
-        if (closing) {
-          operations.push({ kind: 'replace_text', range: closing, newText: found.replacement })
-        }
+        // Renaming is two edits, not one: opening and closing. Both ranges
+        // travel in `data` so the registry provider applies them as one atomic
+        // fix — half a rename leaves an orphan `[/strike]` in the document.
+        const openRange = { start: node.range.start + 1, end: node.range.start + 1 + spelling.length }
+        const closeRange = closingTagNameRange(node, ctx.source, spelling)
 
         return createDiagnostic(
           'deprecated-tag',
@@ -1784,11 +1762,13 @@ export class SemanticAnalyzer {
             nodeKind: node.kind,
             range: node.range,
             tags: ['deprecated'],
-            fixes: [{
-              description: `Replace [${spelling}] with [${found.replacement}]`,
-              isAutomatic: true,
-              operations,
-            }],
+            data: {
+              spelling,
+              replacement: found.replacement,
+              openRange,
+              closeRange,
+            },
+            equivalenceKey: 'deprecated-tag',
           },
         )
       },
@@ -1822,14 +1802,11 @@ export class SemanticAnalyzer {
               nodeKind: node.kind,
               range: node.range,
               tags: ['unnecessary'],
-              // Una etiqueta sin contenido no renderiza nada, así que borrarla
-              // no puede cambiar la salida: es la corrección más segura de las
-              // tres.
-              fixes: [{
-                description: 'Remove the empty tag',
-                isAutomatic: true,
-                operations: [{ kind: 'delete_range', range: node.range }],
-              }],
+              // An empty tag renders nothing, so deleting it cannot change the
+              // output: the safest automatic repair. The provider deletes this
+              // range.
+              data: { range: { start: node.range.start, end: node.range.end } },
+              equivalenceKey: 'empty-tag',
             },
           )
         }
@@ -1854,23 +1831,21 @@ export class SemanticAnalyzer {
 
         const name = openingTagName(node, ctx.source)
 
-        // El parser YA cerró la etiqueta en `range.end`; la corrección solo
-        // escribe en el fuente la decisión que el árbol ya tomó. Por eso es
-        // segura: no cambia cómo se renderiza nada, elimina la divergencia
-        // entre lo que el autor escribió y lo que se está mostrando.
-        const fixes: DiagnosticFix[] | undefined = name
-          ? [{
-              description: `Insert [/${name}]`,
-              isAutomatic: true,
-              operations: [{ kind: 'insert_text', position: node.range.end, text: `[/${name}]` }],
-            }]
-          : undefined
-
+        // The parser ALREADY closed the tag at `range.end`; the repair only
+        // writes into the source the decision the tree already took. That is
+        // why it is safe: it changes no render, it removes the divergence
+        // between what the author wrote and what is shown.
         return createDiagnostic(
           'unclosed-tag',
           `Missing [/${name}] — the tag was closed automatically`,
           'warning',
-          { nodeId: node.id, nodeKind: node.kind, range: node.range, fixes },
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: node.range,
+            data: { name, position: node.range.end },
+            equivalenceKey: 'unclosed-tag',
+          },
         )
       },
     })
@@ -1892,28 +1867,15 @@ export class SemanticAnalyzer {
         const crossing = ctx.crossings.get(node.id)
         if (crossing === undefined) return null
 
-        // Deliberately NOT automatic, and this is the whole reason the repair
-        // is not just `repairNesting`'s edits handed over as a fix.
-        //
-        // Moving the closer is correct BBCode but it is not render-neutral:
-        // the whitespace that surrounded the stranded `[/tag]` stays where it
-        // was, and a newline that used to sit outside the container now sits
-        // inside it — or two newlines that were separated by the discarded tag
-        // become adjacent and turn into a blank line. Measured on
-        // `[centre][notice]hola\n[/centre]\n[/notice]`: one extra
-        // `bb-empty-line` in the output. Every other automatic fix in here is
+        // Deliberately NOT automatic: moving the closer is correct BBCode but
+        // not render-neutral. The whitespace around the stranded `[/tag]` stays
+        // put, so a newline that sat outside the container lands inside it —
+        // measured as one extra `bb-empty-line` on
+        // `[centre][notice]hola\n[/centre]\n[/notice]`. Every automatic fix is
         // safe precisely because it only writes down a decision the parser had
         // already taken; this one changes what the reader sees, so it is the
-        // author's call and it stays out of "fix all".
-        const fixes: DiagnosticFix[] = [{
-          description: `Move [/${crossing.tag}] to where the tag actually closes`,
-          isAutomatic: false,
-          operations: [
-            { kind: 'insert_text', position: crossing.at, text: `[/${crossing.tag}]` },
-            { kind: 'delete_range', range: { start: crossing.closer.start, end: crossing.closer.end } },
-          ],
-        }]
-
+        // author's call. The provider moves the closer from `closerRange` to
+        // `at`; with no equivalenceKey it stays out of Fix-All.
         return createDiagnostic(
           'crossed-tags',
           `[/${crossing.tag}] is out of order — the tag was closed earlier and this closing tag is ignored`,
@@ -1922,7 +1884,11 @@ export class SemanticAnalyzer {
             nodeId: node.id,
             nodeKind: node.kind,
             range: node.range,
-            fixes,
+            data: {
+              tag: crossing.tag,
+              at: crossing.at,
+              closerRange: { start: crossing.closer.start, end: crossing.closer.end },
+            },
             related: [{
               message: `The ignored [/${crossing.tag}]`,
               range: { start: crossing.closer.start, end: crossing.closer.end },
@@ -1998,14 +1964,11 @@ export class SemanticAnalyzer {
               nodeId: node.id,
               nodeKind: node.kind,
               range,
-              fixes: [{
-                description: 'Prefix the link with https://',
-                // Safe to batch: it only ever adds a scheme in front of a
-                // destination that has none, so it cannot collide with another
-                // finding's range and cannot change how the link text renders.
-                isAutomatic: true,
-                operations: [{ kind: 'insert_text', position: range.start, text: 'https://' }],
-              }],
+              // Safe to batch: the provider only ever adds a scheme in front
+              // of a destination that has none, so it cannot collide with
+              // another finding's range and cannot change how the link renders.
+              data: { position: range.start },
+              equivalenceKey: 'missing-url-protocol',
             },
           )
         }
@@ -2054,14 +2017,10 @@ export class SemanticAnalyzer {
             nodeId: node.id,
             nodeKind: node.kind,
             range: node.range,
-            fixes: [{
-              description: `Use "${href}" as the link text`,
-              // Manual: it puts text on screen that was not there before. The
-              // author may well want a different label, and "Fix all" must not
-              // write copy on their behalf.
-              isAutomatic: false,
-              operations: [{ kind: 'insert_text', position: closing, text: href }],
-            }],
+            // Manual: the provider inserts text on screen that was not there
+            // before. The author may well want a different label, and Fix-All
+            // must not write copy on their behalf — hence no equivalenceKey.
+            data: { href, position: closing },
           },
         )
       },
@@ -2105,21 +2064,18 @@ export class SemanticAnalyzer {
         if (node.parent?.kind !== node.kind) return null
 
         const name = openingTagName(node, ctx.source)
-        const operations: DiagnosticFix['operations'] = []
+        // Both ends or nothing: the provider unwraps only when it has the two
+        // ranges, so half an unwrap can never leave an orphan closing tag.
+        let openRange: { start: number; end: number } | null = null
+        let closeRange: { start: number; end: number } | null = null
         if (name) {
           const openEnd = ctx.source.indexOf(']', node.range.start)
           if (openEnd > 0 && openEnd < node.range.end) {
-            operations.push({
-              kind: 'delete_range',
-              range: { start: node.range.start, end: openEnd + 1 },
-            })
+            openRange = { start: node.range.start, end: openEnd + 1 }
           }
           const closing = closingTagNameRange(node, ctx.source, name)
           if (closing) {
-            operations.push({
-              kind: 'delete_range',
-              range: { start: closing.start - 2, end: node.range.end },
-            })
+            closeRange = { start: closing.start - 2, end: node.range.end }
           }
         }
 
@@ -2135,10 +2091,8 @@ export class SemanticAnalyzer {
             // Manual even though the visual result is identical: unwrapping
             // changes the emitted HTML, and the one promise "Fix all" makes is
             // that it never changes the document's output. Offered per-finding
-            // so the author can still take it.
-            fixes: operations.length === 2
-              ? [{ description: `Unwrap the inner [${name}]`, isAutomatic: false, operations }]
-              : undefined,
+            // so the author can still take it — hence no equivalenceKey.
+            data: { name, openRange, closeRange },
           },
         )
       },
@@ -2162,19 +2116,13 @@ export class SemanticAnalyzer {
             nodeKind: 'color',
             range: item.range,
             tags: ['unnecessary'],
-            fixes: [
-              {
-                description: 'Collapse into [gradient]',
-                isAutomatic: false,
-                operations: [
-                  {
-                    kind: 'replace_text',
-                    range: item.range,
-                    newText: item.replacementText,
-                  },
-                ],
-              },
-            ],
+            // Manual: collapsing rewrites the author's markup into a form
+            // they may not want. The provider replaces this range with the
+            // precomputed gradient spelling — no equivalenceKey.
+            data: {
+              range: { start: item.range.start, end: item.range.end },
+              replacementText: item.replacementText,
+            },
           },
         )
       },
@@ -2229,19 +2177,8 @@ export class SemanticAnalyzer {
         const openTag = ctx.source.slice(node.range.start, openEnd)
         if (openTag.includes('=')) return null
 
-        const fixes: DiagnosticFix[] = [
-          {
-            description: "Add '=' to [box]",
-            isAutomatic: true,
-            operations: [
-              {
-                kind: 'replace_text',
-                range: { start: node.range.start, end: openEnd },
-                newText: '[box=]',
-              },
-            ],
-          },
-        ]
+        // The provider replaces the opening tag with `[box=]`.
+        const data = { range: { start: node.range.start, end: openEnd } }
 
         return createDiagnostic(
           'box-missing-equals',
@@ -2251,7 +2188,8 @@ export class SemanticAnalyzer {
             nodeId: node.id,
             nodeKind: node.kind,
             range: { start: node.range.start, end: openEnd },
-            fixes,
+            data,
+            equivalenceKey: 'box-missing-equals',
           },
         )
       },

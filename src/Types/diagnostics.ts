@@ -27,6 +27,15 @@ export type DiagnosticTag =
   | 'unused'
   | 'redundant'
 
+// ─── Code Action Kinds ─────────────────────────────────────────
+
+export type CodeActionKind =
+  | 'quickfix'
+  | 'refactor'
+  | 'refactor.extract'
+  | 'refactor.rewrite'
+  | 'source.fixAll'
+
 // ─── Diagnostic ────────────────────────────────────────────────
 
 export interface Diagnostic {
@@ -50,6 +59,17 @@ export interface Diagnostic {
   nodeKind: NodeKind | null
   /** Source of this diagnostic (built-in, plugin name, etc.) */
   source: string
+  /**
+   * Opaque payload carried verbatim from publishDiagnostics through the
+   * codeAction round-trip into the fix provider. Never interpreted by the
+   * engine — Monaco-safe by construction.
+   */
+  data?: unknown
+  /**
+   * Stable grouping key for Fix-All. Diagnostics sharing a key are fixed
+   * together by BatchFixer; absent means the diagnostic opts out of Fix-All.
+   */
+  equivalenceKey?: string
   /** Optional related information */
   related?: DiagnosticRelatedInfo[]
   /** Optional fix suggestions */
@@ -114,6 +134,8 @@ export function createDiagnostic(
     range?: Range | null
     tags?: DiagnosticTag[]
     source?: string
+    data?: unknown
+    equivalenceKey?: string
     related?: DiagnosticRelatedInfo[]
     fixes?: DiagnosticFix[]
   },
@@ -127,6 +149,8 @@ export function createDiagnostic(
     nodeId: options?.nodeId ?? null,
     nodeKind: options?.nodeKind ?? null,
     source: options?.source ?? 'document-engine',
+    data: options?.data,
+    equivalenceKey: options?.equivalenceKey,
     related: options?.related,
     fixes: options?.fixes,
   }

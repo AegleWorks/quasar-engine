@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import type { Diagnostic, DiagnosticFix } from '../Types/diagnostics'
+import { registerValidatorFixes } from '../Fixes/validatorFixes'
+import { getCodeFix, getCodeFixMeta } from '../Fixes/CodeFixRegistry'
 
 /**
  * Etiquetas desconocidas que el autor SÍ cerró.
@@ -30,6 +32,24 @@ function only(source: string, code: string): Diagnostic {
   const found = diagnose(source).filter(d => d.code === code)
   expect(found.length, `se esperaba un único '${code}' en ${JSON.stringify(source)}`).toBe(1)
   return found[0]
+}
+
+/**
+ * La corrección ya no viaja incrustada en el diagnóstico: el analizador emite
+ * `{ code, data }` y el proveedor `unknown-tag` del registro reconstruye las
+ * mismas operaciones. Este ayudante resuelve por esa vía.
+ */
+function registryFix(source: string): DiagnosticFix {
+  registerValidatorFixes()
+  const model = new BBCodeDocumentModel({ source })
+  const diag = model.analyze().diagnostics.items.find(d => d.code === 'unknown-tag')
+  expect(diag, `se esperaba 'unknown-tag' en ${JSON.stringify(source)}`).toBeDefined()
+  const node = diag!.nodeId ? model.findNode(diag!.nodeId) : null
+  const operations = getCodeFix('unknown-tag')!(diag!, { source, node })
+  const meta = getCodeFixMeta('unknown-tag')
+  const description =
+    typeof meta?.title === 'function' ? meta.title(diag!) : (meta?.title ?? diag!.message)
+  return { description, isAutomatic: meta?.isAutomatic ?? false, operations }
 }
 
 function applyFix(source: string, fix: DiagnosticFix): string {
@@ -106,8 +126,7 @@ describe('etiquetas desconocidas', () => {
       ['[image]x[/image]', 'img'],
       ['[header]x[/header]', 'heading'],
     ])('%s → propone [%s] aunque la distancia de edición no lo encontraría', (source, expected) => {
-      const d = only(source, 'unknown-tag')
-      expect(d.fixes?.[0].description).toBe(`Replace [${source.slice(1, source.indexOf(']'))}] with [${expected}]`)
+      expect(registryFix(source).description).toBe(`Replace [${source.slice(1, source.indexOf(']'))}] with [${expected}]`)
     })
 
     it.each([
@@ -115,16 +134,16 @@ describe('etiquetas desconocidas', () => {
       ['[quotee]x[/quotee]', 'quote'],
       ['[centr]x[/centr]', 'centre'],
     ])('%s → corrige el typo a [%s]', (source, expected) => {
-      expect(only(source, 'unknown-tag').fixes?.[0].description).toContain(`with [${expected}]`)
+      expect(registryFix(source).description).toContain(`with [${expected}]`)
     })
 
     it('no adivina cuando no se parece a nada', () => {
-      expect(only('[Chocolate]x[/Chocolate]', 'unknown-tag').fixes).toBeUndefined()
+      expect(registryFix('[Chocolate]x[/Chocolate]').operations).toEqual([])
     })
 
     it('no adivina con nombres de menos de cuatro letras', () => {
       // Con dos ediciones de margen, `[xyz]` alcanzaría media docena de tags.
-      expect(only('[xyz]x[/xyz]', 'unknown-tag').fixes).toBeUndefined()
+      expect(registryFix('[xyz]x[/xyz]').operations).toEqual([])
     })
   })
 
@@ -132,20 +151,18 @@ describe('etiquetas desconocidas', () => {
     it('renombra apertura Y cierre', () => {
       // Media corrección deja un `[/bold]` huérfano que osu! pinta como texto
       // literal: peor que la etiqueta desconocida que venía a arreglar.
-      const d = only('[bold]x[/bold]', 'unknown-tag')
-      expect(applyFix('[bold]x[/bold]', d.fixes![0])).toBe('[b]x[/b]')
+      expect(applyFix('[bold]x[/bold]', registryFix('[bold]x[/bold]'))).toBe('[b]x[/b]')
     })
 
     it('deja el documento sin ese hallazgo', () => {
-      const d = only('[bold]x[/bold]', 'unknown-tag')
-      expect(codesOf(applyFix('[bold]x[/bold]', d.fixes![0]))).not.toContain('unknown-tag')
+      expect(codesOf(applyFix('[bold]x[/bold]', registryFix('[bold]x[/bold]')))).not.toContain('unknown-tag')
     })
 
     it('NO es automática: cambia lo que se ve, que es justo para lo que existe', () => {
       // El resto de correcciones automáticas son seguras porque NO cambian el
       // render. Esta convierte texto literal en negrita: es lo que el autor
       // quería, pero es una conjetura sobre su intención y la acepta él.
-      expect(only('[bold]x[/bold]', 'unknown-tag').fixes![0].isAutomatic).toBe(false)
+      expect(registryFix('[bold]x[/bold]').isAutomatic).toBe(false)
     })
   })
 })
