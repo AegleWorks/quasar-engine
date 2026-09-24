@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
+import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { scanBBCode } from '../Lexer/BBCodeLexer'
 import { applyOsuPairing } from '../Osu/osuPairing'
@@ -357,12 +358,52 @@ describe('osuPairing — pairing: osu reproduces osu!\'s tag sealing', () => {
     expect(html).toContain('[b]y[/b]')
   })
 
-  it('gap 2 fix does not change default pairing: an orphan [/box]/[/spoilerbox] still renders as literal text and keeps its newlines', () => {
-    const html = renderQuasar('hola\n\n[/box]\n\nmundo', 'miliastry')
-    expect(html).toContain('[/box]')
-    // Every newline is still an ordinary, unswallowed break: two before the
-    // literal closer, two after.
-    expect(html.match(/<br/g)?.length).toBe(4)
+  it('an orphan [/box]/[/spoilerbox] renders under the default pairing as it does under osu pairing, and is still exported', () => {
+    // osu! seals every `[/box]`/`[/spoilerbox]` and HTMLPurifier drops the
+    // stray `</div>`, so it never shows. The default preview used to print
+    // it as text — found with the parity kit's visual comparison on
+    // `docs/ai/NyuPenyu`. It now renders like `pairing: 'osu'`'s
+    // `discarded_box_close` (see `HTMLRenderer.isOrphanBoxCloseText`), while
+    // the tree keeps the text, so the export — what osu! receives — does not
+    // change by a byte.
+    for (const source of ['hola\n\n[/box]\n\nmundo', 'hola[/box] mundo', 'hola\n[/spoilerbox]\nmundo', '[box=t]a[/box][/box] b']) {
+      for (const dialect of ['osu', 'miliastry'] as const) {
+        const html = renderQuasar(source, dialect)
+        expect(html, source).not.toContain('[/box]')
+        expect(html, source).not.toContain('[/spoilerbox]')
+        expect(html, source).toBe(renderOsuPaired(source, dialect))
+      }
+      const doc = new BBCodeDocumentModel({ source, dialect: 'miliastry' })
+      expect(new BBCodeExporter(doc.tagRegistry, 'osu').export(doc.redRoot!)).toBe(source)
+    }
+    // Case-sensitive, like osu!'s pass: `[/BOX]` is text there and here.
+    expect(renderQuasar('hola[/BOX] mundo', 'osu')).toContain('[/BOX]')
+    // Lyne has none of osu!'s sealing and keeps the literal text.
+    expect(renderQuasar('hola[/box] mundo', 'lyne')).toContain('[/box]')
+  })
+
+  it.each([
+    // [source, what osu-web's real pipeline shows in the box body]
+    ['[box=[size=85]T][/size][size=80]x[/size][/box]', '<span style="font-size:80%;">x</span>'],
+    ['[box=[size=85]T][size=80]x[/size] y[/box]', '[size=80]x y'],
+    ['[box=[b]T][b]x[/b] y[/box]', '[b]x y'],
+    ['[box=T][size=80]x[/size][/box]', '<span style="font-size:80%;">x</span>'],
+  ])('a rich box title claims the first closer of a tag it left open, as osu! does: %s', (source, osuBody) => {
+    // osu! pairs lazily over the raw text, so the title's unclosed `[size=85]`
+    // takes the FIRST `[/size]` after the box's `]` — an orphan, or the
+    // closer of a same-kind tag opened in the body, which then shows as
+    // written. Measured with the parity kit on `docs/ai/examples/3` and
+    // `docs/ai/hxovc`; the expected bodies are osu-web's own output.
+    for (const dialect of ['osu', 'miliastry'] as const) {
+      const html = new HTMLRenderer({ dialect, idMode: 'none' }).render(new BBCodeDocumentModel({ source, dialect }).redRoot!)
+      const body = dialect === 'osu'
+        ? html.slice(html.indexOf('bbcode-spoilerbox__body">') + 'bbcode-spoilerbox__body">'.length, html.lastIndexOf('</div></div>'))
+        : html.slice(html.indexOf('bbcode-box-body">') + 'bbcode-box-body">'.length, html.lastIndexOf('</div></details>'))
+      expect(body, dialect).toBe(osuBody)
+    }
+    // The export is untouched: osu! needs the closer to close the title's tag.
+    const doc = new BBCodeDocumentModel({ source, dialect: 'miliastry' })
+    expect(new BBCodeExporter(doc.tagRegistry, 'osu').export(doc.redRoot!)).toBe(source)
   })
 
   it('an empty document under pairing: "osu" never throws — same as "quasar" (both leave redRoot unset for an empty initial source)', () => {
