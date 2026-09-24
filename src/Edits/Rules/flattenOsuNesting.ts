@@ -107,16 +107,21 @@ const BLOCK_NEWLINE_KINDS: ReadonlySet<string> = new Set(['center', 'left', 'rig
 const VALUE_KINDS: ReadonlySet<string> = new Set(['color', 'font_size'])
 
 /**
- * Media kinds `TagRegistry` marks `isInline: false` (`image`/`video`/`audio`
- * — `imagemap` is already in `isBlockKind`'s own set) but that osu!'s own
- * renderer still doesn't need `NEWLINE_RULES` to know: a `[youtube]` embed
- * renders as its own visual block regardless, so `fixupBlockNewlines`'s
- * "does the neighbour already separate itself" check needs BOTH this set
- * and `isBlockKind` — measured on `docs/ai/gallery/16-galileo.bbcode`'s
- * `[centre]…[/centre]\n[youtube]…` seam, which showed ZERO `<br>` in the
- * real osu-web render even though `isBlockKind('video')` is false.
+ * Media kinds that would separate themselves from their neighbours in osu!:
+ * none. `[img]` is an inline `<img>`, `[youtube]` an `inline-block` embed of
+ * up to 425px (`.u-embed-wide--bbcode` in osu!'s app.css) and `[audio]` an
+ * `inline-flex` player (`.audio-player--bbcode`) — each sits on the same line
+ * as whatever touches it.
+ *
+ * This set used to hold all three, on the strength of
+ * `docs/ai/gallery/16-galileo.bbcode`'s `[centre]…[/centre]\n[youtube]…` seam
+ * showing ZERO `<br>` in osu-web's render. That was a count, not a layout:
+ * dropping the inner `[centre]` without a stand-in newline put the video
+ * BESIDE the title in osu!, while the preview showed it below — measured by
+ * laying out both with their real stylesheets (osu!'s own app.css, a
+ * 940px userpage) in the parity kit's visual comparison.
  */
-const SELF_SEPARATING_MEDIA_KINDS: ReadonlySet<string> = new Set(['image', 'video', 'audio'])
+const SELF_SEPARATING_MEDIA_KINDS: ReadonlySet<string> = new Set([])
 
 function isSelfSeparating(kind: NodeKind): boolean {
   return isBlockKind(kind) || SELF_SEPARATING_MEDIA_KINDS.has(kind)
