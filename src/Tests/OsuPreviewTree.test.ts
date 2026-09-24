@@ -7,6 +7,7 @@ import { OsuPreviewTree } from '../Osu/OsuPreviewTree'
 import { patchBlocksInto } from '../Visitors/BlockPatcher'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import type { RedNode } from '../Syntax/RedNode'
+import { checkRedTree } from '../Syntax/redTreeInvariants'
 
 /**
  * `OsuPreviewTree` rebuilds the osu! preview tree with a FULL osu parse and
@@ -147,6 +148,7 @@ describe('OsuPreviewTree — a full osu parse that keeps unchanged blocks', () =
           expect(dump(root), where).toBe(dump(fullOsuRoot(source, dialect)))
           const ids = collectIds(root, [])
           expect(new Set(ids).size, `${where}: duplicate ids`).toBe(ids.length)
+          expect(checkRedTree(root, { source, limit: 3 }), where).toEqual([])
 
           patchBlocksInto(container, root, { renderer, minWindowedBlocks: 0 })
           const full = document.createElement('div')

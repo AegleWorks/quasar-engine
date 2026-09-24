@@ -515,6 +515,40 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
 }
 
 /**
+ * Give a box its rich title nodes, positioned where the title really is.
+ *
+ * The title's offset used to be computed as `[` + tag name + `=` (+ a quote),
+ * three copies of it, all assuming the attribute begins with `=` and that the
+ * tag was spelled as its kind. The lexer is more lenient than that:
+ * `[box[/b] titulo]` is a box whose attribute is `[/b] titulo`, with no `=`,
+ * and its title nodes landed one character early — found by `checkRedTree`
+ * under random edits, a caret or hover inside such a title resolved to the
+ * wrong node.
+ *
+ * The opening delimiter is `[`, the tag name, the attribute text and `]`, so
+ * the attribute starts `text.length + 1` before the delimiter ends, whatever
+ * the tag was called. The title starts inside it exactly where
+ * `extractGreenNodeMetadata` cut it: past the first `=`, and past a quote when
+ * the value was quoted.
+ */
+function attachTitleNodes(red: RedNode, green: GreenNode, start: number, store?: RedNodeStore): void {
+  if (green.kind !== 'box' && green.kind !== 'boxw' && green.kind !== 'spoilerbox') return
+  if (!red.metadata.rawTitle) return
+  const rawText = green.text || ''
+  let titleStart = start + green.leadingWidth - 1 - rawText.length
+  const eq = rawText.indexOf('=')
+  if (eq >= 0) {
+    const value = rawText.slice(eq + 1)
+    const quoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+    titleStart += eq + 1 + (quoted ? 1 : 0)
+  }
+  const titleNodes = buildTitleNodes(String(red.metadata.rawTitle), red, store, titleStart)
+  if (titleNodes.length > 0) {
+    red.metadata.titleNodes = titleNodes
+  }
+}
+
+/**
  * Parse rich BBCode inside a container attribute (e.g. `[box=[b]Title[/b]]`).
  * Produces a list of RedNode children for the title slot.
  */
@@ -578,17 +612,7 @@ export function greenToRedNode(
       start,
     })
 
-    if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && instance.metadata.rawTitle) {
-      const rawTitle = String(instance.metadata.rawTitle)
-      const tagName = green.kind
-      const rawText = green.text || ''
-      const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
-      const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
-      const titleNodes = buildTitleNodes(rawTitle, instance, store, offsetToTitle)
-      if (titleNodes.length > 0) {
-        instance.metadata.titleNodes = titleNodes
-      }
-    }
+    attachTitleNodes(instance, green, start, store)
 
     const greenChildren = green.children as GreenNode[]
     if (greenChildren.length > 0) {
@@ -612,17 +636,7 @@ export function greenToRedNode(
     start,
   })
 
-  if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && red.metadata.rawTitle) {
-    const rawTitle = String(red.metadata.rawTitle)
-    const tagName = green.kind
-    const rawText = green.text || ''
-    const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
-    const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
-    const titleNodes = buildTitleNodes(rawTitle, red, store, offsetToTitle)
-    if (titleNodes.length > 0) {
-      red.metadata.titleNodes = titleNodes
-    }
-  }
+  attachTitleNodes(red, green, start, store)
 
   const greenChildren = green.children as GreenNode[]
   if (greenChildren.length > 0) {
@@ -701,17 +715,7 @@ export function greenToRedNodeReusing(
     start,
   })
 
-  if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && red.metadata.rawTitle) {
-    const rawTitle = String(red.metadata.rawTitle)
-    const tagName = green.kind
-    const rawText = green.text || ''
-    const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
-    const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
-    const titleNodes = buildTitleNodes(rawTitle, red, undefined, offsetToTitle)
-    if (titleNodes.length > 0) {
-      red.metadata.titleNodes = titleNodes
-    }
-  }
+  attachTitleNodes(red, green, start)
 
   const greenKids = green.children as GreenNode[]
   const oldKids = oldRed.children

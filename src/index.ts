@@ -30,6 +30,8 @@ export type { Token, TokenKind, Trivia, TriviaKind } from './Types/tokens'
 // ── Green/Red Tree ──
 export { GreenNode, greenNode, greenLeaf } from './Syntax/GreenNode'
 export { RedNode } from './Syntax/RedNode'
+export { checkRedTree, assertRedTree } from './Syntax/redTreeInvariants'
+export type { RedTreeViolation, RedTreeViolationKind, CheckRedTreeOptions } from './Syntax/redTreeInvariants'
 export { RedNodeStore } from './Syntax/RedNodeStore'
 export { TreeBuilder, type BuildResult } from './Syntax/TreeBuilder'
 export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
