@@ -49,9 +49,11 @@ describe('BBCodeExporter — paridad con la vista previa por defecto en cierres 
     ['box', 0, '[centre][box=t]x[/centre][/box]fin', '[centre][box=t]x[/box][/centre]fin'],
     ['box', 1, '[centre][box=t]x\n[/centre]\n[/box]\nfin', '[centre][box=t]x\n[/box][/centre]\nfin'],
     ['box', 2, '[centre][box=t]x\n\n[/centre]\n\n[/box]\n\nfin', '[centre][box=t]x\n\n[/box][/centre]\n\nfin'],
-    ['spoilerbox', 0, '[centre][spoilerbox=t]x[/centre][/spoilerbox]fin', '[centre][spoilerbox=t]x[/spoilerbox][/centre]fin'],
-    ['spoilerbox', 1, '[centre][spoilerbox=t]x\n[/centre]\n[/spoilerbox]\nfin', '[centre][spoilerbox=t]x\n[/spoilerbox][/centre]\nfin'],
-    ['spoilerbox', 2, '[centre][spoilerbox=t]x\n\n[/centre]\n\n[/spoilerbox]\n\nfin', '[centre][spoilerbox=t]x\n\n[/spoilerbox][/centre]\n\nfin'],
+    // Un `[spoilerbox=…]` con título sale como `[box=…]`: osu! solo sella el
+    // spoilerbox desnudo, y con título lo publicaba como texto literal.
+    ['spoilerbox', 0, '[centre][spoilerbox=t]x[/centre][/spoilerbox]fin', '[centre][box=t]x[/box][/centre]fin'],
+    ['spoilerbox', 1, '[centre][spoilerbox=t]x\n[/centre]\n[/spoilerbox]\nfin', '[centre][box=t]x\n[/box][/centre]\nfin'],
+    ['spoilerbox', 2, '[centre][spoilerbox=t]x\n\n[/centre]\n\n[/spoilerbox]\n\nfin', '[centre][box=t]x\n\n[/box][/centre]\n\nfin'],
     ['quote', 0, '[centre][quote]x[/centre][/quote]fin', '[centre][quote]x[/quote][/centre]fin'],
     ['quote', 1, '[centre][quote]x\n[/centre]\n[/quote]\nfin', '[centre][quote]x\n[/quote][/centre]\nfin'],
     ['quote', 2, '[centre][quote]x\n\n[/centre]\n\n[/quote]\n\nfin', '[centre][quote]x\n\n[/quote][/centre]\nfin'],
@@ -96,5 +98,29 @@ describe('BBCodeExporter — paridad con la vista previa por defecto en cierres 
     [2, '[centre][notice]x\n\n[/centre]\n\n[/notice]\n\nfin', '[centre][notice]x\n\n[/notice][/centre]\n\nfin'],
   ] as const)('notice con %i saltos (límite conocido, no paridad total)', (_n, source, expected) => {
     expect(exportOsu(source)).toBe(expected)
+  })
+})
+
+/**
+ * Gramática de osu! que la vista previa perdona y osu! no: las dos formas se
+ * publicaban como texto literal. Cada salida esperada está renderizada contra
+ * el pipeline real de osu! (spoilerbox con su título; imagemap como imagemap).
+ */
+describe('BBCodeExporter — gramática estricta de osu!', () => {
+  it.each([
+    ['[spoilerbox=Mi título]oculto[/spoilerbox]', '[box=Mi título]oculto[/box]'],
+    ['[spoilerbox]oculto[/spoilerbox]', '[spoilerbox]oculto[/spoilerbox]'],
+    [
+      '[imagemap]https://e.com/a.png\n10 10 20 20 https://e.com clic[/imagemap]',
+      '[imagemap]\nhttps://e.com/a.png\n10 10 20 20 https://e.com clic\n[/imagemap]',
+    ],
+    [
+      '[imagemap]\nhttps://e.com/a.png\n10 10 20 20 https://e.com clic\n[/imagemap]\ndespués',
+      '[imagemap]\nhttps://e.com/a.png\n10 10 20 20 https://e.com clic\n[/imagemap]\ndespués',
+    ],
+  ])('%j → %j, y reexportarlo no cambia nada', (source, expected) => {
+    const exported = exportOsu(source)
+    expect(exported).toBe(expected)
+    expect(exportOsu(exported)).toBe(exported)
   })
 })

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { optimizeBBCode } from '../Edits/Optimizer'
+import { optimizeBBCode, optimizeBBCodeFully } from '../Edits/Optimizer'
 import { classifyOverlap } from '../Edits/EditPlan'
 import { applyEditsToSource } from '../Edits/applyEdits'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
@@ -165,6 +165,14 @@ describe.skipIf(CORPUS.length === 0)('optimizer against real userpages', () => {
         // The two appliers must not be able to disagree. Monaco resolves the
         // batch against its model; this is the other half, replayed by hand.
         expect(applyEditsToSource(source, result.edits)).toBe(result.output)
+      })
+
+      it('the fixpoint composes to the same batch-replay agreement', () => {
+        // What the in-place minifier actually applies: every pass
+        // optimizeBBCodeFully ran, composed into one edit list against this
+        // same `source`, must replay to that exact fixpoint output.
+        const fully = optimizeBBCodeFully(source)
+        expect(applyEditsToSource(source, fully.edits)).toBe(fully.output)
       })
     })
   }

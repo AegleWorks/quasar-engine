@@ -24,6 +24,8 @@ import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import type { GreenNode } from '../Syntax/GreenNode'
 import { resolveEditConflicts, type PlannedEdit, type ResolvedEditPlan } from './EditPlan'
 import { applyEditsToSource } from './applyEdits'
+import { composeEditPasses } from './composeEdits'
+import type { SurgicalEdit } from '../Reconciler/SurgicalReconciler'
 import type { OptimizationRule } from './Rules/Rule'
 import { MergeAdjacentRule } from './Rules/mergeAdjacent'
 import { DropEmptyTagsRule } from './Rules/dropEmptyTags'
@@ -167,10 +169,17 @@ export function optimizeBBCode(source: string, options: OptimizeOptions = {}): O
   return optimizeTree(source, root, options)
 }
 
-/** Result of {@link optimizeBBCodeFully}: only the output is meaningful, not edits. */
+/** Result of {@link optimizeBBCodeFully}. */
 export interface FixpointOptimizationResult {
   readonly source: string
   readonly output: string
+  /**
+   * Every applied pass composed into ONE batch addressed to `source` (see
+   * `composeEditPasses`). Empty when no pass applied anything. Hand this
+   * straight to `applySurgicalEdits` for a single-undo-stop in-place minify —
+   * `applyEditsToSource(source, edits) === output`.
+   */
+  readonly edits: readonly SurgicalEdit[]
   readonly savedChars: number
   /** Per-rule totals summed over every pass, in descending saving order. */
   readonly stats: readonly RuleStat[]
@@ -186,9 +195,11 @@ export interface FixpointOptimizationResult {
  * two now-adjacent identical tags). A single `optimizeBBCode` therefore leaves
  * work that a second call would find.
  *
- * The passes rewrite a string, so there is no single edit list against the
- * original `source` — use this for exports, where only the output matters,
- * never for edits applied to an open buffer.
+ * Each pass runs over the previous pass's OUTPUT, so there is no single edit
+ * list against the original `source` for free — `edits` is every applied
+ * pass folded back into one batch by `composeEditPasses`. That is what lets
+ * an open buffer reach the very same fixpoint an export does: apply `edits`
+ * as one surgical batch instead of re-exporting the document.
  */
 export function optimizeBBCodeFully(
   source: string,
@@ -196,6 +207,7 @@ export function optimizeBBCodeFully(
   maxPasses = 8,
 ): FixpointOptimizationResult {
   const totals = new Map<string, RuleStat>()
+  const passEdits: (readonly PlannedEdit[])[] = []
   let output = source
   let passes = 0
 
@@ -204,6 +216,7 @@ export function optimizeBBCodeFully(
     if (pass.edits.length === 0) break
     passes++
     output = pass.output
+    passEdits.push(pass.edits)
     for (const stat of pass.stats) {
       const prev = totals.get(stat.ruleId)
       totals.set(stat.ruleId, prev
@@ -218,6 +231,7 @@ export function optimizeBBCodeFully(
   return {
     source,
     output,
+    edits: composeEditPasses(source, passEdits),
     savedChars: source.length - output.length,
     stats: [...totals.values()].sort((a, b) => b.savedChars - a.savedChars || a.ruleId.localeCompare(b.ruleId)),
     passes,

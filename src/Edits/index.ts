@@ -12,6 +12,7 @@ export type {
   OverlapRelation,
 } from './EditPlan'
 export { applyEditsToSource } from './applyEdits'
+export { composeEditPasses } from './composeEdits'
 export { fixToSurgicalEdits } from './fixEdits'
 export {
   optimizeBBCode,

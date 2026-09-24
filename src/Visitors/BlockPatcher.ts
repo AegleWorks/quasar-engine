@@ -300,6 +300,68 @@ function shouldMorphInPlace(
 }
 
 /**
+ * Hand each brand-new run the orphaned old run that held its slot, so the
+ * reconcile morphs the old element instead of inserting a fresh one.
+ *
+ * The incremental parser rebuilds the block under an edit — and every ancestor
+ * on the path down to it — as new red nodes with new ids. So a keystroke inside
+ * a block made that block's run look brand new: its element was replaced whole,
+ * paying a full parse of its HTML plus a relayout of the whole subtree (5.2 ms
+ * + 3.7 ms per keystroke in the largest block of the 547 KB fixture, measured in
+ * Chromium), and every bit of runtime state went with it — an open `<details>`
+ * closed on every keystroke typed inside it.
+ *
+ * Pairs are made in order, only inside the same gap between surviving runs,
+ * and only when `shouldMorphInPlace` accepts the old element for the new run,
+ * so a morph is always a content update of the same kind of element. The walk
+ * still positions every element, so a pair that turns out to sit elsewhere
+ * costs a move, never a wrong DOM.
+ *
+ * Returns old-run index → the new run that adopts it.
+ */
+function adoptOrphanRuns(
+  oldRuns: readonly PatchRun[],
+  oldNodeAt: (index: number) => Node | null | undefined,
+  newRuns: readonly PatchRun[],
+  isOldSurvivor: (run: PatchRun) => boolean,
+  isNewSurvivor: (run: PatchRun) => boolean,
+): Map<number, PatchRun> {
+  const pairs = new Map<number, PatchRun>()
+  const orphansByGap = new Map<number, number[]>()
+  let gap = 0
+  for (let i = 0; i < oldRuns.length; i++) {
+    if (isOldSurvivor(oldRuns[i])) {
+      gap++
+      continue
+    }
+    let orphans = orphansByGap.get(gap)
+    if (!orphans) orphansByGap.set(gap, (orphans = []))
+    orphans.push(i)
+  }
+  if (orphansByGap.size === 0) return pairs
+
+  gap = 0
+  let taken = 0
+  for (let j = 0; j < newRuns.length; j++) {
+    const run = newRuns[j]
+    if (isNewSurvivor(run)) {
+      gap++
+      taken = 0
+      continue
+    }
+    const orphans = orphansByGap.get(gap)
+    if (!orphans || taken >= orphans.length) continue
+    const oldIndex = orphans[taken]
+    const element = oldNodeAt(oldIndex)
+    if (element && element.nodeType === 1 && shouldMorphInPlace(element as Element, run)) {
+      pairs.set(oldIndex, run)
+      taken++
+    }
+  }
+  return pairs
+}
+
+/**
  * Group the block list into runs, using the per-block render info.
  *
  * Run spans are accumulated from GREEN widths, never from red `range` reads:
@@ -436,12 +498,27 @@ function reconcileKeyed(
     // (insert/delete anywhere) moves ZERO nodes.
     const newKeySet = new Set<string>()
     for (let i = 0; i < runs.length; i++) newKeySet.add(runs[i].key)
+    // An orphan that held a brand-new run's slot is morphed, not replaced:
+    // registered under the new key, the walk below finds it like a survivor.
+    const adopted = adoptOrphanRuns(
+      oldRuns,
+      (index) => container.childNodes[index],
+      runs,
+      (run) => newKeySet.has(run.key),
+      (run) => oldRunByKey.has(run.key),
+    )
+    for (const [oldIndex, run] of adopted) {
+      const node = container.childNodes[oldIndex]
+      if (!node) continue
+      oldByKey.set(run.key, node)
+      oldRunByKey.set(run.key, oldRuns[oldIndex])
+    }
     // Walk the OLD runs; any whose key is gone is an orphan. `childNodes` is a
     // live list, so collect the nodes first, then remove them (the survivors
     // keep their identity — this is what preserves open `<details>`).
     const orphanNodes: Node[] = []
     for (let i = 0; i < oldRuns.length; i++) {
-      if (!newKeySet.has(oldRuns[i].key)) {
+      if (!newKeySet.has(oldRuns[i].key) && !adopted.has(i)) {
         const node = container.childNodes[i]
         if (node) orphanNodes.push(node)
       }
@@ -877,10 +954,25 @@ function reconcileWindowed(
     // connection state is tracked explicitly, never via `Node.isConnected`.
     const newKeySet = new Set<string>()
     for (let i = 0; i < newWinRunsFinal.length; i++) newKeySet.add(newWinRunsFinal[i].key)
+    // The block under the edit comes back re-keyed; adopt its old element so
+    // the walk morphs it (see `adoptOrphanRuns`).
+    const adopted = adoptOrphanRuns(
+      oldWinRunsFinal,
+      (index) => oldWinNodes[index],
+      newWinRunsFinal,
+      (run) => newKeySet.has(run.key) || newByNode.has(run.node),
+      (run) => oldRunByKey.has(run.key) || oldRunByNode.has(run.node),
+    )
+    for (const [oldIndex, run] of adopted) {
+      const el = oldWinNodes[oldIndex]
+      if (!el) continue
+      oldByKey.set(run.key, el)
+      oldRunByKey.set(run.key, oldWinRunsFinal[oldIndex])
+    }
     const removed = new Set<Node>()
     for (let i = 0; i < oldWinRunsFinal.length; i++) {
       const k = oldWinRunsFinal[i].key
-      if (newKeySet.has(k) || newByNode.has(oldWinRunsFinal[i].node)) continue
+      if (newKeySet.has(k) || newByNode.has(oldWinRunsFinal[i].node) || adopted.has(i)) continue
       const el = oldWinNodes[i]
       if (DBG) dbg('orphan?', k, oldWinRunsFinal[i].node.kind, 'el=', el ? (el.nodeType === 1 ? (el as Element).tagName : `text:'${String((el as Text).data ?? '').slice(0, 20)}'`) : 'null')
       if (el && !removed.has(el)) {

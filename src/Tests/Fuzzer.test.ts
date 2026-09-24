@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { optimizeBBCode, optimizeBBCodeFully } from '../Edits/Optimizer'
+import { applyEditsToSource } from '../Edits/applyEdits'
 import { TagRegistry } from '../Model/TagRegistry'
 import { RedNode } from '../Syntax/RedNode'
 
@@ -151,6 +152,11 @@ describe('Empirical Fuzz Testing - export + optimizer', () => {
     const first = optimizeBBCodeFully(exported1)
     const minified = new BBCodeDocumentModel({ source: first.output, strictMode: false })
     expect(getPlainText(minified.redRoot!)).toBe(getPlainText(reparsed.redRoot!))
+
+    // 4b. `edits` is every pass optimizeBBCodeFully ran, composed into one
+    // batch against `exported1` — what the in-place minifier applies as a
+    // single undo stop. It must replay to the very same fixpoint output.
+    expect(applyEditsToSource(exported1, first.edits)).toBe(first.output)
 
     // 5. Minify idempotence: optimizing already-optimized output finds nothing
     const second = optimizeBBCode(first.output)

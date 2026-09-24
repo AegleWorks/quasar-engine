@@ -19,6 +19,7 @@ import { greenToRedNode } from '../BBCode/BBCodeToGreenNode'
 import { resolveEditConflicts } from '../Edits/EditPlan'
 import { applyEditsToSource } from '../Edits/applyEdits'
 import { FlattenOsuNestingRule } from '../Edits/Rules/flattenOsuNesting'
+import { mayHaveSameNameNesting } from './sameNameNestingGate'
 import {
   toTokenResolver,
   resolveTokenValue,
@@ -132,32 +133,6 @@ function isGhostKind(n: RedNode): boolean {
 
 function isNewlineKind(n: RedNode): boolean {
   return n.kind === 'spacing' || n.kind === 'empty_line'
-}
-
-/** Tags `FlattenOsuNestingRule` rewrites, spelled as the osu! export emits them. */
-const FLATTENABLE_TAG_RE = /\[(\/?)(b|i|u|s|strike|spoiler|heading|centre|left|right|color|size)(?:=[^\]]*)?\]/g
-
-/**
- * Cheap gate in front of the re-parse: can this export contain a flattenable
- * tag nested inside one of the same name? The osu! export runs on every
- * keystroke (the character counter), and most pages have no such nesting, so
- * they should not pay for a full re-parse. A false positive only costs that
- * re-parse; a false negative is impossible, since every nested pair the rule
- * could act on shows up here as a second opener while the first is open.
- */
-function mayHaveSameNameNesting(source: string): boolean {
-  const depth = new Map<string, number>()
-  for (const match of source.matchAll(FLATTENABLE_TAG_RE)) {
-    const name = match[2] === 's' ? 'strike' : match[2]
-    const open = depth.get(name) ?? 0
-    if (match[1]) {
-      if (open > 0) depth.set(name, open - 1)
-    } else {
-      if (open > 0) return true
-      depth.set(name, 1)
-    }
-  }
-  return false
 }
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
@@ -307,8 +282,17 @@ function hasAttrValue(value: unknown): boolean {
  * que su parser rechaza y deja como texto literal en la página.
  */
 function expandHexForOsu(body: string): string | null {
-  if (!/^[0-9a-fA-F]+$/.test(body)) return null
-  switch (body.length) {
+  // La longitud se mira antes que los dígitos, y los dígitos a mano: este
+  // camino corre una vez por `[color]`, y en páginas con degradados eso son
+  // decenas de miles de veces por exportación. El regex `^[0-9a-fA-F]+$` era
+  // ~1 ms del export a osu! sobre el fixture de 547 KB.
+  const length = body.length
+  if (length !== 3 && length !== 4 && length !== 6 && length !== 8) return null
+  for (let i = 0; i < length; i++) {
+    const c = body.charCodeAt(i)
+    if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102))) return null
+  }
+  switch (length) {
     case 3:
       return body[0] + body[0] + body[1] + body[1] + body[2] + body[2]
     case 4:
@@ -563,11 +547,19 @@ export class BBCodeExporter extends Visitor<string> {
     let i = 0
     while (i < children.length) {
       const child = children[i]
-      if (isNewlineKind(child) || isGhostKind(child)) {
+      const kind = child.kind
+      if (kind === 'spacing' || kind === 'empty_line' || kind === 'discarded_tag' || kind === 'discarded_box_close') {
+        // One read of `kind` per child and no array for the region: this loop
+        // sees every newline between two texts, and slicing each region just
+        // to look for a ghost was a steady allocation on every export.
         const regionStart = i
-        while (i < children.length && (isNewlineKind(children[i]) || isGhostKind(children[i]))) i++
-        const region = children.slice(regionStart, i)
-        const hasGhost = region.some(isGhostKind)
+        let hasGhost = false
+        while (i < children.length) {
+          const regionKind = children[i].kind
+          if (regionKind === 'discarded_tag' || regionKind === 'discarded_box_close') hasGhost = true
+          else if (regionKind !== 'spacing' && regionKind !== 'empty_line') break
+          i++
+        }
 
         // No ghost anywhere in this region: nothing was dropped from the
         // exported text here, so there is nothing for a real tag to newly
@@ -578,11 +570,12 @@ export class BBCodeExporter extends Visitor<string> {
         // newline, because `center`'s own `afterOpen` rule alone made
         // `isNewlineSwallowedPublic` true with no ghost involved at all).
         if (!hasGhost) {
-          for (const regionChild of region) out += this.exportNode(regionChild) // 'spacing'/'empty_line' → '\n'
+          for (let j = regionStart; j < i; j++) out += this.exportNode(children[j]) // 'spacing'/'empty_line' → '\n'
           pendingRealChild = null
           continue
         }
 
+        const region = children.slice(regionStart, i)
         const resolver = this.ghostResolver()
         const pendingRealRule = pendingRealChild ? resolver.closingBudget(pendingRealChild) : null
         const newlineNodes = region.filter(isNewlineKind)
@@ -687,6 +680,25 @@ export class BBCodeExporter extends Visitor<string> {
         tagName = tagDef.name
       } else {
         return content
+      }
+    }
+
+    if (this.target === 'osu') {
+      // osu! solo sella `[spoilerbox]` desnudo (`BBCodeForDB::parseBox` lo
+      // reemplaza con un `strtr` literal), así que uno con título se publicaba
+      // como texto. `[box=Título]` produce exactamente el mismo spoilerbox con
+      // ese título, que es lo que la vista previa ya enseña.
+      if (node.kind === 'spoilerbox' && attrs !== '') {
+        return `[box${attrs}]${content}[/box]`
+      }
+      // La gramática de imagemap de osu! (`BBCodeFromDB::parseImagemap`) exige
+      // un salto justo después de `[imagemap]` y otro antes de `[/imagemap]`;
+      // sin ellos el bloque entero sale como texto literal. Se añaden solo si
+      // faltan, así que reexportar no los duplica.
+      if (node.kind === 'imagemap' && content !== '') {
+        const head = content.startsWith('\n') ? '' : '\n'
+        const tail = content.endsWith('\n') ? '' : '\n'
+        return `[${tagName}${attrs}]${head}${content}${tail}[/${tagName}]`
       }
     }
 
