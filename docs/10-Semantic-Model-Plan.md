@@ -84,6 +84,9 @@ render, export, forum render and effect byte-for-byte equal to before.
   pure functions.
 - The renderer imports them.
 - **Done when:** the differential shows 0 differences and all suites are green.
+- ✅ **Done** — `Semantic/osu/newlineRules.ts`: `NEWLINE_RULES`, `LEGACY_BLOCK_RULE`,
+  `BLOCK_KINDS`, the widthless sets, `newlineRule`, `discardedTagRule`.
+  Differential: 52 097 outputs, 0 differ.
 
 ### Phase 2 — `OsuSemanticModel`
 - Move the queries out of the renderer, unchanged: `isNewlineSwallowed`,
