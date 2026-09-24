@@ -9,8 +9,9 @@ import type { RedNode } from '../Syntax/RedNode'
  */
 async function freshModel(flag: string | undefined) {
   vi.resetModules()
-  if (flag === undefined) vi.unstubAllEnvs()
-  else vi.stubEnv('QUASAR_VALIDATE_TREES', flag)
+  // "Off" is stubbed too, not just un-stubbed: under `npm run test:validate`
+  // the REAL environment has the flag on, and un-stubbing restores that.
+  vi.stubEnv('QUASAR_VALIDATE_TREES', flag ?? '')
   const { BBCodeDocumentModel } = await import('../BBCode/BBCodeDocumentModel')
   /** Builds a tree whose second block sits three characters off. */
   class Broken extends BBCodeDocumentModel {

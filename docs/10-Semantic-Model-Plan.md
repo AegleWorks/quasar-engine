@@ -1,6 +1,6 @@
 # 10. Plan — one semantic model between the tree and its outputs
 
-Status: **plan**, not implemented. Written 2026-09-24 after the osu! fidelity
+Status: **implemented** (phases 0–5). Written 2026-09-24 after the osu! fidelity
 work (parity 128/130 with osu!'s real stylesheet).
 
 ## The problem: three leaks between layers
@@ -149,6 +149,21 @@ render, export, forum render and effect byte-for-byte equal to before.
   reused tree answers every query exactly as the model built on a fresh full
   parse does (compared by range).
 - Add it to `09-Guarantees` under *Incremental paths*.
+- ✅ **Done** — `Tests/OsuSemanticModel.test.ts`: 150 random edits per
+  dialect, each followed by its undo, all through the incremental parser;
+  every answer compared by range with a fresh parse's model. 69 and 66 edits
+  take the incremental path (the rest cannot be isolated by design, and the
+  test asserts the share stays above a third so it cannot silently become a
+  test of full parses).
+
+## Result
+
+| | Before | After |
+|---|---|---|
+| `HTMLRenderer.ts` | 2 225 lines, owned the osu! rules | 1 740 lines, presentation only |
+| Export → renderer dependency | yes (built renderers to ask them) | none, enforced transitively |
+| Kit, real CSS | 128/130 | **130/130** |
+| Output change in phases 1–3 | — | 0 of 52 097 outputs |
 
 ## What this plan deliberately does not do
 

@@ -41,6 +41,7 @@ skipped), but every other invariant holds for them too.
 | …and it satisfies every red-tree invariant above. | `RedTreeInvariants.test.ts` (random edits); `QUASAR_VALIDATE_TREES=1` over any suite. |
 | The osu! preview tree (`OsuPreviewTree`) equals a fresh full osu! parse after every edit, with unchanged blocks as the same objects. | `OsuPreviewTree.test.ts` (random edits, both dialects, invariants checked). |
 | The patched preview DOM equals a full render of the same tree (ids aside), including when the HTML parser reshapes malformed markup. | `OsuPreviewTree.test.ts`, `BlockPatcherReshape.test.ts`, `BlockPatcherAdoption.test.ts`. |
+| The osu! semantic model (swallowed newlines, closing budgets, ghosts, title claims) answers on an incrementally patched tree exactly as on a fresh full parse. | `OsuSemanticModel.test.ts` (random edits and their undo, compared by range). |
 
 ## Rendering and transforms
 
