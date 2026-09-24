@@ -48,6 +48,7 @@ skipped), but every other invariant holds for them too.
 |---|---|
 | A renderer's id mode is its own; no render changes another's output. | Per-instance `idMode` option (`RendererIsolation.test.ts`). |
 | Effect transforms return a new tree and leave their input untouched and valid. | `TreeTransformersPurity.test.ts`. |
+| Publishing never depends on presentation: the exporter and the edit rules reach no renderer, directly or through any chain of imports. What osu! swallows or hides comes from one `OsuSemanticModel`, shared by render and export. | `Architecture.test.ts` (transitive import graph). |
 
 ## Debug validation
 

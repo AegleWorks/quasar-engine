@@ -81,7 +81,7 @@ import {
 import { attributeValue, normalizeColorValue } from './tagValue'
 import { maxFontSizeFor } from '../../Utils/FontSizeLimits'
 import type { RedNode } from '../../Syntax/RedNode'
-import type { HTMLRenderer } from '../../Visitors/HTMLRenderer'
+import type { OsuSemanticModel } from '../../Semantic/osu/OsuSemanticModel'
 import { isBlockKind } from '../../BBCode/BBCodeToGreenNode'
 import type { NodeKind } from '../../Types/core'
 
@@ -95,7 +95,7 @@ const IDEMPOTENT_KINDS: ReadonlySet<string> = new Set([
 
 /**
  * Of {@link IDEMPOTENT_KINDS}, the ones osu! renders as a BLOCK (a `<div>`,
- * per `HTMLRenderer`'s `RENDERED_AS_BLOCK`/`NEWLINE_RULES`) rather than an
+ * per `RENDERED_AS_BLOCK` and `Semantic/osu`'s `NEWLINE_RULES`) rather than an
  * inline span. Dropping one of these needs the newline fixup in
  * {@link FlattenOsuNestingRule.fixupBlockNewlines} — an inline drop
  * (`bold`/`italic`/…) never eats a newline in the first place, so it never
@@ -142,18 +142,17 @@ export interface FlattenOsuNestingContext {
    * a block kind — never for the idempotent inline kinds, the color/size
    * split path, or a document that never reaches `resolve()`'s block branch.
    * Optional so the rule stays usable standalone (tests, `allRules()`-style
-   * callers) without a renderer on hand; without it, block drops are still
+   * callers) without a model on hand; without it, block drops are still
    * structurally correct, just without the newline cleanup.
    */
   readonly redRoot?: () => RedNode
   /**
-   * Whose `NEWLINE_RULES`/`closingBudget`/`isNewlineSwallowedPublic` this
-   * rule reads rather than duplicating (per `bbcode-optimizer-range-first`:
-   * one table, one owner). Any dialect's renderer works — the four block
-   * kinds here carry the SAME budget in osu and miliastry (`NEWLINE_RULES`
-   * is not dialect-gated).
+   * The osu! semantic model of the tree `redRoot` builds: whose newline rules
+   * this rule reads rather than duplicating (one table, one owner). Any
+   * dialect works — the four block kinds here carry the SAME budget in osu
+   * and miliastry (`NEWLINE_RULES` is not dialect-gated).
    */
-  readonly renderer?: HTMLRenderer
+  readonly semantic?: OsuSemanticModel
 }
 
 type Outcome = 'drop' | 'split' | 'leave'
@@ -302,10 +301,10 @@ export class FlattenOsuNestingRule implements OptimizationRule {
 
   /**
    * Reconciles the newlines around a dropped BLOCK tag (`center`/`left`/
-   * `right`/`heading`) with what `HTMLRenderer` actually did with them,
+   * `right`/`heading`) with what osu! actually does with them,
    * so removing the div boundary neither leaks a blank line nor glues two
    * lines together. Three sources of newline, per side (open and close),
-   * all resolved with `HTMLRenderer.isNewlineSwallowedPublic` against the
+   * all resolved with `OsuSemanticModel.isNewlineSwallowed` against the
    * PRE-drop tree — reading `NEWLINE_RULES` through the one shared accessor
    * rather than a second copy of the table (`closingBudget`'s own doc
    * comment; `BBCodeExporter.exportChildren` already leans on this same pair
@@ -339,8 +338,8 @@ export class FlattenOsuNestingRule implements OptimizationRule {
    *    covers this).
    */
   private fixupBlockNewlines(child: Positioned, source: string, sink: PlannedEdit[]): void {
-    const renderer = this.context.renderer
-    if (!renderer) return
+    const semantic = this.context.semantic
+    if (!semantic) return
     const redChild = this.ensureRedByStart()?.get(child.start)
     if (!redChild) return
 
@@ -369,7 +368,7 @@ export class FlattenOsuNestingRule implements OptimizationRule {
       // case for the minimal repro.
       let sawVisible = !!prev && isNL(prev)
       for (const n of leading) {
-        if (renderer.isNewlineSwallowedPublic(n)) {
+        if (semantic.isNewlineSwallowed(n)) {
           sink.push(deletion(n.range, this.id, this.priority, label))
         } else {
           sawVisible = true
@@ -404,7 +403,7 @@ export class FlattenOsuNestingRule implements OptimizationRule {
       }
       let sawVisible = false
       for (const n of trailing) {
-        if (renderer.isNewlineSwallowedPublic(n)) {
+        if (semantic.isNewlineSwallowed(n)) {
           sink.push(deletion(n.range, this.id, this.priority, label))
         } else {
           sawVisible = true
@@ -412,7 +411,7 @@ export class FlattenOsuNestingRule implements OptimizationRule {
       }
 
       // The run of sibling newlines `child`'s afterClose budget can still
-      // reach — deleting whichever ones `HTMLRenderer` says it is still
+      // reach — deleting whichever ones the model says it is still
       // crediting to `child` specifically (`eatenAfterClosingTag` stops at
       // the budget on its own, so this never over-deletes into a run that
       // belongs to something further back). The first NON-swallowed one
@@ -421,7 +420,7 @@ export class FlattenOsuNestingRule implements OptimizationRule {
       let next = redChild.nextSibling
       let nextExists = !!next
       while (next && isNL(next)) {
-        if (renderer.isNewlineSwallowedPublic(next)) {
+        if (semantic.isNewlineSwallowed(next)) {
           sink.push(deletion(next.range, this.id, this.priority, label))
           next = next.nextSibling
         } else {

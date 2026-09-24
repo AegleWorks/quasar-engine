@@ -117,16 +117,6 @@ export class HTMLRenderer extends Visitor<string> {
   /** What the document means under osu!'s rules; see `Semantic/osu/OsuSemanticModel`. */
   private readonly semantic: OsuSemanticModel
 
-  /** @deprecated Ask an {@link OsuSemanticModel}; kept until the exporter does (plan phase 3). */
-  closingBudget(node: RedNode) {
-    return this.semantic.closingBudget(node)
-  }
-
-  /** @deprecated Ask an {@link OsuSemanticModel}; kept until the exporter does (plan phase 3). */
-  isNewlineSwallowedPublic(node: RedNode): boolean {
-    return this.semantic.isNewlineSwallowed(node)
-  }
-
   setTokens(tokens?: TokenSource): void {
     this.tokenResolver = toTokenResolver(tokens)
     this.options.tokens = tokens

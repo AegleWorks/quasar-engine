@@ -113,6 +113,12 @@ render, export, forum render and effect byte-for-byte equal to before.
 - **Done when:** the differential shows 0 differences, the architecture test is
   green, and `09-Guarantees` gains the row "Publishing never depends on
   presentation", enforced by that test.
+- ✅ **Done** — the exporter builds one model per `visit()` (per snapshot,
+  and only when a ghost shows up); the flatten rule gets a model of its own
+  re-parsed tree. `ghostResolver`, the deprecated delegates and the
+  `renderer` option are gone. `Architecture.test.ts` walks the transitive
+  import graph. Differential: 52 097 outputs, 0 differ; export perf tests
+  green.
 
 ### Phase 4 — the round trip reads the tree, not whitespace
 - A swallowed newline renders as an empty marker with no layout, e.g.

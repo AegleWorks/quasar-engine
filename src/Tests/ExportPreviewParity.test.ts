@@ -14,7 +14,7 @@ import { BBCodeExporter } from '../Visitors/BBCodeExporter'
  *
  * `exportChildren` (`BBCodeExporter.ts`) resuelve esto con la MISMA tabla de
  * presupuestos que el render (`NEWLINE_RULES`, expuesta vía
- * `HTMLRenderer.closingBudget`/`isNewlineSwallowedPublic`): un cierre real
+ * `OsuSemanticModel.closingBudget`/`isNewlineSwallowed`): un cierre real
  * que sobrevive a la exportación se come sus propios saltos adyacentes solo
  * con volver a analizarse (por eso esos saltos se dejan tal cual); un cierre
  * extraviado no sobrevive, así que sus saltos se eliminan explícitamente —
