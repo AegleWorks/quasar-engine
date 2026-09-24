@@ -96,6 +96,12 @@ render, export, forum render and effect byte-for-byte equal to before.
 - The model caches in `WeakMap`s owned by that instance.
 - **Done when:** the differential shows 0 differences, suites are green, and the
   547 KB fixture's render time rises by no more than 5%.
+- ✅ **Done** — `Semantic/osu/OsuSemanticModel.ts`. The renderer holds one
+  model per instance (the same cache lifetime its own caches had) and keeps
+  `closingBudget`/`isNewlineSwallowedPublic` as deprecated delegates until
+  phase 3. Differential: 52 097 outputs, 0 differ. 547 KB fixture, median of
+  12 fresh processes: osu 16.1 ms vs 16.7 ms before, miliastry 15.2 vs 15.5
+  (noise).
 
 ### Phase 3 — cut the wrong-way edge
 - `BBCodeExporter` and `flattenOsuNesting` take an `OsuSemanticModel`.
