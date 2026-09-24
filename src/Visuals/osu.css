@@ -73,10 +73,32 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote {
   padding: 0 0 0 20px;
   margin: 0 0 20px 0;
-  border-left: 2px solid var(--osu-accent);
+  border: none;
+  position: relative;
   color: #ffffff;
   font-style: normal;
   background: none;
+}
+/* La barra va DENTRO del padding, como la pinta osu (`::before` absoluto de
+ * 2px). Un `border-left` la sumaba al padding y empujaba el texto a 22px;
+ * medido contra app.css de osu: el texto empieza a 20px. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  border-radius: 10000px;
+  background-color: var(--osu-accent);
+}
+/* Anidadas: osu las encoge y les quita la barra; desde la quinta, también el
+ * sangrado. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote blockquote { font-size: 0.9em; }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote blockquote::before { display: none; }
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) blockquote blockquote blockquote blockquote blockquote {
+  font-size: 1em;
+  padding-left: 0;
 }
 /* ─── Code ───────────────────────────────────────────── */
 
@@ -157,6 +179,13 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) details[open] {
   padding-bottom: 0;
 }
+/* El cuerpo de la caja sangra como el de osu (`.bbcode-spoilerbox__body`:
+ * 10px arriba, 20px a la izquierda). Sin él el texto tenía 20px más de ancho
+ * y partía las líneas una palabra más tarde que osu (medido con app.css). */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-box-body {
+  margin-top: 10px;
+  padding-left: 20px;
+}
 
 /* ─── Lists ──────────────────────────────────────────── */
 
@@ -181,12 +210,12 @@
 
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) ul {
   margin: 0;
-  padding-left: var(--bb-list-indent, 24px);
+  padding-left: var(--bb-list-indent, 20px);
   list-style: disc var(--bb-list-position, outside);
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) ol {
   margin: 0;
-  padding-left: var(--bb-list-indent, 24px);
+  padding-left: var(--bb-list-indent, 20px);
   list-style: decimal var(--bb-list-position, outside);
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) li {
@@ -486,12 +515,12 @@
  * los roles de osu, igual que ya pasa arriba con los enlaces.
  */
 
-/* La cita no lleva acento: el texto Y la barra son `c2`, y la barra la pinta
- * osu con un ::before de 2px redondeado. El borde izquierdo da el mismo
- * resultado a esta anchura. */
+/* La cita no lleva acento: el texto Y la barra son `c2`. */
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] blockquote {
   color: var(--osu-c2);
-  border-left-color: var(--osu-c2);
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne)[data-dialect="osu"] blockquote::before {
+  background-color: var(--osu-c2);
 }
 
 /* El bloque de código es `b5` y NO lleva borde. El nuestro usaba `b6` con un
