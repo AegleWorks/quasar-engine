@@ -72,6 +72,11 @@ render, export, forum render and effect byte-for-byte equal to before.
 - Record the baseline at the current head.
 - **Done when:** the harness reports 0 differences between the head and itself,
   and 1 difference on a deliberately broken build (a proof that it can fail).
+- ✅ **Done** — `scripts/differential/run.mjs <base-ref> --corpus <dir|json>`.
+  Head against itself: 3 066 documents (66 real + 3 000 generated), 52 097
+  outputs, 0 differ, in about 30 s. A one-token mutant (`[/quote]` eats one
+  newline instead of two) makes 3 629 outputs differ, 5 of them **exports**:
+  leak 2, caught in the act.
 
 ### Phase 1 — move the tables
 - `NEWLINE_RULES`, `LEGACY_BLOCK_RULE`, `RENDERED_AS_BLOCK` and
