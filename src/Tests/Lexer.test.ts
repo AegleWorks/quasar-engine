@@ -236,3 +236,29 @@ describe('BBCodeLexer', () => {
     }
   })
 })
+
+describe('scanBBCode — brackets nest only inside an attribute value', () => {
+  // A stray `[word` before a real tag used to span to the balanced `]` and
+  // swallow the tag into one unknown "tag", rendered as literal text. osu!
+  // pairs the inner tag (measured with the parity harness on
+  // docs/ai/examples/Mimiyu.bbc: `RGB [Lekker [color=#4ed9d4]L60[/color] …]`).
+  const kinds = (src: string) => scanBBCode(src).map(t => `${t.kind}:${src.slice(t.start, t.end)}`)
+
+  it('a bracketed word before a tag leaves the tag a tag', () => {
+    expect(kinds('a [Lekker [color=red]L60[/color]] z')).toEqual([
+      'text:a ', 'text:[Lekker ', 'open:[color=red]', 'text:L60', 'close:[/color]', 'text:] z',
+    ])
+  })
+
+  it('a value may still hold nested BBCode: rich box titles', () => {
+    expect(kinds('[box=[b]Rico[/b] titulo]x[/box]')).toEqual([
+      'open:[box=[b]Rico[/b] titulo]', 'text:x', 'close:[/box]',
+    ])
+    expect(kinds('[box =[b]R[/b]]x[/box]')[0]).toBe('open:[box =[b]R[/b]]')
+  })
+
+  it('attributes without brackets are untouched, `=` or not', () => {
+    expect(kinds('[img round]u[/img]')[0]).toBe('open:[img round]')
+    expect(kinds('[color=red]x[/color]')[0]).toBe('open:[color=red]')
+  })
+})
