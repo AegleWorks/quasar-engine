@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
+import { HTMLDocumentModel } from '../HTML/HTMLDocumentModel'
+import { MarkdownDocumentModel } from '../Markdown/MarkdownDocumentModel'
 import { checkRedTree, assertRedTree } from '../Syntax/redTreeInvariants'
 import { REFERENCE_DOCUMENT } from './referenceDocument'
 import type { RedNode } from '../Syntax/RedNode'
@@ -84,6 +86,25 @@ describe('checkRedTree', () => {
     const root = parse(SAMPLE)
     root.children[1].parent = null
     expect(() => assertRedTree(root)).toThrow(/parent at document\//)
+  })
+})
+
+describe('importers — a translated tree is still a consistent tree', () => {
+  // HTML and Markdown are translated into a BBCode-shaped tree, so it does not
+  // reproduce their text (no `source` check), but its ranges must still agree
+  // with its own widths. They used to all start at 0: every node claimed the
+  // beginning of the document.
+  it('HTML: a node after a line break starts after it', () => {
+    const root = new HTMLDocumentModel({ source: '<p><b>Titulo</b> y texto</p><div class="notice">Aviso</div><p>fin</p>' }).redRoot!
+    expect(kinds(root)).toEqual([])
+    const last = root.children[root.children.length - 1]
+    expect(last.range.start).toBeGreaterThan(0)
+  })
+
+  it('Markdown: consistent (its translation carries no widths at all)', () => {
+    const root = new MarkdownDocumentModel({ source: '# Titulo\n\nUn **parrafo** con texto.\n\n- uno\n- dos\n' }).redRoot!
+    expect(root.children.length).toBeGreaterThan(1)
+    expect(kinds(root)).toEqual([])
   })
 })
 

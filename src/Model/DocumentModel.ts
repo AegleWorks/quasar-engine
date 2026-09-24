@@ -21,6 +21,7 @@
 import { RedNode } from '../Syntax/RedNode'
 import { GreenNode } from '../Syntax/GreenNode'
 import { preserveNodeIds } from '../Syntax/preserveNodeIds'
+import { assertRedTree } from '../Syntax/redTreeInvariants'
 import { NodeMatcher } from '../Syntax/NodeMatcher'
 import type { NodeMatch } from '../Syntax/NodeMatcher'
 import {
@@ -60,6 +61,21 @@ import type {
   FixAllTarget,
 } from '../Fixes/BatchFixer'
 import { applyEditsToSource } from '../Edits/applyEdits'
+
+
+/**
+ * Validate the red tree after every rebuild and incremental reparse
+ * (`QUASAR_VALIDATE_TREES=1`), throwing on the first broken invariant.
+ *
+ * Roslyn runs its tree validator as a debug assertion after every
+ * incremental parse, which turns every test that happens to edit a document
+ * into a fuzz case for the incremental machinery. Same here: set the variable
+ * and run any suite. Off by default — it is a full walk per edit — and read
+ * once at module load, so production sees a constant `false`. The `typeof`
+ * guard is for Workers, where `process` may not exist.
+ */
+const VALIDATE_TREES =
+  typeof process !== 'undefined' && process.env?.QUASAR_VALIDATE_TREES === '1'
 
 export interface DocumentModelOptions {
   /** Initial source text */
@@ -296,6 +312,7 @@ export class DocumentModel {
     if (oldRoot) {
       preserveNodeIds(oldRoot, this._redRoot)
     }
+    if (VALIDATE_TREES) this.validateTree('rebuild')
     this._version++
 
     // Run semantic analysis
@@ -353,6 +370,33 @@ export class DocumentModel {
         return memo
       },
     })
+  }
+
+  /**
+   * Whether the tree is a syntax tree OF `source` — every character owned by
+   * exactly one node, text leaves holding their own characters.
+   *
+   * True for BBCode. The HTML, Markdown and MilHibri models are importers:
+   * they translate their source into a BBCode-shaped tree, whose widths
+   * describe the translation, not the input. They override this to false, and
+   * the validator then checks their tree's own consistency (parents, ranges
+   * against widths, ids) without asking it to reproduce text it never held.
+   */
+  protected get treeMirrorsSource(): boolean {
+    return true
+  }
+
+  /**
+   * Assert every red-tree invariant (`checkRedTree`) on the current tree.
+   * Debug-only: see `VALIDATE_TREES`.
+   */
+  private validateTree(after: string): void {
+    if (!this._redRoot) return
+    try {
+      assertRedTree(this._redRoot, this.treeMirrorsSource ? { source: this._source } : {})
+    } catch (err) {
+      throw new Error(`[QUASAR_VALIDATE_TREES] after ${after}: ${(err as Error).message}`)
+    }
   }
 
   /**
@@ -496,6 +540,11 @@ export class DocumentModel {
       this.rebuild(this._source)
       return
     }
+
+    // Outside the try above on purpose: its catch falls back to a full
+    // rebuild on ANY error, and would swallow the violation it exists to
+    // report.
+    if (VALIDATE_TREES) this.validateTree('incremental reparse')
 
     // Emit event immediately
     if (this.events.hasListeners('document_changed') || this.events.recordHistory) {

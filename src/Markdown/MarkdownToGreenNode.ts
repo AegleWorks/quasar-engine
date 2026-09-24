@@ -174,7 +174,16 @@ const EFFECT_TAGS = new Set(['glow', 'neon', 'outline', 'shimmer', 'ghost', 'rai
 const ANIM_TAGS = new Set(['typewriter', 'wave', 'sparkle', 'glitch', 'levitate', 'pulse', 'bounce', 'shake', 'fade-in', 'fade-out']);
 const CONTAINER_TAGS = new Set(['card', 'glass', 'neon-box', 'neonbox', 'square', 'circle', 'stack', 'flex', 'grid', 'middle']);
 
-export function greenToRedNode(green: GreenNode, parent?: RedNode | null): RedNode {
+/**
+ * `start` is the node's absolute offset; children are placed after it by
+ * accumulating green widths, exactly as the BBCode builder does. It used to be
+ * omitted, so every node started at 0 whatever its widths said: in an HTML
+ * import, whose line breaks carry width, a node after a break claimed the
+ * offset before it. Found by `checkRedTree` under `QUASAR_VALIDATE_TREES`.
+ * (An imported tree translates its source, so these offsets index the
+ * translation's widths, not the HTML or Markdown text.)
+ */
+export function greenToRedNode(green: GreenNode, parent?: RedNode | null, start = 0): RedNode {
   let metadata: Record<string, unknown> = {};
   let kind = (green.kind as NodeKind) || 'text';
 
@@ -253,14 +262,17 @@ export function greenToRedNode(green: GreenNode, parent?: RedNode | null): RedNo
   const red = new RedNode(green, {
     parent: parent ?? null,
     kind,
-    metadata
+    metadata,
+    start,
   });
 
   const greenChildren = green.children as GreenNode[];
   if (greenChildren.length > 0) {
     const kids: RedNode[] = new Array(greenChildren.length);
+    let offset = start + green.leadingWidth;
     for (let i = 0; i < greenChildren.length; i++) {
-      kids[i] = greenToRedNode(greenChildren[i], red);
+      kids[i] = greenToRedNode(greenChildren[i], red, offset);
+      offset += greenChildren[i].width;
     }
     red.initChildren(kids);
   }
