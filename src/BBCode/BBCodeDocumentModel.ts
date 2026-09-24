@@ -142,28 +142,27 @@ export class BBCodeDocumentModel extends DocumentModel {
     source: string,
     options: HTMLRendererOptions & { dialect?: BBCodeDialect } = {}
   ): string {
-    const previousIdMode = HTMLRenderer.idMode
-    HTMLRenderer.idMode = 'none'
-    try {
-      const dialect = options.dialect ?? (options.theme === 'lyne' ? 'lyne' : 'miliastry')
-      const effectiveSource = source || ' '
-      const doc = new BBCodeDocumentModel({
-        source: effectiveSource,
-        dialect,
-        autoAnalyze: false,
-        maxUndo: 0,
-        incremental: false,
-      })
-      if (!doc.redRoot) return ''
-      const renderer = new HTMLRenderer({
-        ...options,
-        dialect,
-        registry: options.registry ?? doc.tagRegistry,
-      })
-      return renderer.render(doc.redRoot)
-    } finally {
-      HTMLRenderer.idMode = previousIdMode
-    }
+    const dialect = options.dialect ?? (options.theme === 'lyne' ? 'lyne' : 'miliastry')
+    const effectiveSource = source || ' '
+    const doc = new BBCodeDocumentModel({
+      source: effectiveSource,
+      dialect,
+      autoAnalyze: false,
+      maxUndo: 0,
+      incremental: false,
+    })
+    if (!doc.redRoot) return ''
+    // Ids off for THIS renderer only. This used to flip the process-wide
+    // `HTMLRenderer.idMode` and restore it in a `finally`, so every other
+    // renderer that painted in between — a resolver callback rendering a
+    // preview, a nested render — lost its ids too.
+    const renderer = new HTMLRenderer({
+      ...options,
+      dialect,
+      registry: options.registry ?? doc.tagRegistry,
+      idMode: 'none',
+    })
+    return renderer.render(doc.redRoot)
   }
 
   /**

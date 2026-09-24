@@ -60,7 +60,8 @@ describe('checkRedTree', () => {
 
   it('catches a red child list that no longer mirrors its green', () => {
     const root = parse(SAMPLE)
-    root.children.pop()
+    // Deliberate corruption, past the type system that normally forbids it.
+    ;(root.children as RedNode[]).pop()
     expect(kinds(root)).toContain('shape')
   })
 

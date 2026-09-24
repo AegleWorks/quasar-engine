@@ -74,8 +74,8 @@ export class TreeDiffer {
   }
 
   private diffChildren(
-    oldChildren: RedNode[],
-    newChildren: RedNode[],
+    oldChildren: readonly RedNode[],
+    newChildren: readonly RedNode[],
     parent: RedNode,
     ops: DiffOperation[],
     stats: { inserts: number; deletes: number; updates: number; moves: number; preserves: number },

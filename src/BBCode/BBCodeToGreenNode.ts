@@ -557,7 +557,7 @@ function buildTitleNodes(
   parent: RedNode,
   store?: RedNodeStore,
   start: number = 0,
-): RedNode[] {
+): readonly RedNode[] {
   if (!rawTitle || !rawTitle.includes('[')) return []
   try {
     const tokens = scanBBCode(rawTitle)

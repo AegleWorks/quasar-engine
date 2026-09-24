@@ -389,7 +389,7 @@ function adoptOrphanRuns(
  * on the 500 KB fixture across every edit shape) makes the accumulation exact.
  */
 function buildRuns(
-  blocks: RedNode[],
+  blocks: readonly RedNode[],
   keys: string[],
   getHtml: (node: RedNode, key: string) => { html: string; kind: RunKind },
   baseStart: number,
