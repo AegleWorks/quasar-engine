@@ -106,6 +106,17 @@ function cloneTree(node: RedNode): RedNode {
 }
 
 /**
+ * A copy of `node` with no children, for the walks that rebuild them.
+ *
+ * They used to deep-clone the whole subtree and then throw the copy's
+ * children away (`cloned.children = []`, a write that also bypassed the
+ * mutation boundary) — a full clone per level, only to discard it.
+ */
+function cloneShell(node: RedNode): RedNode {
+  return new RedNode(node.green, { kind: node.kind, metadata: { ...node.metadata } })
+}
+
+/**
  * Wrap a text node's characters/words in effect nodes,
  * returning an array of nodes that replace the original text node.
  *
@@ -124,7 +135,7 @@ function wrapTextWithGradient(
   easing: Easing,
 ): RedNode {
   const text = node.text
-  if (!text) return node
+  if (!text) return cloneTree(node)
 
   const segments = unit === 'word'
     ? text.split(/(\s+)/).filter((s: string) => s.length > 0)
@@ -132,7 +143,7 @@ function wrapTextWithGradient(
       ? text.split('\n')
       : [...text]
 
-  if (segments.length === 0) return node
+  if (segments.length === 0) return cloneTree(node)
 
   // Create a parent group node to hold all the segments
   const groupGreen = greenLeaf('group', '')
@@ -178,10 +189,10 @@ function wrapTextWithGrow(
   documentLength: number,
 ): RedNode {
   const text = node.text
-  if (!text) return node
+  if (!text) return cloneTree(node)
 
   const chars = [...text]
-  if (chars.length === 0) return node
+  if (chars.length === 0) return cloneTree(node)
 
   const groupGreen = greenLeaf('group', '')
   const group = new RedNode(groupGreen, { kind: 'group' })
@@ -221,10 +232,10 @@ function wrapTextWithRainbow(
   documentLength: number,
 ): RedNode {
   const text = node.text
-  if (!text) return node
+  if (!text) return cloneTree(node)
 
   const chars = [...text]
-  if (chars.length === 0) return node
+  if (chars.length === 0) return cloneTree(node)
 
   const groupGreen = greenLeaf('group', '')
   const group = new RedNode(groupGreen, { kind: 'group' })
@@ -271,7 +282,7 @@ function wrapTextWithCentralGradient(
   easing: Easing,
 ): RedNode {
   const text = node.text
-  if (!text) return node
+  if (!text) return cloneTree(node)
 
   const segments = unit === 'word'
     ? text.split(/(\s+)/).filter((s: string) => s.length > 0)
@@ -279,7 +290,7 @@ function wrapTextWithCentralGradient(
       ? text.split('\n')
       : [...text]
 
-  if (segments.length === 0) return node
+  if (segments.length === 0) return cloneTree(node)
 
   const groupGreen = greenLeaf('group', '')
   const group = new RedNode(groupGreen, { kind: 'group' })
@@ -343,7 +354,7 @@ function wrapTextWithMultiGradient(
   easing: Easing,
 ): RedNode {
   const text = node.text
-  if (!text) return node
+  if (!text) return cloneTree(node)
 
   const segments = unit === 'word'
     ? text.split(/(\s+)/).filter((s: string) => s.length > 0)
@@ -351,7 +362,7 @@ function wrapTextWithMultiGradient(
       ? text.split('\n')
       : [...text]
 
-  if (segments.length === 0) return node
+  if (segments.length === 0) return cloneTree(node)
 
   const groupGreen = greenLeaf('group', '')
   const group = new RedNode(groupGreen, { kind: 'group' })
@@ -444,12 +455,11 @@ export function applyGradient(
 
       // Leaf containers (img, code, etc.) — preserve unchanged
       if (LEAF_KINDS.has(node.kind)) {
-        return node
+        return cloneTree(node)
       }
 
       // Structural/formatting nodes — recurse into children
-      const cloned = cloneTree(node)
-      cloned.children = []
+      const cloned = cloneShell(node)
       for (const child of node.children) {
         cloned.appendChild(walk(child))
       }
@@ -499,11 +509,10 @@ export function applyGrow(
       }
 
       if (LEAF_KINDS.has(node.kind)) {
-        return node
+        return cloneTree(node)
       }
 
-      const cloned = cloneTree(node)
-      cloned.children = []
+      const cloned = cloneShell(node)
       for (const child of node.children) {
         cloned.appendChild(walk(child))
       }
@@ -556,11 +565,10 @@ export function applyRainbow(
       }
 
       if (LEAF_KINDS.has(node.kind)) {
-        return node
+        return cloneTree(node)
       }
 
-      const cloned = cloneTree(node)
-      cloned.children = []
+      const cloned = cloneShell(node)
       for (const child of node.children) {
         cloned.appendChild(walk(child))
       }
@@ -609,11 +617,10 @@ export function applyCentralGradient(
       }
 
       if (LEAF_KINDS.has(node.kind)) {
-        return node
+        return cloneTree(node)
       }
 
-      const cloned = cloneTree(node)
-      cloned.children = []
+      const cloned = cloneShell(node)
       for (const child of node.children) {
         cloned.appendChild(walk(child))
       }
@@ -664,11 +671,10 @@ export function applyMultiGradient(
       }
 
       if (LEAF_KINDS.has(node.kind)) {
-        return node
+        return cloneTree(node)
       }
 
-      const cloned = cloneTree(node)
-      cloned.children = []
+      const cloned = cloneShell(node)
       for (const child of node.children) {
         cloned.appendChild(walk(child))
       }

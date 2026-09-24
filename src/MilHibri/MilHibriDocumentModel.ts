@@ -39,6 +39,11 @@ export class MilHibriDocumentModel extends DocumentModel {
     }
   }
 
+  /** An importer: the tree translates the source, it does not partition it. */
+  protected get treeMirrorsSource(): boolean {
+    return false
+  }
+
   protected buildRedFromGreen(green: GreenNode): RedNode {
     return greenToRedNode(green);
   }

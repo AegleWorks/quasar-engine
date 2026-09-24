@@ -65,6 +65,13 @@ export interface HTMLRendererOptions {
    * it. On by default.
    */
   boxTitleLineBreaks?: boolean
+  /**
+   * Which nodes carry `data-node-id` (see `HTMLRenderer.idMode` for what each
+   * mode costs and buys). Per renderer, so a read-only render (`'none'`) and
+   * the editor's preview (`'all'`) can coexist without touching shared state.
+   * Unset: the process-wide default, `HTMLRenderer.idMode`.
+   */
+  idMode?: 'blocks' | 'all' | 'none'
 }
 
 /** Saltos de línea a convertir en `<br>` al pintar un efecto. */
@@ -78,7 +85,8 @@ const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
 
 export class HTMLRenderer extends Visitor<string> {
   private tokenResolver?: TokenResolverFn
-  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens'>> & {
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode'>> & {
+    idMode?: 'blocks' | 'all' | 'none'
     registry?: TagRegistry
     mediaProxy?: (url: string) => string
     entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
@@ -100,6 +108,7 @@ export class HTMLRenderer extends Visitor<string> {
       timestampResolver: options.timestampResolver,
       tokens: options.tokens,
       boxTitleLineBreaks: options.boxTitleLineBreaks ?? true,
+      idMode: options.idMode,
     }
   }
 
@@ -216,6 +225,11 @@ export class HTMLRenderer extends Visitor<string> {
    * para los consumidores de solo lectura (foros, render estático): sin
    * `data-node-id` en absoluto, el HTML es más pequeño y no hay nada que
    * mantenga vivos los nodos del árbol.
+   *
+   * Es el valor POR DEFECTO del proceso. Un renderer concreto lo fija con la
+   * opción `idMode`, que es lo que hay que usar para un render puntual: cambiar
+   * este estático afecta a todo renderer que exista, incluido cualquiera que
+   * pinte mientras tanto.
    */
   static idMode: 'blocks' | 'all' | 'none' = 'all'
 
@@ -247,8 +261,9 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private idAttr(node: RedNode): string {
-    if (HTMLRenderer.idMode === 'none') return ''
-    if (HTMLRenderer.idMode === 'all') return ` data-node-id="${node.id}"`
+    const mode = this.options.idMode ?? HTMLRenderer.idMode
+    if (mode === 'none') return ''
+    if (mode === 'all') return ` data-node-id="${node.id}"`
     return HTMLRenderer.ID_BEARING_KINDS.has(node.kind)
       ? ` data-node-id="${node.id}"`
       : ''

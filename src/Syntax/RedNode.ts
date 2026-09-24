@@ -28,8 +28,18 @@ export class RedNode {
   readonly id: NodeId
   /** Parent reference (null for root) */
   parent: RedNode | null
-  /** Children as red nodes */
-  children: RedNode[]
+  /**
+   * Children as red nodes.
+   *
+   * Read-only to everyone but this class: `readonly` on both the field and
+   * the array makes an outside `push`, `splice`, `pop` or reassignment a
+   * compile error, so the only way to change a tree's shape is through the
+   * mutators below, inside a mutation boundary, keeping `parent` and the
+   * index cache right. (It used to be a public mutable array, and five
+   * `cloned.children = []` writes in the effect transformers went around the
+   * boundary entirely.) Same array at runtime — the guarantee costs nothing.
+   */
+  readonly children: readonly RedNode[]
   /** Version counter for change tracking */
   version: number
   /** Diagnostics for this node */
@@ -447,6 +457,11 @@ export class RedNode {
 
   // ─── Construction ────────────────────────────────────────
 
+  /** The writable view of `children`, for this class's own mutators only. */
+  private get ownChildren(): RedNode[] {
+    return this.children as RedNode[]
+  }
+
   /**
    * Adopt a fully-built array of children in one shot.
    *
@@ -464,8 +479,8 @@ export class RedNode {
    * Only safe while `this` is still unreachable from the rest of the tree. Use
    * `appendChild` and friends for anything after that.
    */
-  initChildren(children: RedNode[]): void {
-    const own = this.children
+  initChildren(children: readonly RedNode[]): void {
+    const own = this.ownChildren
     for (let i = 0; i < children.length; i++) {
       const child = children[i]
       child.parent = this
@@ -484,7 +499,7 @@ export class RedNode {
     this.assertMutating()
     child.parent = this
     child._idxCache = this.children.length
-    this.children.push(child)
+    this.ownChildren.push(child)
     this.version++
   }
 
@@ -507,7 +522,7 @@ export class RedNode {
   insertChildAt(index: number, child: RedNode): void {
     this.assertMutating()
     child.parent = this
-    this.children.splice(index, 0, child)
+    this.ownChildren.splice(index, 0, child)
     this.reindexFrom(index)
     this.version++
   }
@@ -519,7 +534,7 @@ export class RedNode {
     this.assertMutating()
     const idx = this.children.findIndex(c => c.id === id)
     if (idx === -1) return null
-    const [removed] = this.children.splice(idx, 1)
+    const [removed] = this.ownChildren.splice(idx, 1)
     removed.parent = null
     removed._idxCache = -1
     this.reindexFrom(idx)
@@ -536,7 +551,7 @@ export class RedNode {
     if (idx === -1) return false
     newChild.parent = this
     newChild._idxCache = idx
-    this.children[idx] = newChild
+    this.ownChildren[idx] = newChild
     this.version++
     return true
   }

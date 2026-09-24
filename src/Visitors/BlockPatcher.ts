@@ -230,10 +230,25 @@ function isContextSensitive(node: RedNode): boolean {
   return node.kind === 'spacing' || node.kind === 'empty_line'
 }
 
-/** Build a DOM node from an HTML fragment (first child), decoding entities. */
+/**
+ * A run's HTML parsed to more (or fewer) than one DOM node.
+ *
+ * Everything here rests on runs mirroring `childNodes` 1:1, and the HTML parser
+ * can break that: it reshapes malformed markup. osu! pairing can leave a
+ * `[*]` item at the top level, whose `<li>` holds another `<li>` — parsed, that
+ * is several sibling nodes, not one. Taking the first and dropping the rest
+ * lost content silently. Such a document can only be rendered whole, so the
+ * reconciles bail to `fullRebuild` on this (without `onError`: nothing failed),
+ * and the desync guard in `patchBlocksInto` keeps it there on later patches,
+ * since the container then holds more nodes than there are runs.
+ */
+class ReshapedRunError extends Error {}
+
+/** Build a DOM node from an HTML fragment, decoding entities. */
 function nodeFromHtml(html: string): Node {
   const t = document.createElement('template')
   t.innerHTML = html
+  if (t.content.childNodes.length !== 1) throw new ReshapedRunError()
   return t.content.firstChild as Node
 }
 
@@ -374,7 +389,7 @@ function adoptOrphanRuns(
  * on the 500 KB fixture across every edit shape) makes the accumulation exact.
  */
 function buildRuns(
-  blocks: RedNode[],
+  blocks: readonly RedNode[],
   keys: string[],
   getHtml: (node: RedNode, key: string) => { html: string; kind: RunKind },
   baseStart: number,
@@ -434,7 +449,54 @@ function fullRebuild(
     html: cache.lastHtml.get(key)!,
     kind: cache.lastClass.get(key)!,
   }), rootNode.range.start + rootNode.green.leadingWidth)
+  // A run list the DOM does not mirror is no base to patch from: forget it, so
+  // the desync guard sends the next patch here again.
+  if (!domMirrorsRuns(container, cache.lastRuns)) cache.lastRuns = []
   return { mode: 'full', total: blocks.length, patched: blocks.length }
+}
+
+/**
+ * Whether the whole-document parse put every run in its own node.
+ *
+ * The HTML parser reshapes malformed markup across block boundaries, and a
+ * node count can survive that by coincidence: a `[box]` whose unbalanced body
+ * pushes trailing text out of its `<details>` still yields one element, and
+ * that text merges into the bare-text run after it — same count, but the text
+ * node now holds text the run does not. The cached run would then be skipped
+ * as unchanged forever. So each slot is checked for its kind and tag, and each
+ * text run for its exact text. O(runs), and text runs are a few characters.
+ */
+function domMirrorsRuns(container: HTMLElement, runs: readonly PatchRun[]): boolean {
+  const nodes = container.childNodes
+  if (nodes.length !== runs.length) return false
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]
+    const node = nodes[i]
+    if (run.kind === 'element') {
+      if (node.nodeType !== 1) return false
+      const tag = renderedTag(run.html)
+      if (tag !== null && (node as Element).tagName.toUpperCase() !== tag) return false
+    } else if (node.nodeType !== 3 || (node as Text).data !== textOfRun(run.html)) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * The text a bare-text run's HTML parses to: `escapeHtml`'s entities decoded
+ * and line endings normalized as the HTML parser does. Null when the run holds
+ * markup, which a single text node cannot mirror.
+ */
+function textOfRun(html: string): string | null {
+  if (html.includes('<')) return null
+  let text = html
+  if (text.includes('&')) {
+    text = text.replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) =>
+      e === 'amp' ? '&' : e === 'lt' ? '<' : e === 'gt' ? '>' : e === 'quot' ? '"' : "'")
+  }
+  if (text.includes('\r')) text = text.replace(/\r\n?/g, '\n')
+  return text
 }
 
 /**
@@ -580,7 +642,7 @@ function reconcileKeyed(
       patched++
     }
   } catch (err) {
-    options.onError?.(err)
+    if (!(err instanceof ReshapedRunError)) options.onError?.(err)
     return fullRebuild(container, rootNode, renderer, cache)
   }
 
@@ -1048,6 +1110,9 @@ function reconcileWindowed(
     }
     dbg('tail-safety: removed', tailCount)
   } catch (err) {
+    // The walk may have written part of the window already, so the DOM no
+    // longer mirrors `lastRuns`: the keyed fallback cannot run on it.
+    if (err instanceof ReshapedRunError) return fullRebuild(container, rootNode, renderer, cache)
     options.onError?.(err)
     return null
   }
@@ -1124,7 +1189,7 @@ export function patchBlocksInto(
   if (change) {
     const windowed = reconcileWindowed(container, rootNode, change, renderer, cache, options)
     if (windowed) {
-      bpTrace({ why: 'windowed' })
+      bpTrace({ why: windowed.windowed ? 'windowed' : 'reshaped' })
       return windowed
     }
     bpTrace({ why: 'windowed-declinado' })

@@ -49,7 +49,7 @@ export class TiptapExporter extends Visitor<string> {
     return this.processNode(node, [])
   }
 
-  private processChildren(children: RedNode[], marks: TiptapMark[]): TiptapNode[] {
+  private processChildren(children: readonly RedNode[], marks: TiptapMark[]): TiptapNode[] {
     const content: TiptapNode[] = []
     
     for (const child of children) {

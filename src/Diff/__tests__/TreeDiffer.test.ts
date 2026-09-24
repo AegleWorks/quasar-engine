@@ -12,14 +12,12 @@ describe('TreeDiffer', () => {
     // Create old tree
     const oldChild = new RedNode(new GreenNode('paragraph', 'hello', [], 0, 0, 5), { id: nid('old-id'), kind: 'paragraph' })
     const oldRoot = new RedNode(new GreenNode('document', '', [], 0, 0, 5), { id: nid('root'), kind: 'document' })
-    oldRoot.children.push(oldChild)
-    oldChild.parent = oldRoot
+    oldRoot.initChildren([oldChild])
 
     // Create new tree with different ID but same content
     const newChild = new RedNode(new GreenNode('paragraph', 'hello', [], 0, 0, 5), { id: nid('new-id'), kind: 'paragraph' })
     const newRoot = new RedNode(new GreenNode('document', '', [], 0, 0, 5), { id: nid('root'), kind: 'document' })
-    newRoot.children.push(newChild)
-    newChild.parent = newRoot
+    newRoot.initChildren([newChild])
 
     const differ = new TreeDiffer()
     const result = differ.diff(oldRoot, newRoot)
@@ -39,17 +37,13 @@ describe('TreeDiffer', () => {
     const oldChild1 = new RedNode(new GreenNode('paragraph', 'a', [], 0, 0, 1), { id: nid('id1'), kind: 'paragraph' })
     const oldChild2 = new RedNode(new GreenNode('paragraph', 'b', [], 0, 0, 1), { id: nid('id2'), kind: 'paragraph' })
     const oldRoot = new RedNode(new GreenNode('document', '', [], 0, 0, 2), { id: nid('root'), kind: 'document' })
-    oldRoot.children.push(oldChild1, oldChild2)
-    oldChild1.parent = oldRoot
-    oldChild2.parent = oldRoot
+    oldRoot.initChildren([oldChild1, oldChild2])
 
     const newChild1 = new RedNode(new GreenNode('paragraph', 'a', [], 0, 0, 1), { id: nid('id1'), kind: 'paragraph' }) // same id
     const newChild2 = new RedNode(new GreenNode('paragraph', 'b', [], 0, 0, 1), { id: nid('id3'), kind: 'paragraph' }) // different id, same content
     const newRoot = new RedNode(new GreenNode('document', '', [], 0, 0, 2), { id: nid('root'), kind: 'document' })
     // Swap order to trigger move
-    newRoot.children.push(newChild2, newChild1)
-    newChild1.parent = newRoot
-    newChild2.parent = newRoot
+    newRoot.initChildren([newChild2, newChild1])
 
     const differ = new TreeDiffer()
     const result = differ.diff(oldRoot, newRoot)

@@ -515,6 +515,40 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
 }
 
 /**
+ * Give a box its rich title nodes, positioned where the title really is.
+ *
+ * The title's offset used to be computed as `[` + tag name + `=` (+ a quote),
+ * three copies of it, all assuming the attribute begins with `=` and that the
+ * tag was spelled as its kind. The lexer is more lenient than that:
+ * `[box[/b] titulo]` is a box whose attribute is `[/b] titulo`, with no `=`,
+ * and its title nodes landed one character early — found by `checkRedTree`
+ * under random edits, a caret or hover inside such a title resolved to the
+ * wrong node.
+ *
+ * The opening delimiter is `[`, the tag name, the attribute text and `]`, so
+ * the attribute starts `text.length + 1` before the delimiter ends, whatever
+ * the tag was called. The title starts inside it exactly where
+ * `extractGreenNodeMetadata` cut it: past the first `=`, and past a quote when
+ * the value was quoted.
+ */
+function attachTitleNodes(red: RedNode, green: GreenNode, start: number, store?: RedNodeStore): void {
+  if (green.kind !== 'box' && green.kind !== 'boxw' && green.kind !== 'spoilerbox') return
+  if (!red.metadata.rawTitle) return
+  const rawText = green.text || ''
+  let titleStart = start + green.leadingWidth - 1 - rawText.length
+  const eq = rawText.indexOf('=')
+  if (eq >= 0) {
+    const value = rawText.slice(eq + 1)
+    const quoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+    titleStart += eq + 1 + (quoted ? 1 : 0)
+  }
+  const titleNodes = buildTitleNodes(String(red.metadata.rawTitle), red, store, titleStart)
+  if (titleNodes.length > 0) {
+    red.metadata.titleNodes = titleNodes
+  }
+}
+
+/**
  * Parse rich BBCode inside a container attribute (e.g. `[box=[b]Title[/b]]`).
  * Produces a list of RedNode children for the title slot.
  */
@@ -523,7 +557,7 @@ function buildTitleNodes(
   parent: RedNode,
   store?: RedNodeStore,
   start: number = 0,
-): RedNode[] {
+): readonly RedNode[] {
   if (!rawTitle || !rawTitle.includes('[')) return []
   try {
     const tokens = scanBBCode(rawTitle)
@@ -578,17 +612,7 @@ export function greenToRedNode(
       start,
     })
 
-    if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && instance.metadata.rawTitle) {
-      const rawTitle = String(instance.metadata.rawTitle)
-      const tagName = green.kind
-      const rawText = green.text || ''
-      const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
-      const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
-      const titleNodes = buildTitleNodes(rawTitle, instance, store, offsetToTitle)
-      if (titleNodes.length > 0) {
-        instance.metadata.titleNodes = titleNodes
-      }
-    }
+    attachTitleNodes(instance, green, start, store)
 
     const greenChildren = green.children as GreenNode[]
     if (greenChildren.length > 0) {
@@ -612,17 +636,7 @@ export function greenToRedNode(
     start,
   })
 
-  if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && red.metadata.rawTitle) {
-    const rawTitle = String(red.metadata.rawTitle)
-    const tagName = green.kind
-    const rawText = green.text || ''
-    const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
-    const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
-    const titleNodes = buildTitleNodes(rawTitle, red, store, offsetToTitle)
-    if (titleNodes.length > 0) {
-      red.metadata.titleNodes = titleNodes
-    }
-  }
+  attachTitleNodes(red, green, start, store)
 
   const greenChildren = green.children as GreenNode[]
   if (greenChildren.length > 0) {
@@ -666,12 +680,23 @@ export function greenToRedNode(
  * rest fresh. Positional lockstep also makes double-adoption impossible: each
  * old red child is adopted at most once, even when interning makes distinct
  * positions share one green object.
+ *
+ * `structural` widens "unchanged" from the same green object to an EQUAL green
+ * subtree (`greenSubtreeEquals`). That is for two independent full parses of
+ * nearly the same text — the osu! preview tree (`Osu/OsuPreviewTree.ts`), which
+ * cannot parse incrementally, so no green is ever shared by reference. Green
+ * equality is still proof: a red node is a function of its green (kind,
+ * metadata and title nodes are all derived from it) plus its offset, which the
+ * adoption sets. An adopted subtree keeps its OLD green object, which is equal
+ * to the new one by construction. Off by default, so the incremental path
+ * keeps its pure reference compare.
  */
 export function greenToRedNodeReusing(
   green: GreenNode,
   oldRed: RedNode,
   start: number = 0,
   stats?: { adopted: number },
+  structural: boolean = false,
 ): RedNode {
   if (green === oldRed.green) {
     // `setStart` records the shift lazily (no subtree walk) and no-ops when the
@@ -690,17 +715,7 @@ export function greenToRedNodeReusing(
     start,
   })
 
-  if ((green.kind === 'box' || green.kind === 'boxw' || green.kind === 'spoilerbox') && red.metadata.rawTitle) {
-    const rawTitle = String(red.metadata.rawTitle)
-    const tagName = green.kind
-    const rawText = green.text || ''
-    const isQuoted = (rawText.startsWith('="') && rawText.endsWith('"')) || (rawText.startsWith("='") && rawText.endsWith("'"))
-    const offsetToTitle = start + 1 + tagName.length + 1 + (isQuoted ? 1 : 0)
-    const titleNodes = buildTitleNodes(rawTitle, red, undefined, offsetToTitle)
-    if (titleNodes.length > 0) {
-      red.metadata.titleNodes = titleNodes
-    }
-  }
+  attachTitleNodes(red, green, start)
 
   const greenKids = green.children as GreenNode[]
   const oldKids = oldRed.children
@@ -718,9 +733,9 @@ export function greenToRedNodeReusing(
   const kids: RedNode[] = new Array(greenKids.length)
   const limit = Math.min(greenKids.length, oldKids.length)
 
-  // Common prefix: same green object, adopt.
+  // Common prefix: same green object (or an equal one, `structural`), adopt.
   let lo = 0
-  while (lo < limit && greenKids[lo] === oldKids[lo].green) {
+  while (lo < limit && sameGreen(greenKids[lo], oldKids[lo].green, structural)) {
     kids[lo] = adoptShifted(oldKids[lo], offsets[lo], stats)
     lo++
   }
@@ -728,7 +743,7 @@ export function greenToRedNodeReusing(
   // Common suffix, stopping before the prefix already consumed.
   let gHi = greenKids.length - 1
   let oHi = oldKids.length - 1
-  while (gHi >= lo && oHi >= lo && greenKids[gHi] === oldKids[oHi].green) {
+  while (gHi >= lo && oHi >= lo && sameGreen(greenKids[gHi], oldKids[oHi].green, structural)) {
     kids[gHi] = adoptShifted(oldKids[oHi], offsets[gHi], stats)
     gHi--
     oHi--
@@ -737,7 +752,7 @@ export function greenToRedNodeReusing(
   if (gHi === lo && oHi === lo) {
     // The single changed child both sides — the keystroke shape. Descend so
     // its own untouched children are still adopted.
-    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], offsets[lo], stats)
+    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], offsets[lo], stats, structural)
   } else {
     // A wider window (multi-node paste, fallback rebuild): build it fresh.
     for (let i = lo; i <= gHi; i++) {
@@ -748,6 +763,39 @@ export function greenToRedNodeReusing(
   // Sets parent and index cache on every child, adopted or fresh.
   red.initChildren(kids)
   return red
+}
+
+/** Reference equality, or subtree equality when `structural`. */
+function sameGreen(a: GreenNode, b: GreenNode, structural: boolean): boolean {
+  return a === b || (structural && greenSubtreeEquals(a, b))
+}
+
+/**
+ * Whether two green subtrees are the same tree: same kind, text and widths at
+ * every node, children in the same order. Everything a green node holds, so
+ * two equal subtrees are interchangeable — the pool (`GreenNodePool`) would
+ * have made them one object. Short-circuits on a shared object and on the
+ * first difference; the width check up front rejects almost every changed
+ * block without descending.
+ */
+export function greenSubtreeEquals(a: GreenNode, b: GreenNode): boolean {
+  if (a === b) return true
+  if (
+    a.width !== b.width ||
+    a.kind !== b.kind ||
+    a.children.length !== b.children.length ||
+    a.leadingWidth !== b.leadingWidth ||
+    a.trailingWidth !== b.trailingWidth ||
+    a.text !== b.text
+  ) {
+    return false
+  }
+  const ak = a.children
+  const bk = b.children
+  for (let i = 0; i < ak.length; i++) {
+    if (!greenSubtreeEquals(ak[i], bk[i])) return false
+  }
+  return true
 }
 
 /** Adopt an old red subtree at (possibly) a new absolute offset. */
