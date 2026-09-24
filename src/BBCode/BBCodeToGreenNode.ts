@@ -518,12 +518,11 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
  * Give a box its rich title nodes, positioned where the title really is.
  *
  * The title's offset used to be computed as `[` + tag name + `=` (+ a quote),
- * three copies of it, all assuming the attribute begins with `=` and that the
- * tag was spelled as its kind. The lexer is more lenient than that:
- * `[box[/b] titulo]` is a box whose attribute is `[/b] titulo`, with no `=`,
- * and its title nodes landed one character early — found by `checkRedTree`
- * under random edits, a caret or hover inside such a title resolved to the
- * wrong node.
+ * three copies of it, all assuming the `=` sits right after the tag name and
+ * that the tag was spelled as its kind. The lexer is more lenient than that:
+ * `[box =[b]Rico[/b]]` (a space before the `=`) is a box too, and its title
+ * nodes landed one character early — found by `checkRedTree` under random
+ * edits, a caret or hover inside such a title resolved to the wrong node.
  *
  * The opening delimiter is `[`, the tag name, the attribute text and `]`, so
  * the attribute starts `text.length + 1` before the delimiter ends, whatever

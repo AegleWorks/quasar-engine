@@ -31,7 +31,7 @@ describe('checkRedTree', () => {
   })
 
   it.each([
-    ['no `=` (the lexer accepts `[box[/b] …]`)', '[box[/b] titulo]dentro[/box]'],
+    ['a space before `=`', '[box =[b]Rico[/b] titulo]dentro[/box]'],
     ['a quoted title', '[box="[b]Rico[/b] titulo"]dentro[/box]'],
     ['an uppercase tag', '[BOX=[b]Rico[/b]]dentro[/BOX]'],
     ['a colour suffix', '[box=[b]Rico[/b]:#ff66ab]dentro[/box]'],

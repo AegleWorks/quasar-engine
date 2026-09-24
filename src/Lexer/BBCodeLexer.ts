@@ -175,6 +175,19 @@ export interface ScanBBCodeOptions {
  * Newlines are always emitted as distinct tokens so the parser
  * can precisely determine spacing semantics.
  */
+/**
+ * Whether an opening tag's span `[attrStart, closeBracket)` is a valid
+ * attribute: always when it holds no `[`, and when it does, only if it is a
+ * value (`=`, after optional spaces), the one place BBCode may nest.
+ */
+function attributeMayNest(source: string, attrStart: number, closeBracket: number): boolean {
+  const nested = source.indexOf('[', attrStart)
+  if (nested === -1 || nested >= closeBracket) return true
+  let i = attrStart
+  while (i < closeBracket && source.charCodeAt(i) === 32 /* space */) i++
+  return source.charCodeAt(i) === 61 /* = */
+}
+
 export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeToken[] {
   const tokens: BBCodeToken[] = []
   const length = source.length
@@ -320,6 +333,34 @@ export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeT
       const nameStart = pos + 1
       const scanned = scanNameChars(source, nameStart, closeBracket)
       const nameEnd = scanned & NAME_LENGTH_MASK
+
+      // Nested brackets belong to an attribute VALUE (`[box=[b]title[/b]]`),
+      // so they are honoured only after `=`. `[Lekker [color=red]L60[/color]]`
+      // is not a tag with a bracketed attribute: it is a literal `[`, a word,
+      // and a real `[color]` — which is what osu! shows (measured with the
+      // parity harness on `docs/ai/examples/Mimiyu.bbc`). Spanning to the
+      // balanced `]` swallowed the colour into one unknown tag, rendered as
+      // text. Without a nested `[` nothing changes, so bare-word attributes
+      // (`[img round]`) are untouched.
+      //
+      // The `[` goes out TOGETHER with the plain text after it (`[Lekker `),
+      // never as a bare `[` leaf. The incremental parser reads a bare `[` as
+      // "no `]` matched it", a decision that depends on text past its window,
+      // and refuses to splice (`regionIsSelfContained`). This one is local:
+      // the nested `[` and the matching `]` both lie between the `[` and its
+      // `]`, so a window holding the `[` but not the `]` never gets here — the
+      // `[` is unmatched there, and that path still emits it bare.
+      if (nameEnd > 0 && !attributeMayNest(source, nameStart + nameEnd, closeBracket)) {
+        let end = pos + 1
+        while (end < length) {
+          const c = source.charCodeAt(end)
+          if (c === CHAR_BRACKET_OPEN || c === CHAR_LF || c === CHAR_CR) break
+          end++
+        }
+        tokens.push({ kind: 'text', value: source.slice(pos, end), start: pos, end })
+        pos = end
+        continue
+      }
 
       if (nameEnd > 0) {
         {

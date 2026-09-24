@@ -259,14 +259,21 @@ describe('IncrementalParser', () => {
       }
       // The guard must not have become a blanket rebuild. The bar is low
       // because this document is deliberately the worst case there is: an
-      // eighth of it is bare `[` and `]`, so 250 of the 400 edits have a
-      // genuinely unmatched `[` somewhere before their window and CANNOT be
-      // spliced — the measured split is 254 `open-bracket-before`, 124
-      // `region-not-isolated`, 2 `pending-auto-close`, 20 windowed. What a
-      // real document does is pinned by the 500 KB battery instead; this one
-      // is here for the differential, and the count only guards against the
-      // guard collapsing to "never".
-      expect(incremental).toBeGreaterThan(15)
+      // eighth of it is bare `[` and `]`, so most edits have a genuinely
+      // unmatched `[` somewhere before their window and CANNOT be spliced.
+      // What a real document does is pinned by the 500 KB battery instead;
+      // this one is here for the differential, and the count only guards
+      // against the guard collapsing to "never".
+      //
+      // Measured split: 298 `open-bracket-before`, 81 `region-not-isolated`,
+      // 17 `region-too-large`, 4 incremental. It was 254 / 107 / 0 / 37 until
+      // the lexer stopped spanning `[word [tag]…]` as one unknown tag (see
+      // `attributeMayNest`): in this bracket soup those spans are now real
+      // tags, which moves where windows start. On the 65 real documents of
+      // the parity corpus the same typing bursts go 972 → 891 incremental of
+      // 2 880 edits on documents above the incremental threshold (the 547 KB
+      // fixture unchanged), bought for a preview that shows what osu! shows.
+      expect(incremental).toBeGreaterThan(3)
     })
 
     it('reads a bounded slice of the prefix, wherever the caret is', () => {

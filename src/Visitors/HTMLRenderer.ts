@@ -21,6 +21,7 @@ import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree } from '../RenderPipeline/RenderTree'
 
 import { tagToNodeKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { scanBBCode } from '../Lexer/BBCodeLexer'
 import { clampFontSizeValue, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
@@ -260,6 +261,96 @@ export class HTMLRenderer extends Visitor<string> {
     return html.replace(/^[\t ]*\r?\n/, '').replace(/\r?\n[\t ]*$/, '')
   }
 
+  /**
+   * Whether a stray closer in a box's body closes a tag its rich title left
+   * open — and so, in osu!, shows nothing.
+   *
+   * osu! pairs lazily over the raw text (see `Osu/osuPairing.ts`), so in
+   * `[box=[size=85]🔧 Settings][/size]` the `[/size]` after the `]` closes the
+   * title's `[size=85]`; neither shows. Quasar parses the title on its own,
+   * which leaves that `[/size]` an orphan text leaf, rendered as literal text
+   * (measured with the parity kit's visual comparison on `docs/ai/examples/3`
+   * and `docs/ai/hxovc`). The TREE keeps it as text on purpose: the export
+   * must still publish it, since osu! needs it to close the title's tag, and
+   * the incremental parser must not depend on a title outside its window.
+   * Only the preview stops painting it. Not for Lyne, a platform without
+   * osu!'s lazy pairing.
+   */
+  private isClaimedByBoxTitle(node: RedNode): boolean {
+    if (this.options.dialect === 'lyne' || node.children.length > 0) return false
+    const text = node.text
+    if (text.length < 4 || text.charCodeAt(0) !== 91 /* [ */ || text.charCodeAt(1) !== 47 /* / */) return false
+    for (let a = node.parent; a !== null; a = a.parent) {
+      if ((a.kind === 'box' || a.kind === 'spoilerbox') && this.titleClaims(a).has(node)) return true
+    }
+    return false
+  }
+
+  /** An element inside a rich-titled box whose closer the title claimed. */
+  private isClaimedElement(node: RedNode): boolean {
+    if (this.options.dialect === 'lyne') return false
+    for (let a = node.parent; a !== null; a = a.parent) {
+      if ((a.kind === 'box' || a.kind === 'spoilerbox') && this.titleClaims(a).has(node)) return true
+    }
+    return false
+  }
+
+  /** The title tag's spelling each claimed element answers to, for its literal opener. */
+  private readonly claimedTag = new WeakMap<RedNode, string>()
+
+  /** Per box: the closers its title claims (leaves or elements). See `isClaimedByBoxTitle`. */
+  private readonly titleClaimCache = new WeakMap<RedNode, ReadonlySet<RedNode>>()
+
+  private titleClaims(box: RedNode): ReadonlySet<RedNode> {
+    const cached = this.titleClaimCache.get(box)
+    if (cached !== undefined) return cached
+    const claims = new Set<RedNode>()
+    const rawTitle = box.metadata?.rawTitle
+    if (typeof rawTitle === 'string' && rawTitle.includes('[')) {
+      // What the title opens and never closes, by exact (lowercase) spelling:
+      // osu!'s passes are case-sensitive.
+      const pending = new Map<string, number>()
+      for (const t of scanBBCode(rawTitle)) {
+        if ((t.kind !== 'open' && t.kind !== 'close') || t.tag === '*') continue
+        const spelled = rawTitle.slice(t.start, t.end)
+        if (spelled !== spelled.toLowerCase()) continue
+        pending.set(t.tag, (pending.get(t.tag) ?? 0) + (t.kind === 'open' ? 1 : -1))
+      }
+      // The FIRST closers of those tags after the title, in document order —
+      // the lazy pass takes the nearest one, whatever it closes in Quasar's
+      // tree: an orphan text leaf (`[box=[size=85]T][/size]`), or the closing
+      // delimiter of a same-kind element opened in the body
+      // (`[box=[size=85]T][size=80]x[/size]` — then osu! shows `[size=80]`
+      // as text). A node's closer comes after its children, so the walk
+      // visits children first. Raw blocks hold text, not closers.
+      const kindOf = new Map<string, string>()
+      for (const tag of pending.keys()) kindOf.set(tagToNodeKind(tag, this.options.dialect), tag)
+      const claim = (tag: string | undefined, n: RedNode): void => {
+        if (tag === undefined) return
+        const left = pending.get(tag) ?? 0
+        if (left <= 0) return
+        claims.add(n)
+        this.claimedTag.set(n, tag)
+        pending.set(tag, left - 1)
+      }
+      const walk = (n: RedNode): void => {
+        for (const c of n.children) {
+          if (c.kind === 'code' || c.kind === 'inline_code') continue
+          if (c.kind === 'text' && c.children.length === 0) {
+            const m = /^\[\/([a-z0-9_-]+)\]$/.exec(c.text)
+            if (m !== null) claim(m[1], c)
+            continue
+          }
+          walk(c)
+          if (c.green.trailingWidth > 0) claim(kindOf.get(c.kind), c)
+        }
+      }
+      walk(box)
+    }
+    this.titleClaimCache.set(box, claims)
+    return claims
+  }
+
   private idAttr(node: RedNode): string {
     const mode = this.options.idMode ?? HTMLRenderer.idMode
     if (mode === 'none') return ''
@@ -334,8 +425,16 @@ export class HTMLRenderer extends Visitor<string> {
   // ─── Node Rendering ─────────────────────────────────────
 
   private renderNode(node: RedNode): string {
+    // An element whose closer a box title claimed (see `isClaimedByBoxTitle`):
+    // osu! swallowed its opener as plain text, so it shows as written, its
+    // content unwrapped, its closer gone.
+    if (node.green.trailingWidth > 0 && node.green.leadingWidth > 0 && this.isClaimedElement(node)) {
+      const tag = this.claimedTag.get(node) ?? node.kind
+      return this.escapeHtml(`[${tag}${node.text}]`) + this.renderChildren(node)
+    }
     // Leaf nodes
     if (node.children.length === 0 && node.kind === 'text') {
+      if (this.isClaimedByBoxTitle(node) || this.isOrphanBoxCloseText(node)) return ''
       let rawText = node.text
       // El `indexOf` va delante: casi ningún texto lleva un `$`, y así ni se
       // arranca el motor de expresiones regulares. El patrón es de módulo
@@ -716,9 +815,42 @@ export class HTMLRenderer extends Visitor<string> {
    * same per-tag lookup `discarded_tag` already does.
    */
   private closingRule(node: RedNode) {
-    return (node.kind === 'discarded_tag' || node.kind === 'discarded_box_close')
+    return this.isGhost(node)
       ? this.discardedTagRule(node)
       : this.newlineRule(node.kind)
+  }
+
+  /**
+   * A closer the render shows nothing for, standing in for a real one's
+   * newline budget: the parser's ghosts, plus an orphan `[/box]` text leaf
+   * (see {@link isOrphanBoxCloseText}).
+   */
+  private isGhost(node: RedNode): boolean {
+    return node.kind === 'discarded_tag' || node.kind === 'discarded_box_close' || this.isOrphanBoxCloseText(node)
+  }
+
+  /**
+   * An orphan `[/box]`/`[/spoilerbox]`, which the default pairing keeps as a
+   * literal text leaf: the preview renders it as the `discarded_box_close`
+   * `pairing: 'osu'` makes of it — invisible, eating newlines like a real
+   * box closer — because osu! seals every such closer and HTMLPurifier drops
+   * the stray `</div>` (measured with the parity kit's visual comparison on
+   * `docs/ai/NyuPenyu`, where a crossed `[/box]` showed as text).
+   *
+   * Only the render changes. The tree keeps the text and the export still
+   * publishes it (`BBCodeExporter`'s own ghost test is by kind), so what goes
+   * to osu! is byte-for-byte what it was. Exact lowercase spelling, as osu!'s
+   * pass is case-sensitive; not inside raw blocks, whose text is content; not
+   * for Lyne, a platform without osu!'s sealing.
+   */
+  private isOrphanBoxCloseText(node: RedNode): boolean {
+    if (node.kind !== 'text' || node.children.length > 0 || this.options.dialect === 'lyne') return false
+    const text = node.text
+    if (text !== '[/box]' && text !== '[/spoilerbox]') return false
+    for (let a = node.parent; a !== null; a = a.parent) {
+      if (a.kind === 'code' || a.kind === 'inline_code') return false
+    }
+    return true
   }
 
   private static isNewlineNode(node: RedNode): boolean {
@@ -833,7 +965,7 @@ export class HTMLRenderer extends Visitor<string> {
         // the same helper is harmless: it is a no-op when `next` is not
         // itself a paragraph/group.
         const boundary = HTMLRenderer.firstNonWidthlessOpenChild(next)
-        if (boundary.kind === 'discarded_box_close' || boundary.kind === 'discarded_tag') {
+        if (this.isGhost(boundary)) {
           const rule = this.closingRule(boundary)
           return rule?.beforeClose === 'all' ? !blankBetween : rule?.beforeClose === 'whitespace'
         }
