@@ -78,6 +78,14 @@ export const BBCODE_RAW_TAGS: readonly string[] = Object.freeze(['code', 'c'])
  */
 const RAW_TAG_SET: ReadonlySet<string> = new Set(BBCODE_RAW_TAGS)
 
+/**
+ * Tags whose attribute is a free-text title. osu! renders `[box= title ]`
+ * with both spaces intact (measured against osu-web's real pipeline), so only
+ * the whitespace before the `=` is dropped; every other attribute keeps the
+ * full trim its value parsing relies on.
+ */
+const TITLE_TAG_SET: ReadonlySet<string> = new Set(['box', 'boxw', 'spoilerbox'])
+
 // ─── Tag name validation ───────────────────────────────────────
 //
 // Tag names used to be handled with two regexes: one tested CHARACTER BY
@@ -144,6 +152,16 @@ const NAME_HAS_UPPER = 0x4000_0000
 
 // ─── Scan ──────────────────────────────────────────────────────
 
+export interface ScanBBCodeOptions {
+  /**
+   * The tag-pairing rule the caller will run on these tokens afterward (see
+   * `ParseOptions.pairing` in `BBCode/Parser.ts`). Only `'osu'` changes
+   * anything here — see the RAW BLOCK HANDLING comment below. Omitting this,
+   * or passing `'quasar'`, keeps today's unconditional raw-block behavior.
+   */
+  pairing?: 'quasar' | 'osu'
+}
+
 /**
  * Scan BBCode source text into a flat array of tokens.
  *
@@ -157,7 +175,7 @@ const NAME_HAS_UPPER = 0x4000_0000
  * Newlines are always emitted as distinct tokens so the parser
  * can precisely determine spacing semantics.
  */
-export function scanBBCode(source: string): BBCodeToken[] {
+export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeToken[] {
   const tokens: BBCodeToken[] = []
   const length = source.length
   let pos = 0
@@ -307,7 +325,8 @@ export function scanBBCode(source: string): BBCodeToken[] {
         {
           const raw = source.slice(nameStart, nameStart + nameEnd)
           const tagName = (scanned & NAME_HAS_UPPER) !== 0 ? raw.toLowerCase() : raw
-          const attrs = source.slice(nameStart + nameEnd, closeBracket).trim()
+          const rawAttrs = source.slice(nameStart + nameEnd, closeBracket)
+          const attrs = TITLE_TAG_SET.has(tagName) ? rawAttrs.trimStart() : rawAttrs.trim()
           tokens.push({
             kind: 'open',
             tag: tagName,
@@ -322,8 +341,19 @@ export function scanBBCode(source: string): BBCodeToken[] {
           if (RAW_TAG_SET.has(tagName)) {
             const endTag = `[/${tagName}]`
             const closeIdx = lowerOf().indexOf(endTag, pos)
-            
-            if (closeIdx !== -1) {
+
+            // Under `pairing: 'osu'`, only ISOLATE the block — protecting its
+            // content from normal tokenising — when osu! itself would seal
+            // this occurrence: a closer must exist, and for `c` (non-dotall
+            // in osu!, see `Osu/osuPairing.ts`'s `OSU_FAMILY`) reaching it
+            // must not cross a newline. `code` is dotall, so only "no closer
+            // at all" applies to it.
+            const isOsu = options?.pairing === 'osu'
+            const crossesNewline =
+              isOsu && tagName === 'c' && closeIdx !== -1 && /[\r\n]/.test(source.slice(pos, closeIdx))
+            const isolate = closeIdx !== -1 && !crossesNewline
+
+            if (isolate) {
               if (closeIdx > pos) {
                 tokens.push({
                   kind: 'text',
@@ -339,8 +369,19 @@ export function scanBBCode(source: string): BBCodeToken[] {
                 end: closeIdx + endTag.length,
               })
               pos = closeIdx + endTag.length
-            } else {
-              // Unclosed raw block consumes the rest of the document
+            } else if (!isOsu) {
+              // Unclosed raw block consumes the rest of the document — only
+              // under the default 'quasar' pairing. Under 'osu' an opener
+              // that would not seal (no closer, or — for `c` — only a closer
+              // reachable across a newline) is left as the ordinary 'open'
+              // token already pushed above, and lexing just continues
+              // normally from here: `applyOsuPairing` demotes it to literal
+              // text once it fails to find a sealed contiguous pair,
+              // exactly like every other lazy-family tag, and everything
+              // after it — including `[/tag]` itself, if one exists — keeps
+              // tokenising normally instead of being swallowed. Real osu!
+              // measured behaviour: `[code]a[b]y[/b]` → `[code]a<strong>y
+              // </strong>` (the unclosed opener protects nothing).
               if (pos < length) {
                 tokens.push({
                   kind: 'text',
@@ -352,7 +393,7 @@ export function scanBBCode(source: string): BBCodeToken[] {
               }
             }
           }
-          
+
           continue
         }
       }

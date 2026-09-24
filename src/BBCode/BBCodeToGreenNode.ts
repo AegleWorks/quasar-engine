@@ -369,9 +369,14 @@ function firstChildText(green: GreenNode): string {
 
 const BBCODE_TAG_RE = /\[\/?[a-zA-Z0-9_*-]+=?[^\]]*\]/g
 
-/** Strip BBCode tags from text for clean display (e.g. `[b]title[/b]` → `title`) */
+/**
+ * Strip BBCode tags from text for clean display (e.g. `[b]title[/b]` → `title`).
+ *
+ * No trim: osu! renders `[box= title]` with the leading space intact
+ * (measured against osu-web's real pipeline), so the title keeps it too.
+ */
 function stripBBCode(raw: string): string {
-  return raw.replace(BBCODE_TAG_RE, '').trim()
+  return raw.replace(BBCODE_TAG_RE, '')
 }
 
 export function extractGreenNodeMetadata(green: GreenNode): Record<string, unknown> {

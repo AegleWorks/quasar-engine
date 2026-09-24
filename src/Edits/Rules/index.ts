@@ -26,3 +26,8 @@ export {
   isInvisibleWhitespace,
 } from './unwrapInvisibleColor'
 export { ReorderWrappersRule, REORDER_WRAPPERS_PRIORITY } from './reorderWrappers'
+export {
+  FlattenOsuNestingRule,
+  FLATTEN_OSU_NESTING_PRIORITY,
+  isFlattenOsuNestingCandidate,
+} from './flattenOsuNesting'

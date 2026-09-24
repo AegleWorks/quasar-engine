@@ -32,6 +32,7 @@ import {
   type TokenSource,
 } from '../Tokens'
 import { nodeAttrValue } from '../Syntax/nodeAttr'
+import { maxFontSizeFor } from '../Utils/FontSizeLimits'
 
 function findTokenReferences(node: RedNode): string[] {
   const tokens = new Set<string>()
@@ -894,6 +895,30 @@ const MAX_QUOTE_DEPTH = 3
  */
 const SELF_NESTING_REDUNDANT = new Set<NodeKind>([
   'bold', 'italic', 'underline', 'strikethrough',
+])
+
+/**
+ * Kinds where osu! same-name nesting is unfixable — the export can neither
+ * drop the inner tag (its content is not redundant, unlike `SELF_NESTING_REDUNDANT`)
+ * nor split the outer one around it without changing what the reader sees.
+ *
+ * `notice`/`list`/`url`/`code`/`c` are osu!'s `lazy`/`rawBlock`/`countLimited`
+ * families (see `Osu/osuPairing.ts`'s module doc): the first opener pairs
+ * with the nearest closer (or, for `list`, an unrelated one by count), so a
+ * same-name inner tag is swallowed as literal text and its own closer strands
+ * outside — real content vanishes or reappears as bracket text. `box`,
+ * `spoilerbox` and `quote` are deliberately absent: they seal unconditionally
+ * / by count and nest by well-formed HTML alone (see the product rule this
+ * validator implements), so nesting them is harmless.
+ *
+ * `font_size` is added dynamically by its own branch below — only when the
+ * compounded percentage the export would need to express as a sibling
+ * `[size=N]` cannot be (a non-integer, or past osu!'s ceiling): a same-value
+ * `[size=100]` is a no-op and any other combination that reduces to a whole
+ * number in range is silently split on export, so it is never reported here.
+ */
+const OSU_UNSUPPORTED_NESTING_KINDS = new Set<NodeKind>([
+  'notice', 'list', 'url', 'code', 'inline_code',
 ])
 
 /**
@@ -2190,6 +2215,54 @@ export class SemanticAnalyzer {
             range: { start: node.range.start, end: openEnd },
             data,
             equivalenceKey: 'box-missing-equals',
+          },
+        )
+      },
+    })
+
+    // ── osu!-unsupported same-name nesting ──────────────────────
+    //
+    // The export (`BBCodeExporter`, target 'osu') silently fixes same-name
+    // nesting it CAN fix: dropping a redundant inner tag, or splitting the
+    // outer one around a differently-valued inner `[color]`/`[size]`. This
+    // validator covers only what is left after that — nesting export cannot
+    // touch without changing what the reader sees — so it must never fire for
+    // a case the export already repairs (see `Edits/Rules/flattenOsuNesting.ts`
+    // and its `FLATTEN_OSU_NESTING_KINDS`/size-compounding logic, which this
+    // branch mirrors for `font_size`).
+    this.register({
+      code: 'osu-unsupported-nesting',
+      severity: 'warning',
+      kinds: [...OSU_UNSUPPORTED_NESTING_KINDS, 'font_size'],
+      validate: (node, ctx) => {
+        let ancestor: RedNode | null = null
+        for (let p = node.parent; p; p = p.parent) {
+          if (p.kind === node.kind) { ancestor = p; break }
+        }
+        if (!ancestor) return null
+
+        if (node.kind === 'font_size') {
+          const innerRaw = nodeAttrValue(node)
+          const outerRaw = nodeAttrValue(ancestor)
+          const inner = Number(innerRaw)
+          const outer = Number(outerRaw)
+          if (!Number.isFinite(inner) || !Number.isFinite(outer)) return null
+          if (inner === 100) return null // no-op wrapper — export drops it
+          const compound = (outer * inner) / 100
+          const max = maxFontSizeFor('osu') ?? 200
+          const expressible = Number.isInteger(compound) && compound >= 1 && compound <= max
+          if (expressible) return null // export silently splits it
+        }
+
+        const name = openingTagName(node, ctx.source)
+        return createDiagnostic(
+          'osu-unsupported-nesting',
+          `[${name ?? node.kind}] inside another [${name ?? node.kind}] cannot be published to osu! — the inner tag would be swallowed as text`,
+          'warning',
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: openingTagRange(node, ctx.source),
           },
         )
       },

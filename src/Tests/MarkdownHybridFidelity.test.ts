@@ -8,7 +8,7 @@ import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 describe('Markdown & Hybrid BBCode Fidelity in Quasar', () => {
   const mdExporter = new MarkdownExporter()
   const bbExporter = new BBCodeExporter(undefined, 'osu')
-  const htmlRenderer = new HTMLRenderer({ osuBehaviour: false })
+  const htmlRenderer = new HTMLRenderer()
 
   describe('Standard Markdown Formats', () => {
     it('round-trips bold and italic text', () => {

@@ -109,6 +109,34 @@ export type NodeKind =
    * era estable al reexportarlo.
    */
   | 'discarded_tag'
+  /**
+   * An orphan `[/box]`/`[/spoilerbox]` — one with no matching opener at
+   * all — parsed under `ParseOptions.pairing: 'osu'`.
+   *
+   * osu!'s `strtr` pass seals every `[/box]`/`[/spoilerbox]` unconditionally,
+   * orphan or not, and its renderer eats the newlines around it before
+   * HTMLPurifier drops the resulting unmatched closing div. That is a
+   * different budget from `discarded_tag` (which renders invisible too, but
+   * eats nothing around it), so this is its own kind rather than a reuse —
+   * see `Parser.ts`'s orphan-close branch and `HTMLRenderer.NEWLINE_RULES`.
+   * Never produced under the default `'quasar'` pairing.
+   */
+  | 'discarded_box_close'
+  /**
+   * `pairing: 'osu'` only, `box`/`spoilerbox` only — content collected after
+   * a crossing closer consumed the frame's BODY div while its WRAPPER stayed
+   * open (`Parser.ts`'s `closeDivUnits`/`closeFrame`). A single trailing
+   * child of the `box`/`spoilerbox` node, added only when that tail is
+   * non-empty: never changes the shape of an ordinary, non-crossing close.
+   * No delimiter of its own (`leadingWidth`/`trailingWidth` both 0) — see
+   * `HTMLRenderer.WIDTHLESS_OPEN`/`WIDTHLESS_CLOSE`, which treat it as
+   * transparent for newline-budget purposes, same as `paragraph`/`group`.
+   * `HTMLRenderer` renders its content inside the wrapper, after the body —
+   * osu!'s own HTML puts it there too (measured:
+   * `[centre][box=a]x[/centre]y[/box]` → `<div box><a/><div body>x</div>
+   * y</div>`). Never produced under the default `'quasar'` pairing.
+   */
+  | 'box_tail'
   | 'group'
   | 'wnotice'
   | 'align'

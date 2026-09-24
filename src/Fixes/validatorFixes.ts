@@ -189,6 +189,17 @@ const BUILTIN_FIXES: BuiltinFix[] = [
  */
 export function registerValidatorFixes(): void {
   for (const { code, meta, fix } of BUILTIN_FIXES) {
-    registerCodeFix(code, (diagnostic) => fix(diagnostic.data), meta)
+    registerCodeFix(
+      code,
+      (diagnostic) => {
+        // One guard here, not per-fix: every `fix` body below dereferences
+        // `data.*` directly, so a diagnostic with no data (or a foreign one
+        // whose `data` is not an object at all) must never reach it.
+        const { data } = diagnostic
+        if (typeof data !== 'object' || data === null) return []
+        return fix(data)
+      },
+      meta,
+    )
   }
 }

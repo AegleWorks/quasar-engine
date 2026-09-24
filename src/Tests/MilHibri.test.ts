@@ -5,7 +5,7 @@ import { MarkdownExporter } from '../Visitors/MarkdownExporter';
 import { HTMLRenderer } from '../Visitors/HTMLRenderer';
 
 describe('MilHibri Language — Unified Hybrid Engine', () => {
-  const htmlRenderer = new HTMLRenderer({ osuBehaviour: false });
+  const htmlRenderer = new HTMLRenderer();
   const bbExporter = new BBCodeExporter(undefined, 'osu');
   const mdExporter = new MarkdownExporter();
 

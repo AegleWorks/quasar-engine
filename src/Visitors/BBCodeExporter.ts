@@ -13,6 +13,12 @@ import { Visitor } from './Visitor'
 import type { VisitorContext } from './Visitor'
 import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 import { clampFontSizeValue } from '../Utils/FontSizeLimits'
+import { HTMLRenderer } from './HTMLRenderer'
+import { parseBBCode } from '../BBCode/Parser'
+import { greenToRedNode } from '../BBCode/BBCodeToGreenNode'
+import { resolveEditConflicts } from '../Edits/EditPlan'
+import { applyEditsToSource } from '../Edits/applyEdits'
+import { FlattenOsuNestingRule } from '../Edits/Rules/flattenOsuNesting'
 import {
   toTokenResolver,
   resolveTokenValue,
@@ -60,6 +66,98 @@ function expandTokenRefs(text: string, resolve: TokenResolverFn): string {
     const resolved = resolve(name) ?? resolve(match)
     return resolved !== undefined ? resolved : match
   })
+}
+
+/**
+ * Rewrites `osu`-target export text so it never publishes a same-name tag
+ * nested inside an identical one — osu!'s per-family lazy pairing mangles
+ * that (see `Edits/Rules/flattenOsuNesting.ts`'s doc comment). Re-parses the
+ * ALREADY-EXPORTED text (never the source document — `quasar-exporter-no-
+ * trivia`'s whole-document-rewrite warning is about the SOURCE, and this
+ * text has no author spelling left to lose) with the widest dialect so every
+ * tag the exporter could have produced is recognised, runs the rule, and
+ * applies its edits. A parse failure (should not happen against Quasar's own
+ * export output) fails safe by returning the text untouched rather than
+ * throwing out of `export()`.
+ *
+ * Also hands the rule a THUNK that builds a RedNode view of that SAME parse
+ * (`greenToRedNode`, no store — this is a one-off read, not a document the
+ * incremental parser will ever touch again) on demand, plus an `osu`-dialect
+ * `HTMLRenderer` (reusing `ghostResolver()`'s cached instance), so a dropped
+ * BLOCK tag (`center`/`left`/`right`/`heading`) can reconcile the newlines it
+ * used to eat against `NEWLINE_RULES` — see `FlattenOsuNestingRule.
+ * fixupBlockNewlines`'s own doc comment. A thunk, not the tree itself: most
+ * exports have no block-kind same-name nesting at all, and building it
+ * unconditionally cost the 547 KB fixture roughly 15× its export budget
+ * (`export.perf.test.ts`) for documents that never needed it.
+ *
+ * Deliberately just this one rule, not the general-purpose cleanup rules
+ * (`MergeAdjacentRule`, `ReorderWrappersRule`, …) an earlier version also
+ * ran afterward to settle an empty-tag seam a split could leave. Those rules
+ * act on the WHOLE document, not just the seam this rule touched, and they
+ * reorder/merge tags this rule never came near (`MilHibri.test.ts` caught
+ * this: an untouched, author-ordered `[color][b]…[/b][/color]` came back
+ * silently reordered to `[b][color]…[/color][/b]`). Changing export output
+ * the product rule never asked to change is worse than leaving a rare
+ * artifact, so that empty-seam case is instead handled locally, inside
+ * `emitSplit` itself (deleting the ancestor's own delimiter on a side with
+ * nothing else, rather than duplicating it into an empty pair).
+ */
+function flattenOsuUnsupportedNesting(source: string, getRenderer: () => HTMLRenderer): string {
+  if (!source || !mayHaveSameNameNesting(source)) return source
+  let root
+  try {
+    // 'osu', not 'lyne': this text was JUST produced for target 'osu', so
+    // every tag in it is already one osu! recognises. Re-parsing with the
+    // wider 'lyne' dialect would be more permissive but is also incomplete
+    // for plain BBCode tags that only exist in the osu!/miliastry table —
+    // `left` is one (`OSU_TAG_TO_KIND_ENTRIES` has it, `LYNE_CANONICAL_TAG_TO_KIND`
+    // does not), and re-parsing it as 'lyne' would silently leave `[left]`
+    // as literal text instead of a tag this rule needs to see.
+    root = parseBBCode(source, { dialect: 'osu' })
+  } catch {
+    return source
+  }
+  const proposed = new FlattenOsuNestingRule({ redRoot: () => greenToRedNode(root), renderer: getRenderer() }).run({ source, root })
+  if (proposed.length === 0) return source
+  const plan = resolveEditConflicts(proposed, source.length)
+  return applyEditsToSource(source, plan.accepted)
+}
+
+// Module-level on purpose: `exportChildren` runs once per node with children,
+// and closures created there were a measurable share of a full export.
+function isGhostKind(n: RedNode): boolean {
+  return n.kind === 'discarded_tag' || n.kind === 'discarded_box_close'
+}
+
+function isNewlineKind(n: RedNode): boolean {
+  return n.kind === 'spacing' || n.kind === 'empty_line'
+}
+
+/** Tags `FlattenOsuNestingRule` rewrites, spelled as the osu! export emits them. */
+const FLATTENABLE_TAG_RE = /\[(\/?)(b|i|u|s|strike|spoiler|heading|centre|left|right|color|size)(?:=[^\]]*)?\]/g
+
+/**
+ * Cheap gate in front of the re-parse: can this export contain a flattenable
+ * tag nested inside one of the same name? The osu! export runs on every
+ * keystroke (the character counter), and most pages have no such nesting, so
+ * they should not pay for a full re-parse. A false positive only costs that
+ * re-parse; a false negative is impossible, since every nested pair the rule
+ * could act on shows up here as a second opener while the first is open.
+ */
+function mayHaveSameNameNesting(source: string): boolean {
+  const depth = new Map<string, number>()
+  for (const match of source.matchAll(FLATTENABLE_TAG_RE)) {
+    const name = match[2] === 's' ? 'strike' : match[2]
+    const open = depth.get(name) ?? 0
+    if (match[1]) {
+      if (open > 0) depth.set(name, open - 1)
+    } else {
+      if (open > 0) return true
+      depth.set(name, 1)
+    }
+  }
+  return false
 }
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
@@ -280,6 +378,35 @@ export class BBCodeExporter extends Visitor<string> {
    */
   private expandTokens: TokenResolverFn | null = null
 
+  /**
+   * Cache of {@link HTMLRenderer.newlineEatenByGhostCloser} by dialect — the
+   * ONE place the stranded-closer newline budget lives (`NEWLINE_RULES`,
+   * `discardedTagRule`, the sibling walk). `BBCodeExporter` never repeats
+   * that table: a `discarded_tag`/`discarded_box_close` leaf's own bracket
+   * never survives export (see `exportNode`'s first line), so nothing is
+   * left in the exported text to do the eating osu's render did invisibly —
+   * `exportChildren` asks the renderer which of a dropped ghost's neighbour
+   * newlines it swallowed, and drops those same newlines as literal text
+   * instead. Keyed by dialect (not recreated per node): `target` can change
+   * mid-lifetime via `setTarget`/`export(root, target)`, and each renderer
+   * instance is cheap but not free to build.
+   */
+  private ghostResolverCache = new Map<string, HTMLRenderer>()
+
+  private ghostResolver(): HTMLRenderer {
+    // `HTMLRendererOptions.dialect` only knows 'osu' | 'miliastry' | 'lyne';
+    // 'lyne' is the one exact match, everything else that isn't 'osu' (i.e.
+    // 'miliastry') falls back the same way the renderer's own constructor
+    // default does.
+    const dialect = this.target === 'osu' || this.target === 'lyne' ? this.target : 'miliastry'
+    let resolver = this.ghostResolverCache.get(dialect)
+    if (!resolver) {
+      resolver = new HTMLRenderer({ dialect })
+      this.ghostResolverCache.set(dialect, resolver)
+    }
+    return resolver
+  }
+
   constructor(
     registryOrOptions?: TagRegistry | BBCodeExporterOptions,
     target: ExportTarget = 'osu',
@@ -370,7 +497,12 @@ export class BBCodeExporter extends Visitor<string> {
         this.explicitResolveTokens = targetOrOptions.resolveTokens
       }
     }
-    return this.visit(root)
+    const raw = this.visit(root)
+    // osu! cannot nest a tag inside an identical one (see
+    // `Edits/Rules/flattenOsuNesting.ts`'s doc comment and the
+    // `quasar-nested-color-is-supported` memory) — every other target is
+    // untouched, so this can never change what the default preview shows.
+    return this.target === 'osu' ? flattenOsuUnsupportedNesting(raw, () => this.ghostResolver()) : raw
   }
 
   /**
@@ -381,10 +513,99 @@ export class BBCodeExporter extends Visitor<string> {
    * hizo este mismo cambio y dejó la nota; el exportador se quedó atrás, y es
    * el camino que corre bajo un límite de 60.000 caracteres.
    */
+  /**
+   * A `discarded_tag`/`discarded_box_close` ghost's own bracket never
+   * reaches the exported text (`exportNode`'s first line drops it outright —
+   * a stray closer that closed nothing must not come back as a live tag on
+   * the next parse). osu's render still spent that ghost's own newline
+   * budget invisibly, though, so a newline this pass left untouched would
+   * surface as a `<br>` the default preview never showed.
+   *
+   * The naive fix — drop every newline the render swallowed near a ghost —
+   * double-spends. Ghosts contribute zero bytes to the export, so a REAL
+   * closer that used to sit behind one or more ghosts can end up genuinely,
+   * byte-adjacent to newlines that ghost used to buffer it from; that real
+   * closer's grammar has no memory of the ghost, so once osu re-parses the
+   * exported text it spends its OWN `afterClose` budget against whatever is
+   * next to it now, for free — whether this method drops anything or not.
+   * Explicitly dropping a newline the render swallowed only because a ghost
+   * ATE IT ITSELF (rather than one that just happened to sit past a
+   * NATURALLY-still-swallowed seam) eats it a second time, and shifts every
+   * following newline one slot closer to that real closer's reach too
+   * (measured on `docs/ai/examples/perfil sarou.txt`: a `[heading]` ghost's
+   * own budget explicitly dropped its one newline, and the real `[centre]`
+   * it used to stand in front of then ate the NEXT one for free, erasing a
+   * line break the default preview keeps).
+   *
+   * So this walks children in MERGED REGIONS — a maximal run of
+   * `spacing`/`empty_line`/`discarded_tag`/`discarded_box_close` nodes
+   * bounded by real content on both sides, since consecutive ghosts
+   * contribute no bytes and their surrounding newline runs physically
+   * concatenate in the export the instant those ghosts vanish — and asks two
+   * separate questions per region: how many of its newlines, from the
+   * START, will the nearest REAL closer before it eat for free after
+   * export (`naturalCount`, from the SAME `NEWLINE_RULES` table via
+   * {@link HTMLRenderer.closingBudget}); and, per newline, did osu's render
+   * swallow it at all ({@link HTMLRenderer.isNewlineSwallowedPublic}, the
+   * exact verdict the default preview used). Only a swallowed newline PAST
+   * `naturalCount` needs dropping here — one within it is already spoken
+   * for, and dropping it too would just shove the next one into the reach
+   * that free consumption leaves behind.
+   */
   private exportChildren(node: RedNode): string {
     const children = node.children
+
     let out = ''
-    for (let i = 0; i < children.length; i++) out += this.exportNode(children[i])
+    // The node before the current region. Its closing budget is only needed
+    // when a ghost follows, which is rare, so it is resolved lazily: asking
+    // the renderer for every child made the whole export ~4× slower.
+    let pendingRealChild: RedNode | null = null
+    let i = 0
+    while (i < children.length) {
+      const child = children[i]
+      if (isNewlineKind(child) || isGhostKind(child)) {
+        const regionStart = i
+        while (i < children.length && (isNewlineKind(children[i]) || isGhostKind(children[i]))) i++
+        const region = children.slice(regionStart, i)
+        const hasGhost = region.some(isGhostKind)
+
+        // No ghost anywhere in this region: nothing was dropped from the
+        // exported text here, so there is nothing for a real tag to newly
+        // re-claim either — leave every newline exactly as `exportNode`
+        // always has. This is the ordinary, non-crossing case
+        // `quasar-exporter-no-trivia` promises byte-for-byte: touching it
+        // broke `RoundTrip.test.ts` (`[centre]\n[color=…]` lost its
+        // newline, because `center`'s own `afterOpen` rule alone made
+        // `isNewlineSwallowedPublic` true with no ghost involved at all).
+        if (!hasGhost) {
+          for (const regionChild of region) out += this.exportNode(regionChild) // 'spacing'/'empty_line' → '\n'
+          pendingRealChild = null
+          continue
+        }
+
+        const resolver = this.ghostResolver()
+        const pendingRealRule = pendingRealChild ? resolver.closingBudget(pendingRealChild) : null
+        const newlineNodes = region.filter(isNewlineKind)
+        const naturalCount = pendingRealRule ? Math.min(newlineNodes.length, pendingRealRule.afterClose) : 0
+
+        let newlineIndex = 0
+        for (const regionChild of region) {
+          if (isGhostKind(regionChild)) {
+            out += this.exportNode(regionChild) // always '' — see exportNode
+            continue
+          }
+          const k = newlineIndex++
+          const swallowed = resolver.isNewlineSwallowedPublic(regionChild)
+          if (k < naturalCount || !swallowed) out += '\n'
+        }
+        pendingRealChild = null
+        continue
+      }
+
+      out += this.exportNode(child)
+      pendingRealChild = child
+      i++
+    }
     return out
   }
 
@@ -392,7 +613,7 @@ export class BBCodeExporter extends Visitor<string> {
     // Un cierre que no cerró nada no vuelve al source. Escribirlo hacía que el
     // siguiente parseo lo leyera otra vez como etiqueta viva, y el documento no
     // convergía al reexportarlo.
-    if (node.kind === 'discarded_tag') return ''
+    if (node.kind === 'discarded_tag' || node.kind === 'discarded_box_close') return ''
 
     const tagDef = this.registry.getByKind(node.kind)
 

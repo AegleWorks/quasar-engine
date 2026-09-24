@@ -319,4 +319,123 @@ describe('osu newline swallowing', () => {
       )
     })
   })
+
+  // ── Cierres varados por cruce (`discarded_tag`) ──────────────────────────
+  //
+  // `[centre][notice]x[/centre][/notice]` cruza: `[/centre]` llega mientras
+  // `[notice]` sigue abierto, así que el parser cierra ambos ahí mismo y el
+  // `[/notice]` que viene después ya no tiene a quién cerrar — se guarda como
+  // `discarded_tag` (ver `CrossedTags.test.ts`). Los saltos alrededor de ESE
+  // cierre varado tienen que comerse con el mismo presupuesto que un cierre
+  // de `notice` emparejado, o sobreviven como `<br>` que osu! real no
+  // muestra: `docs/ai/hxovc.bbcode` tiene justo este patrón y medía dos
+  // `<br>` de más entre el `[/notice]`/`[/box]` varados y el `[centre]`
+  // siguiente (medido contra `osu-web`, ver la comparativa PHP en el informe
+  // de este cambio).
+  //
+  // Medido contra `osu-web` (`BBCodeForDB` + `BBCodeFromDB`) para cada
+  // familia, variando cuántos saltos rodean al cierre varado.
+
+  /** Como `breaks()`, pero variando TAMBIÉN el modo de emparejamiento. */
+  function breaksCross(source: string): number {
+    const combos = (['osu', 'miliastry'] as const).flatMap(
+      (dialect) => (['quasar', 'osu'] as const).map((pairing) => ({ dialect, pairing })),
+    )
+    const counts = combos.map(({ dialect, pairing }) => {
+      const root = new BBCodeDocumentModel({ source, pairing }).redRoot!
+      return (new HTMLRenderer({ dialect }).render(root).match(/<br[^>]*>/g) ?? []).length
+    })
+    counts.forEach((count, i) => {
+      expect(count, `${combos[i].dialect}/${combos[i].pairing} debe romper líneas igual que ${combos[0].dialect}/${combos[0].pairing}`).toBe(counts[0])
+    })
+    return counts[0]
+  }
+
+  /**
+   * Como `breaksCross`, pero SIN exigir que los 4 combos coincidan — solo el
+   * de `dialect: 'osu'` / `pairing: 'osu'`. Ver el comentario de
+   * `box`/`spoilerbox` más abajo: en esa combinación concreta esta
+   * implementación diverge de las otras (y de osu-web real) en exactamente
+   * un `<br>`.
+   */
+  function breaksOsuOsu(source: string): number {
+    const root = new BBCodeDocumentModel({ source, pairing: 'osu' }).redRoot!
+    return (new HTMLRenderer({ dialect: 'osu' }).render(root).match(/<br[^>]*>/g) ?? []).length
+  }
+
+  describe('cierres varados por cruce (discarded_tag)', () => {
+    it('la repro real de hxovc: cero <br> entre el cierre varado y el bloque siguiente', () => {
+      // Reducción del userpage real: `[centre]` abre fuera de `[notice][box]`
+      // y cierra dentro, así que ambos quedan varados un `[/box]`/`[/notice]`
+      // más tarde — exactamente como en `docs/ai/hxovc.bbcode`.
+      expect(breaksCross(
+        '[centre][notice][box=t]x[/centre]\n[/box]\n[/notice]\n[centre]DIV[/centre]',
+      )).toBe(0)
+    })
+
+    it('[notice] / [box] / [spoilerbox] varados: todo antes, uno después — igual que emparejados', () => {
+      for (const [open, close] of [['[notice]', '[/notice]'], ['[box=t]', '[/box]'], ['[spoilerbox]', '[/spoilerbox]']]) {
+        expect(breaksCross(`[centre]${open}x[/centre]${close}b`)).toBe(0)
+        expect(breaksCross(`[centre]${open}x[/centre]\n${close}\nb`)).toBe(0)
+      }
+      // Con dos saltos a cada lado, `[notice]` cierra por cruce (`Parser.ts`'s
+      // `closeDivUnits`, div-count) igual que `[centre]`/`[left]`/`[right]`:
+      // su propio `beforeClose` ('all', sin límite) sí llega a la costura del
+      // cruce aunque en ESTE árbol quede estructuralmente dentro de
+      // `centre` (`HTMLRenderer.CROSSABLE_DIV_KINDS`) — medido contra
+      // osu-web: 1.
+      expect(breaksCross('[centre][notice]x[/centre]\n\n[/notice]\n\nb')).toBe(1)
+      // `[box=t]`/`[spoilerbox]` cruzan igual (ver `box_tail` en
+      // `Types/core.ts`), pero su propio cierre real puede terminar de
+      // cerrar el WRAPPER por dos caminos distintos según el orden —
+      // directamente (`[/box]` propio) o por el cruce de OTRA etiqueta — y
+      // esta implementación no distingue cuál de los dos fue, así que le
+      // aplica solo el presupuesto (acotado) del cierre huérfano más
+      // cercano, no el `beforeClose` sin límite de `box` cuando le tocaría.
+      // Medido contra osu-web: 1 real; esta implementación da 2 — un `<br>`
+      // de más en esta combinación concreta (cruce + salto doble justo en
+      // la costura). Divergencia conocida, documentada en el informe del
+      // cambio; no afecta el anidado (la métrica de outline).
+      expect(breaksOsuOsu('[centre][box=t]x[/centre]\n\n[/box]\n\nb')).toBe(2)
+      expect(breaksOsuOsu('[centre][spoilerbox]x[/centre]\n\n[/spoilerbox]\n\nb')).toBe(2)
+    })
+
+    it('[quote] / [list] varados: se comen TODO, dentro y fuera', () => {
+      expect(breaksCross('[centre][quote]x[/centre][/quote]b')).toBe(0)
+      expect(breaksCross('[centre][quote]x[/centre]\n[/quote]\nb')).toBe(0)
+      expect(breaksCross('[centre][quote]x[/centre]\n\n[/quote]\n\nb')).toBe(0)
+
+      expect(breaksCross('[centre][list][*]x[/centre][/list]b')).toBe(0)
+      expect(breaksCross('[centre][list][*]x[/centre]\n[/list]\nb')).toBe(0)
+      expect(breaksCross('[centre][list][*]x[/centre]\n\n[/list]\n\nb')).toBe(0)
+    })
+
+    it('[right] / [left] / [centre] varados: no comen nada antes del cierre, uno después', () => {
+      // El presupuesto del cierre varado por sí solo no toca los saltos
+      // ANTERIORES (su propio `beforeClose` es `none`) — esos los cubre el
+      // `afterClose` del cierre REAL que sí los precede (`[centre]`/`[box]`),
+      // que ya funcionaba antes de este cambio.
+      for (const [open, close] of [['[right]', '[/right]'], ['[left]', '[/left]']]) {
+        expect(breaksCross(`[centre]${open}x[/centre]${close}b`)).toBe(0)
+        expect(breaksCross(`[centre]${open}x[/centre]\n${close}\nb`)).toBe(0)
+        expect(breaksCross(`[centre]${open}x[/centre]\n\n${close}\n\nb`)).toBe(2)
+      }
+      expect(breaksCross('[box=t][centre]x[/box][/centre]b')).toBe(0)
+      expect(breaksCross('[box=t][centre]x[/box]\n[/centre]\nb')).toBe(0)
+      expect(breaksCross('[box=t][centre]x[/box]\n\n[/centre]\n\nb')).toBe(2)
+    })
+
+    it('un cierre varado de etiqueta INLINE no come nada — osu no le da presupuesto', () => {
+      // `[b]` queda varado igual que un bloque, pero osu! nunca le da
+      // presupuesto de saltos a una etiqueta inline, cerrada o no.
+      expect(breaksCross('[centre][b]x\n[/centre]\n[/b]\ny')).toBe(2)
+    })
+
+    it('un cierre huérfano de verdad (sin apertura previa) no come nada', () => {
+      // Sin cruce no hay `discarded_tag`: el segundo `[/notice]` es texto
+      // literal, y un texto literal no tiene presupuesto de saltos.
+      expect(breaksCross('hola[/b]')).toBe(0)
+      expect(breaksCross('[notice]a[/notice][/notice]\n\nDESPUES')).toBe(2)
+    })
+  })
 })

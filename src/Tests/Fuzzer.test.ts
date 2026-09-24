@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
-import { ASTOptimizer } from '../Transformers/ASTOptimizer'
+import { optimizeBBCode, optimizeBBCodeFully } from '../Edits/Optimizer'
 import { TagRegistry } from '../Model/TagRegistry'
 import { RedNode } from '../Syntax/RedNode'
 
@@ -106,7 +106,12 @@ function getPlainText(node: RedNode): string {
 }
 
 // ─── 3. The Test Suite ────────────────────────────────────────
-describe('Empirical Fuzz Testing - AST Optimizer', () => {
+// The pipeline under test is the one the app ships: "Export BBCode" runs
+// `BBCodeExporter` (target 'osu', which includes the same-name nesting
+// flatten) and, when minifying, `optimizeBBCodeFully` over the exported text
+// (`features/BBCode/export/exportAnalysis.ts`). The older tree-based
+// `ASTOptimizer` is no longer called by the app, so it is not fuzzed here.
+describe('Empirical Fuzz Testing - export + optimizer', () => {
   const fuzzer = new BBCodeFuzzer()
   const registry = new TagRegistry()
   
@@ -131,36 +136,30 @@ describe('Empirical Fuzz Testing - AST Optimizer', () => {
     const model = new BBCodeDocumentModel({ source, strictMode: false })
     expect(model.redRoot).toBeDefined()
 
-    const originalText = getPlainText(model.redRoot!)
-    
-    // 2. Optimization should not crash
-    const optimizer = new ASTOptimizer()
-    optimizer.transform(model)
-    
-    // 3. Lossless Text: Optimization must NEVER delete or alter visible text/spacing
-    const optimizedText = getPlainText(model.redRoot!)
-    expect(optimizedText).toBe(originalText)
-    
-    // 4. Exporting should not crash
+    // 2. Exporting should not crash
     const exporter = new BBCodeExporter(registry)
     const exported1 = exporter.export(model.redRoot!)
-    
-    // 5. Idempotence: optimizing an already optimized tree should produce no changes
-    const model2 = new BBCodeDocumentModel({ source: exported1, strictMode: false })
-    const optimizer2 = new ASTOptimizer()
-    const { transaction } = optimizer2.transform(model2)
-    
-    // An idempotent optimizer shouldn't need to mutate the tree a second time
-    // We allow 0 operations!
-    if (transaction && transaction.operations.length > 0) {
+
+    // 3. Export idempotence: re-parsing and re-exporting the exported text
+    // (default target 'osu', same-name nesting flatten included) must
+    // reproduce it exactly.
+    const reparsed = new BBCodeDocumentModel({ source: exported1, strictMode: false })
+    expect(reparsed.redRoot ? exporter.export(reparsed.redRoot) : '').toBe(exported1)
+
+    // 4. Minify, as Export runs it (to a fixpoint), must not crash and must
+    // NEVER delete or alter visible text/spacing
+    const first = optimizeBBCodeFully(exported1)
+    const minified = new BBCodeDocumentModel({ source: first.output, strictMode: false })
+    expect(getPlainText(minified.redRoot!)).toBe(getPlainText(reparsed.redRoot!))
+
+    // 5. Minify idempotence: optimizing already-optimized output finds nothing
+    const second = optimizeBBCode(first.output)
+    if (second.edits.length > 0) {
       console.log('--- IDEMPOTENCE FAILURE ---')
-      console.log('Exported:', exported1)
-      console.log('Operations:', JSON.stringify(transaction.operations.map(o => o.kind)))
+      console.log('Minified:', first.output)
+      console.log('Edits:', JSON.stringify(second.edits))
     }
-    expect(transaction?.operations.length || 0).toBe(0)
-    
-    // 6. Round-trip stability
-    const exported2 = model2.redRoot ? exporter.export(model2.redRoot) : ''
-    expect(exported2).toBe(exported1)
+    expect(second.edits).toHaveLength(0)
+    expect(second.output).toBe(first.output)
   })
 })

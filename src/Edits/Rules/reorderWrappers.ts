@@ -93,18 +93,30 @@ export class ReorderWrappersRule implements OptimizationRule {
     }
   }
 
-  /** The maximal run of rankable single-child wrappers starting at `item`. */
+  /**
+   * The maximal run of rankable wrappers starting at `item`, each nested
+   * directly inside the previous one.
+   *
+   * Every member but the last must have exactly one child — that is what
+   * makes swapping their order lossless, since nothing else is hanging off
+   * them to misplace. The LAST member is different: it is only ever a
+   * *destination* for the chain's permutation, never itself a link the walk
+   * descends through, so how many children IT has is irrelevant — a ranked
+   * wrapper around several children (`[color][b]x[/b]y[/color]`'s `[b]`, if
+   * it had a rank-checked ancestor above a single-child `[color]`) still
+   * belongs in the permutation. Gating its INCLUSION on `children.length===1`
+   * used to mean a chain like `[color=blue][b][url]…[/url][size=…]…[/size][/b]`
+   * — `color` single-child, but its child `b` wrapping two things — produced
+   * an empty chain and skipped a swap `ASTOptimizer`'s tree-walk equivalent
+   * still makes, breaking export's own idempotence (`Tests/Fuzzer.test.ts`).
+   */
   private chainFrom(item: Positioned): Positioned[] {
     const chain: Positioned[] = []
     let current: Positioned | undefined = item
 
-    while (
-      current &&
-      RANK[current.node.kind] !== undefined &&
-      hasBothDelimiters(current) &&
-      current.node.children.length === 1
-    ) {
+    while (current && RANK[current.node.kind] !== undefined && hasBothDelimiters(current)) {
       chain.push(current)
+      if (current.node.children.length !== 1) break
       const [only] = positionedChildren(current)
       current = only
     }

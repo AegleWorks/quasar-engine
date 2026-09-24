@@ -549,6 +549,45 @@ describe('U2 validators: code+data only, fixes live in the registry', () => {
     const d = diags.find((item) => item.code === 'unknown-tag')!
     expect(opsOf('[Chocolate]x[/Chocolate]', 'unknown-tag', d)).toEqual([])
   })
+
+  // Every built-in validator fix wraps as `(diagnostic) => fix(diagnostic.data)`
+  // and its body dereferences `data.*` directly — the wrapper is the one place
+  // that must guard, not each fix. A dataless diagnostic (no `data` at all, or
+  // one whose `data` is `null`) must resolve to `[]` for every registered
+  // code, never throw.
+  const VALIDATOR_FIX_CODES = [
+    'unknown-tag',
+    'orphan-closing-tag',
+    'deprecated-tag',
+    'empty-tag',
+    'unclosed-tag',
+    'crossed-tags',
+    'missing-url-protocol',
+    'empty-link',
+    'box-missing-equals',
+    'redundant-nesting',
+    'collapsible-gradient',
+  ]
+
+  it.each(VALIDATOR_FIX_CODES)(
+    "'%s' returns [] for a diagnostic with no data",
+    (code) => {
+      const provider = getCodeFix(code)
+      expect(provider, `no provider registered for '${code}'`).toBeDefined()
+      const diagnostic = createDiagnostic(code, 'no data', 'warning')
+      expect(diagnostic.data).toBeUndefined()
+      expect(provider!(diagnostic, { source: '', node: null })).toEqual([])
+    },
+  )
+
+  it.each(VALIDATOR_FIX_CODES)(
+    "'%s' returns [] for a diagnostic whose data is null",
+    (code) => {
+      const provider = getCodeFix(code)!
+      const diagnostic = createDiagnostic(code, 'null data', 'warning', { data: null })
+      expect(provider(diagnostic, { source: '', node: null })).toEqual([])
+    },
+  )
 })
 
 // ─── 2.4 Linter port ─────────────────────────────────────────────

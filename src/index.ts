@@ -14,6 +14,7 @@
 export { DocumentModel } from './Model/DocumentModel'
 export type {
   DocumentNode,
+  NodeId,
   NodeKind,
   NodeAttributes,
   NodeMetadata,
@@ -143,7 +144,7 @@ export type { Query, QueryMatch, QueryResult } from './Types/queries'
 export { Formatter, type FormatOptions } from './Formatter/Formatter'
 
 // ── Linter ──
-export { Linter, type LintRule, type LintResult } from './Linter/Linter'
+export { Linter, registerLinterFixes, type LintRule, type LintResult } from './Linter/Linter'
 
 // ── Symbols ──
 export { SymbolTable } from './Symbols/SymbolTable'
@@ -162,6 +163,52 @@ export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpen
 
 // ── Reconciler ──
 export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult } from './Reconciler/SurgicalReconciler'
+
+// ── Lightbulb Engine (fixes, refactorings, fix-all, host) ──
+//
+// The public surface for the lightbulb migration: parents used to reach
+// these through `@miliastry/quasar/src/Fixes/...` deep imports against
+// source, which put engine internals on the wrong side of the package
+// boundary. They belong here instead, same as everything else the barrel
+// already re-exports.
+export {
+  registerCodeFix,
+  getCodeFix,
+  getCodeFixMeta,
+  unregisterCodeFix,
+  type CodeFixContext,
+  type CodeFixProvider,
+  type CodeFixMeta,
+} from './Fixes/CodeFixRegistry'
+export {
+  planFixAll,
+  fixAll,
+  fixAllDocuments,
+  UnimplementedError,
+  MAX_FIX_ALL_PASSES,
+  type FixAllScope,
+  type BatchResult,
+  type FixAllOptions,
+  type FixAllTarget,
+  type FixAllPlan,
+} from './Fixes/BatchFixer'
+export {
+  LightbulbHost,
+  queryLightbulb,
+  type LightbulbQuery,
+  type LightbulbAction,
+} from './Fixes/LightbulbHost'
+export {
+  registerRefactoring,
+  unregisterRefactoring,
+  getRefactoring,
+  matchRefactorings,
+  previewRefactoring,
+  type RefactoringProvider,
+} from './Fixes/RefactoringRegistry'
+export { combineBoldsProvider } from './Fixes/refactorings/combineBolds'
+export { registerValidatorFixes } from './Fixes/validatorFixes'
+export { fixForDiagnostic } from './Fixes/fixForDiagnostic'
 
 // ── BBCode Optimizer (edit plan, conflict contract, rules) ──
 export * from './Edits'

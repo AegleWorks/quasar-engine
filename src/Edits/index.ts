@@ -15,9 +15,10 @@ export { applyEditsToSource } from './applyEdits'
 export { fixToSurgicalEdits } from './fixEdits'
 export {
   optimizeBBCode,
+  optimizeBBCodeFully,
   optimizeTree,
   defaultRules,
   allRules,
 } from './Optimizer'
-export type { OptimizationResult, OptimizeOptions, RuleStat } from './Optimizer'
+export type { FixpointOptimizationResult, OptimizationResult, OptimizeOptions, RuleStat } from './Optimizer'
 export * from './Rules'

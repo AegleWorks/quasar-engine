@@ -31,6 +31,7 @@ import { tagToNodeKind, type BBCodeDialect } from './BBCodeToGreenNode'
 import type { BBCodeToken } from '../Lexer/BBCodeLexer'
 import { scanBBCode } from '../Lexer/BBCodeLexer'
 import { isBlockKind } from './BBCodeToGreenNode'
+import { applyOsuPairing } from '../Osu/osuPairing'
 
 // ─── Main entry point ──────────────────────────────────────────
 
@@ -69,6 +70,17 @@ export interface ParseOptions {
    * registered still falls to literal text exactly as before.
    */
   extraTags?: ReadonlyMap<string, NodeKind>;
+  /**
+   * Which tag-pairing rule decides `open`/`close` tokens before the tree is
+   * built. `'quasar'` (default) is today's structural rule, unchanged.
+   * `'osu'` runs `applyOsuPairing` first: any token osu!'s own
+   * `BBCodeForDB::generate()` would not have sealed is demoted to plain text
+   * at the SAME source offsets, and the rest of this function — auto-close,
+   * `discarded_tag`, strict-mode errors, paragraph grouping — proceeds
+   * exactly as it does today on whatever survives. See `Osu/osuPairing.ts`.
+   * Full-parse only: the incremental parser does not pass this through.
+   */
+  pairing?: 'quasar' | 'osu';
 }
 
 export function parseTokensToGreen(
@@ -81,6 +93,9 @@ export function parseTokensToGreen(
   const interner = options.interner ?? null;
   const normalizeParagraphs = options.normalizeParagraphs ?? true;
   const extraTags = options.extraTags;
+  if (options.pairing === 'osu') {
+    tokens = applyOsuPairing(tokens, source);
+  }
   const root: GreenNode[] = []
   /**
    * Etiquetas que un cierre mal emparejado cerró por su cuenta y cuyo `[/tag]`
@@ -97,6 +112,21 @@ export function parseTokensToGreen(
    */
   const autoClosed = new Set<string>()
 
+  /**
+   * How many anonymous `<div>`s each `pairing: 'osu'` div-emitting tag pushes
+   * per occurrence — see `closeDivUnits` below. `box`/`spoilerbox` push TWO
+   * (wrapper + body) at once; `notice`/`centre`/`left`/`right` push one.
+   * Never consulted under the default `'quasar'` pairing.
+   */
+  const DIV_UNITS: Readonly<Record<string, number>> = {
+    box: 2,
+    spoilerbox: 2,
+    notice: 1,
+    centre: 1,
+    left: 1,
+    right: 1,
+  }
+
   const stack: {
     /** The literal tag name. Closing matches on THIS, not on `kind`: `[centre]`
      *  and `[center]` share a kind but do not close each other, and that is
@@ -109,6 +139,17 @@ export function parseTokensToGreen(
     children: GreenNode[]
     /** Width of the opening delimiter, e.g. 3 for `[b]`, 11 for `[color=red]`. */
     leadingWidth: number
+    /**
+     * `pairing: 'osu'` only. True once a crossing closer has consumed this
+     * frame's BODY div (`box`/`spoilerbox` only — see `DIV_UNITS`) while its
+     * WRAPPER div is still open. The frame stays on the stack — it is not
+     * done — but new content now goes to `tailChildren` (see `currentBucket`)
+     * instead of `children`, and gets folded back in as a trailing
+     * `box_tail` child once the wrapper itself finally closes (`closeFrame`).
+     */
+    bodyClosed?: boolean
+    /** Content collected after `bodyClosed` flips true. See `bodyClosed`. */
+    tailChildren?: GreenNode[]
   }[] = []
 
   /**
@@ -151,28 +192,208 @@ export function parseTokensToGreen(
    * that is the point: the end is `start + leadingWidth + Σ children + trailing`
    * by construction, so the partition invariant of point 14 stopped being
    * something to check and became something to compute.
+   *
+   * `pairing: 'osu'` only: if this frame's BODY div was closed early by a
+   * crossing closer (`bodyClosed`, see the stack's own doc comment) and it
+   * collected any content afterwards, that content is folded in as one
+   * trailing `box_tail` child — `children` stays exactly what a non-crossing
+   * close would have produced, plus this one extra node at the end. Empty
+   * tails (the wrapper closed with nothing after the body) add nothing, so a
+   * frame that was marked `bodyClosed` but never actually diverged from the
+   * ordinary close still produces the ordinary shape.
    */
   function closeFrame(
-    frame: { kind: string; attrs: string; children: GreenNode[]; leadingWidth: number },
+    frame: {
+      kind: string
+      attrs: string
+      children: GreenNode[]
+      leadingWidth: number
+      bodyClosed?: boolean
+      tailChildren?: GreenNode[]
+    },
     trailingWidth: number,
   ): GreenNode {
+    const children = frame.bodyClosed && frame.tailChildren && frame.tailChildren.length > 0
+      ? [...frame.children, createNode('box_tail', '', frame.tailChildren, 0, 0)]
+      : frame.children
     return createNode(
       frame.kind,
       frame.attrs,
-      frame.children,
+      children,
       frame.leadingWidth,
       trailingWidth,
     )
   }
 
   /**
-   * Add a node to the current stack frame, or to root if no frame is open.
+   * Where the next node lands: the top stack frame's `tailChildren` if it is
+   * mid-`box_tail` (see the stack's own doc comment on `bodyClosed`),
+   * otherwise its ordinary `children`, otherwise the document root. EVERY
+   * insertion point in this function — text, newlines, opens, auto-closed
+   * inner tags, discarded/stray closers — goes through this (or `addToParent`,
+   * which just calls it), so `bodyClosed` routing never has to be repeated at
+   * each call site. Never diverges from `top.children` under the default
+   * `'quasar'` pairing, since only `closeDivUnits` ever sets `bodyClosed`.
+   */
+  function currentBucket(): GreenNode[] {
+    if (stack.length === 0) return root
+    const top = stack[stack.length - 1]
+    return top.bodyClosed ? top.tailChildren! : top.children
+  }
+
+  /**
+   * Add a node to the current stack frame (or its tail bucket), or to root
+   * if no frame is open.
    */
   function addToParent(node: GreenNode): void {
-    if (stack.length > 0) {
-      stack[stack.length - 1].children.push(node)
-    } else {
-      root.push(node)
+    currentBucket().push(node)
+  }
+
+  /**
+   * `pairing: 'osu'` only. How many of `frame`'s own div units are still
+   * open — `0` for anything not in `DIV_UNITS` (inline tags, `quote`,
+   * `list`, `heading`, `imagemap`, `code`, `*`, …), the full count for a
+   * fresh div-emitting frame, or one less once `bodyClosed` is set (see the
+   * stack's own doc comment — only `box`/`spoilerbox` can ever be partially
+   * closed, since everything else in `DIV_UNITS` is already a single unit).
+   */
+  function availableDivUnits(frame: (typeof stack)[number]): number {
+    const total = DIV_UNITS[frame.tag]
+    if (total === undefined) return 0
+    return frame.bodyClosed ? total - 1 : total
+  }
+
+  /**
+   * `pairing: 'osu'` closing for `box`/`spoilerbox`/`notice`/`centre`/
+   * `left`/`right` — see `Osu/osuPairing.ts`'s module doc and `DIV_UNITS`.
+   *
+   * osu! never builds a tree: `BBCodeFromDB::toHTML()` turns every one of
+   * these into literal `<div>`s (two for `box`/`spoilerbox` — wrapper, then
+   * body — one for everything else), and HTMLPurifier closes each `</div>`
+   * against the INNERMOST currently open `<div>` by POSITION alone, never by
+   * which BBCode tag produced it, auto-closing anything non-div sitting on
+   * top along the way. Measured: `[centre]x[quote]y[/centre]z[/quote]`
+   * closes the `<blockquote>` early to reach `[centre]`'s own div (the
+   * stray `[/quote]` that follows then finds nothing left open);
+   * `[centre][box=a]x[/centre]y[/box]` — `[centre]`'s `</div>` closes only
+   * `box`'s BODY div (its first unit), leaving the wrapper open around `x`
+   * AND `y`; osu!'s HTML: `<div align-centre><div box><a/><div body>x</div>
+   * y</div></div>`.
+   *
+   * What this does NOT reproduce (measured, and out of scope — see
+   * `Osu/osuPairing.ts`'s and this function's own callers for what IS):
+   * HTMLPurifier also auto-closes an INLINE element (`<strong>`, `<span>`
+   * from `color`/`size`, …) the moment a div tries to open INSIDE it — e.g.
+   * `[box=a]x[color=red][box=b]y[/color]z[/box][/box]` renders `x`, an EMPTY
+   * `<span>`, then `box b` containing `yz` (color's own stray `[/color]`
+   * finds nothing open and vanishes) — and can even split ONE inline tag
+   * into several separate elements around interposed block content
+   * (measured with `[notice]x[b]bold[centre]y[/notice]z[/centre]w[/b]` →
+   * THREE separate `<strong>`s). Neither is a div-count problem — it is
+   * HTMLPurifier's inline content-model enforcement, a materially different
+   * mechanism this pass does not attempt.
+   */
+  function closeDivUnits(tag: string, closeWidth: number, tokStart: number, tokEnd: number): void {
+    const needed = DIV_UNITS[tag]
+
+    // Nothing div-related open ANYWHERE — leave every unrelated open tag
+    // (inline or not) exactly as it was, not swept away on a search that
+    // was always going to find nothing (standard HTML fix-nesting behaviour
+    // for an end tag with no matching start anywhere: dropped, untouched —
+    // measured with an inline tag: `[b]bold[/centre]` never touches `[b]`).
+    // Only the FULLY-empty case bails like this: `box`/`spoilerbox` need
+    // TWO units and may find only one somewhere — see the loop below, which
+    // consumes whatever exists and drops only the leftover need, not
+    // everything (measured: `docs/ai/NyuPenyu.from-intent.bbcode` has an
+    // extra `[/box]` after its own matching one, with only `centre`'s ONE
+    // unit left open; osu! closes `centre` with it and drops the rest of
+    // this closer, it does not leave `centre` untouched).
+    let anyAvailable = false
+    for (let j = stack.length - 1; j >= 0 && !anyAvailable; j--) {
+      if (availableDivUnits(stack[j]) > 0) anyAvailable = true
+    }
+
+    if (!anyAvailable) {
+      // Every one of these five tags is, by construction, a genuinely SEALED
+      // closer by the time it is a live `close` token here:
+      // `Osu/osuPairing.ts`'s `alwaysSeal` family (`box`/`spoilerbox`) seals
+      // every occurrence unconditionally, and its `lazy` family's `sealLazy`
+      // now forces any closer it never actually matched with an opener to a
+      // plain `text` token BEFORE this function ever runs (see its own sweep
+      // step) — so a closer that was NEVER real at all (no opener anywhere,
+      // measured: `x[/centre]y` → literal `x[/centre]y`) never reaches here
+      // in the first place; it is already literal text upstream. What DOES
+      // reach here with nothing left open is a closer that WAS genuinely
+      // sealed but arrives once everything is already closed (measured:
+      // `docs/ai/NyuPenyu.from-intent.bbcode`'s trailing, once-real
+      // `[/centre]` after an earlier crossing already closed it) — osu!'s
+      // own substitution already turned THAT one into a real `</div>`, which
+      // HTMLPurifier then silently drops for lack of anything to close, same
+      // as the leftover half of an insufficient `box`/`spoilerbox` below.
+      // Same invisible, non-paragraph-flushing treatment for all five.
+      addToParent(createLeaf('discarded_box_close', source.slice(tokStart, tokEnd)))
+      return
+    }
+
+    // `clean`: the top of the stack IS this exact tag with every one of its
+    // own units still open — this closer satisfies itself in one step, the
+    // same as before div-unit tracking existed for this tag. Byte-identical
+    // to the pre-crossing close: this frame keeps its real `closeWidth`, and
+    // no separate leaf is needed for the closer's own text. Any other shape
+    // (sweeping through something first, a tag mismatch, a partial
+    // body-only close, running out with the need only partly met) means
+    // this closer's bytes crossed into someone else's div(s) — or ran past
+    // the last one; every frame touched then gets `trailingWidth: 0`
+    // (auto-closed) and the closer's own bytes become an explicit
+    // `discarded_tag` leaf instead — invisible with the same per-tag
+    // newline budget as a real close (`HTMLRenderer.discardedTagRule` reads
+    // the tag back out of the leaf's own text), so the rendered HTML is
+    // identical either way; only which node "owns" the bytes differs.
+    const top0 = stack[stack.length - 1]
+    const clean = top0.tag === tag && availableDivUnits(top0) === needed
+
+    let remaining = needed
+    while (remaining > 0 && stack.length > 0) {
+      const top = stack[stack.length - 1]
+      const avail = availableDivUnits(top)
+
+      if (avail === 0) {
+        // Not a div at all — swept away by the cascade exactly like an
+        // enclosing tag already auto-closes anything nested inside it under
+        // the `'quasar'` pairing. Its own later closer (if any) is now
+        // stranded: `autoClosed` turns that into a no-op `discarded_tag`
+        // instead of reaching for some unrelated same-name tag further out.
+        const inner = stack.pop()!
+        currentBucket().push(closeFrame(inner, 0))
+        autoClosed.add(inner.tag)
+        continue
+      }
+
+      const take = Math.min(avail, remaining)
+      remaining -= take
+
+      if (take === avail) {
+        // This frame's own units are fully spent — it closes now, whether
+        // that is its OWN matching closer (`clean`) or a crossing one.
+        stack.pop()
+        currentBucket().push(closeFrame(top, clean && top === top0 ? closeWidth : 0))
+      } else {
+        // Only reachable for `box`/`spoilerbox` (avail 2, take 1): the body
+        // div closes, the wrapper stays open — and stays ON the stack, still
+        // collecting content, just now into `tailChildren` instead of
+        // `children` (see `currentBucket`). `closeFrame` folds it back in as
+        // a trailing `box_tail` child once the wrapper itself finally closes.
+        top.bodyClosed = true
+        top.tailChildren = []
+      }
+    }
+    // `remaining` can still be > 0 here (`box`/`spoilerbox` found only ONE
+    // unit anywhere, not two) — whatever WAS found is already closed above;
+    // the unmet rest of this closer's own need just has nothing left to
+    // close and is dropped, same as any other excess closer.
+
+    if (!clean) {
+      addToParent(createLeaf('discarded_tag', source.slice(tokStart, tokEnd)))
     }
   }
 
@@ -300,6 +521,8 @@ export function parseTokensToGreen(
           const errMsg = `Syntax Error: Expected /${expected}, got /${tok.tag}`
           addToParent(createNode('error', errMsg, [createLeaf('text', text)]))
         }
+      } else if (options.pairing === 'osu' && DIV_UNITS[tok.tag] !== undefined) {
+        closeDivUnits(tok.tag, closeWidth, tok.start, tok.end)
       } else if (autoClosed.has(tok.tag)) {
         // Este cierre llega tarde: su etiqueta ya se cerró sola cuando un
         // cierre anterior pasó por encima de ella. No puede reclamar un
@@ -333,7 +556,7 @@ export function parseTokensToGreen(
           while (stack.length - 1 > found) {
             const inner = stack.pop()!
             autoClosedHere.push(inner.tag)
-            stack[stack.length - 1].children.push(closeFrame(inner, 0))
+            currentBucket().push(closeFrame(inner, 0))
           }
 
           // Close the matched tag itself — this one does own the delimiter.
@@ -388,6 +611,15 @@ export function parseTokensToGreen(
     // `discarded_tag` viaja suelto igual que `empty_line`: es un tramo de
     // fuente que no se ve, y envolverlo en un párrafo dejaba un `<span>` vacío
     // en el render por cada cierre descartado.
+    //
+    // `discarded_box_close` (osu! pairing únicamente, ver la rama de arriba)
+    // NO entra aquí a propósito, a diferencia de `discarded_tag`: a
+    // diferencia de un cierre trasnochado que ya viene pegado a un límite de
+    // bloque real, un `[/box]`/`[/spoilerbox]` huérfano puede caer en medio
+    // de texto corrido (`"hola[/box] mundo"`), y forzar un flush ahí partía
+    // ese texto en dos `paragraph` cuando osu! real lo muestra como una sola
+    // corrida ("hola mundo"). Queda inline — invisible igual, HTMLRenderer
+    // se encarga de comerse los saltos a su alrededor vía `NEWLINE_RULES`.
     if (isBlockKind(child.kind as NodeKind) || child.kind === 'empty_line' || child.kind === 'discarded_tag') {
       flushParagraph()
       normalizedRoot.push(child)
@@ -416,6 +648,6 @@ export function parseTokensToGreen(
  *   const tree = parseBBCode('[b]Hello[/b]')
  */
 export function parseBBCode(source: string, options: ParseOptions = {}): GreenNode {
-  const tokens = scanBBCode(source)
+  const tokens = scanBBCode(source, { pairing: options.pairing })
   return parseTokensToGreen(tokens, source, options)
 }

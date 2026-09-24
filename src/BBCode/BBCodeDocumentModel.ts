@@ -46,6 +46,14 @@ export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
   /** Alias for dialect ('osu' | 'miliastry' | 'lyne') */
   mode?: BBCodeDialect
   /**
+   * Tag-pairing rule. `'quasar'` (default) is today's structural rule.
+   * `'osu'` reproduces osu!'s own lazy/always-seal/count-limited sealing
+   * before the tree is built — see `Osu/osuPairing.ts`. Full-parse only:
+   * incremental reparses always fall back to a full rebuild under `'osu'`
+   * (see `parseToGreen`).
+   */
+  pairing?: 'quasar' | 'osu'
+  /**
    * Deduplicate structurally identical green nodes across the document.
    *
    * Off by default. It is correct now — see the header of `GreenNodePool.ts`
@@ -63,6 +71,7 @@ export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
 export class BBCodeDocumentModel extends DocumentModel {
   private _strictMode: boolean
   private _dialect: BBCodeDialect
+  private _pairing: 'quasar' | 'osu'
   /** Per-document interner, or null when interning is off. */
   private _interner: GreenNodePool | null
   /** Memoized parser `extraTags`, rebuilt only when the registry changes. */
@@ -77,16 +86,25 @@ export class BBCodeDocumentModel extends DocumentModel {
     // Everything else must be forwarded. It previously was not, so `autoAnalyze`
     // and `maxUndo` were silently dropped and semantic analysis could not be
     // turned off at all.
+    const pairing = options.pairing ?? 'quasar'
     super({
       source: '',
       language: options.language ?? 'bbcode',
       maxUndo: options.maxUndo,
       autoAnalyze: options.autoAnalyze,
-      incremental: options.incremental,
+      // `osuPairing` needs the FULL document (count-limited quote/list,
+      // lazy pairing's "is there a closer anywhere later", imagemap
+      // protection) — a windowed incremental reparse only ever sees a
+      // slice of it. Forcing a full rebuild here is what
+      // `ParseOptions.pairing`'s doc promises ("incremental parser does not
+      // pass this through"); it never enables incremental for a caller that
+      // asked for it explicitly with `'quasar'` pairing.
+      incremental: pairing === 'osu' ? false : options.incremental,
       reuseRed: options.reuseRed,
     })
     this._strictMode = options.strictMode ?? false
     this._dialect = options.dialect ?? options.mode ?? 'miliastry'
+    this._pairing = pairing
     // The analyzer is built by `super()`, before this line could have run,
     // so the dialect it suggests unknown-tag replacements from is set here.
     this.semanticAnalyzer.dialect = this._dialect
@@ -98,6 +116,10 @@ export class BBCodeDocumentModel extends DocumentModel {
 
   get dialect(): BBCodeDialect {
     return this._dialect
+  }
+
+  get pairing(): 'quasar' | 'osu' {
+    return this._pairing
   }
 
   get root(): RedNode | null {
@@ -124,8 +146,9 @@ export class BBCodeDocumentModel extends DocumentModel {
     HTMLRenderer.idMode = 'none'
     try {
       const dialect = options.dialect ?? (options.theme === 'lyne' ? 'lyne' : 'miliastry')
+      const effectiveSource = source || ' '
       const doc = new BBCodeDocumentModel({
-        source: source || ' ',
+        source: effectiveSource,
         dialect,
         autoAnalyze: false,
         maxUndo: 0,
@@ -151,7 +174,7 @@ export class BBCodeDocumentModel extends DocumentModel {
   protected parseToGreen(source: string, options?: ReparseParseOptions): GreenNode {
     try {
       // 1. Lex: BBCode text → tokens (with explicit newline tokens)
-      const tokens = scanBBCode(source)
+      const tokens = scanBBCode(source, { pairing: this._pairing })
 
       // Plugin tags reach the parser here. Memoized against the registry's
       // version: with no plugins (the common case) this is one integer
@@ -168,6 +191,7 @@ export class BBCodeDocumentModel extends DocumentModel {
         normalizeParagraphs: options?.normalizeParagraphs ?? true,
         interner: this._interner ?? undefined,
         extraTags: this._extraTags ?? undefined,
+        pairing: this._pairing,
       })
 
       return green

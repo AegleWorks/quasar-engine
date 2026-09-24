@@ -1283,7 +1283,6 @@ class HTMLRenderer extends Visitor<string> {
   render(root: RedNode): string
   
   constructor(options?: {
-    osuBehaviour?: boolean   // Reproducir quirks de osu! (default: true)
     registry?: TagRegistry   // Para tags custom
   })
 }
@@ -1311,13 +1310,123 @@ switch node.kind:
   // ... y más
 ```
 
-### Quirks de osu! (osuBehaviour)
+### Quirks de osu! (`pairing: 'osu'`, no una opción del renderer)
 
-El renderizador tiene compatibilidad con comportamientos específicos de osu!:
+**OFF por defecto** (`previewOsuBehaviour` en `PreviewSettings`). Ya no vive en
+`HTMLRenderer` — el renderer no tiene ninguna noción de "osu!" en absoluto y
+renderiza SIEMPRE de la misma forma, sin importar cómo se emparejaron los
+tags. La diferencia está enteramente ANTES del renderer, en qué ÁRBOL se
+construye: ver `Osu/osuPairing.ts` y `BBCodeDocumentModelOptions.pairing` /
+`ParseOptions.pairing`.
 
-1. **Newlines antes de `[code]`**: Los newlines inmediatamente antes de un code block se ignoran (no producen `<br>`)
-2. **Empty lines antes de `[code]`**: La última empty_line antes de code se convierte en `\n` literal en lugar de `<br>`
-3. **Spacing en block boundaries**: Si un spacing sigue inmediatamente a un block tag (notice, quote, etc.), se renderiza como `\n` en vez de `<br>`
+Su significado: **"emparejar los tags exactamente como osu! lo haría"**. osu!
+no construye un árbol — `BBCodeForDB::generate()` corre ~20 pasadas regex
+sobre el texto crudo, una por tag (o familia de tags: `b`/`i`/`strike`/`s`/
+`u`/`spoiler` son CINCO pasadas independientes, no una compartida), cada una
+sellando lo que puede con un regex perezoso-no-anidante y dejando el resto
+como texto plano. `pairing: 'osu'` reproduce esa decisión — leftmost-opener
+empareja con el `[/tag]` MÁS CERCANO del mismo nombre, un opener anidado del
+mismo nombre queda como texto literal dentro, `box`/`spoilerbox` sellan
+siempre (nunca quedan literales), `quote`/`list` sellan por CONTEO
+(`min(aperturas, cierres)`, los primeros `limit` de cada uno, sin importar
+anidamiento) — como un FILTRO DE TOKENS que corre antes de `parseTokensToGreen`:
+cualquier token `open`/`close` que osu! no sellaría se convierte en un token
+`text` (mismos offsets), y de ahí en adelante el árbol se construye con las
+mismas reglas estructurales de siempre (auto-close, `discarded_tag`, `error`
+en modo estricto, agrupación de párrafos). Full-parse únicamente: el parser
+incremental no soporta este pairing (`BBCodeDocumentModel` cae a
+`incremental: false` en cuanto se pide `pairing: 'osu'`).
+
+El árbol del EDITOR (diagnósticos, parseo incremental, undo/redo) nunca usa
+este pairing — sigue siendo `'quasar'` siempre. Solo la PREVIEW, cuando
+`previewOsuBehaviour` está activo, parsea la misma fuente una SEGUNDA vez con
+`pairing: 'osu'` y renderiza ESE árbol en su lugar; ver
+`packages/features/BBCode/preview/Preview.tsx`.
+
+**No cubierto** (alcance deliberado, ver el doc de módulo de `osuPairing.ts`):
+los valores bare de `email`/`url`/`youtube` no se validan contra el patrón
+exacto de osu! (solo "no vacío, una línea"); un tag que Quasar conoce pero
+osu! no (`font`, `gradient`, `tables`, `align`, `wnotice`, `boxw`, …) sigue
+emparejando con las reglas normales de Quasar, sin tocar.
+
+**Dos brechas ya arregladas** (medidas contra el pipeline real de osu-web:
+BBCodeForDB → BBCodeFromDB → HTMLPurifier). Ninguna vive en `osuPairing.ts`
+mismo — cada una vive donde estaba la divergencia real:
+
+1. **`[code]`/`[c]` sin cerrar ya no se traga el resto del documento.**
+   osu! real deja un `[code]`/`[c]` sin cerrar SIN PROTEGER: una etiqueta
+   escrita después sigue sellando normalmente (medido: `[code]x\n[b]y[/b]` →
+   `[code]x<br /><strong>y</strong>`). El LEXER (`Lexer/BBCodeLexer.ts`,
+   `scanBBCode`) trataba `code`/`c` como bloque crudo INCONDICIONALMENTE —
+   sin cierre, se tragaba el resto del documento entero en un solo token de
+   texto opaco antes de que `applyOsuPairing` o `parseTokensToGreen` lo
+   vieran, bajo CUALQUIER pairing. Ahora `scanBBCode` recibe un `pairing`
+   opcional: bajo `'osu'` sólo aísla el bloque (protegiendo su contenido de
+   la tokenización normal) cuando existe un cierre Y — para `c`, que no es
+   dotall en osu! — llegar a él no cruza un salto de línea; si no, el opener
+   queda como un token `open` normal y el lexer sigue tokenizando
+   normalmente, y `sealRawBlock` lo degrada a texto literal igual que
+   cualquier otra etiqueta de la familia `lazy`. El pairing `'quasar'` por
+   defecto no pasa esta opción: sigue tragándose el resto del documento,
+   exactamente como antes.
+2. **Un `[/box]`/`[/spoilerbox]` huérfano ahora no se ve y se come saltos
+   de línea igual que uno emparejado.** osu! sella TODO `[/box]`/
+   `[/spoilerbox]` — huérfano o no (familia `alwaysSeal`, este módulo nunca
+   los degrada) — y su renderer come los saltos de línea a su alrededor
+   (`\n*[/box]\n?`) antes de que HTMLPurifier tire el `</div>` sin pareja
+   (medido: `"hola\n\n[/box]\n\nmundo"` → `hola<br />mundo`). Esto no se
+   puede expresar como un filtro de tokens — no hay un `open` con el cual
+   emparejarlo. `parseTokensToGreen` (Parser.ts) ahora trata el caso
+   especial `pairing: 'osu'` + cierre huérfano de `box`/`spoilerbox`: en vez
+   de la hoja `text` literal que recibe cualquier otro cierre huérfano, emite
+   una hoja `discarded_box_close` (`Types/core.ts`), invisible en
+   `HTMLRenderer`/`BBCodeExporter` igual que `discarded_tag`, y con el mismo
+   presupuesto de saltos de línea que un cierre `box`/`spoilerbox`
+   EMPAREJADO (`HTMLRenderer.NEWLINE_RULES`).
+
+**Cierre por CONTEO DE DIVS** (`Parser.ts`'s `closeDivUnits`, `pairing: 'osu'`
+únicamente — no vive en `osuPairing.ts`, que solo decide SELLADO de tokens,
+no anidado). osu! no anida por nombre: `box`/`spoilerbox` empujan DOS `<div>`
+anónimos (wrapper, luego body), `notice`/`centre`/`left`/`right` empujan uno,
+y HTMLPurifier cierra cada `</div>` contra el `<div>` abierto más INTERNO por
+POSICIÓN — nunca por qué tag BBCode lo produjo, auto-cerrando de paso
+cualquier cosa que no sea un div (medido: `[centre]x[quote]y[/centre]z
+[/quote]` cierra el `<blockquote>` antes de llegar al div de `centre`; el
+`[/quote]` que sigue ya no encuentra nada abierto). `[centre][box=a]x
+[/centre]y[/box]` — el `</div>` de `[/centre]` cierra solo el div BODY de
+`box` (su primera unidad), dejando el wrapper abierto alrededor de `x` Y de
+`y`: osu! real — `<div box><a/><div body>x</div>y</div>`. Ese contenido
+"cruzado" (body cerrado, wrapper todavía abierto) se guarda como un hijo
+`box_tail` al final de los children del nodo `box`/`spoilerbox`
+(`Types/core.ts`) — nunca cambia la forma de un cierre normal, sin cruce.
+`HTMLRenderer` lo pinta DENTRO del wrapper, después del body (como osu!); en
+`miliastry` (boxes como `<details>`, sin forma de mostrar "dentro del
+wrapper pero fuera del panel colapsable") se pinta DESPUÉS de todo el
+`<details>` — visible aunque el box esté colapsado, la misma propiedad que
+tiene en el HTML real de osu!. Un cierre que no encuentra suficientes divs
+abiertos consume lo que SÍ hay y tira el resto sin efecto (medido en
+`docs/ai/NyuPenyu.from-intent.bbcode`: un `[/box]` extra con solo la unidad
+de `centre` disponible cierra `centre`, no se queda sin hacer nada); si no
+hay NINGÚN div abierto, no toca nada (ni siquiera una etiqueta inline sin
+relación, medido: `[b]bold[/centre]` deja `[b]` intacto). `sealLazy`
+(`Osu/osuPairing.ts`) fuerza ahora a texto literal cualquier cierre de la
+familia `lazy` (`notice`/`centre`/`left`/`right`, y todas las demás:
+`b`/`i`/`u`/`s`/`strike`/`spoiler`/`color`/`size`/`heading`/`audio`/
+`profile`/`email`/`url`/`youtube`/`imagemap`) que nunca fue consumido como
+la pareja de un opener — antes solo forzaba los de case incorrecto, y un
+cierre sobrante (sin opener) le llegaba a `parseTokensToGreen` como un token
+`close` real, algo que el modelo de conteo de divs interpretaba mal (medido
+en el mismo archivo: un `[/notice]` extra terminaba cerrando `centre`,
+que osu! real deja abierto — el cierre nunca estuvo sellado). **No cubierto**
+(divergencia medida y documentada, no un conteo de divs): HTMLPurifier
+TAMBIÉN auto-cierra una etiqueta INLINE (`<strong>`, `<span>` de
+`color`/`size`, …) en cuanto un div intenta abrir DENTRO de ella, y puede
+llegar a partir una sola etiqueta inline en varios elementos separados
+alrededor de contenido de bloque interpuesto — un mecanismo distinto
+(reglas de modelo de contenido de HTMLPurifier), fuera del alcance de este
+cambio. Ver el doc de módulo de `Osu/osuPairing.ts` y de `closeDivUnits`
+(`Parser.ts`) para el detalle completo, incluidas las tablas de unidades y
+los casos medidos contra osu-web. Test: `Tests/OsuDivClosing.test.ts`.
 
 ### Atributos data-node-id
 

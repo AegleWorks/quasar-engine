@@ -142,3 +142,22 @@ describe('Box title line breaks', () => {
     expect(findKind(htmlStringToGreenTree(html), 'box')?.text).toBe('=Line one\nLine two')
   })
 })
+
+describe('Box title whitespace', () => {
+  // Expected values measured against osu-web's real pipeline
+  // (BBCodeForDB → BBCodeFromDB → HTMLPurifier): osu! never trims a title.
+  const summaryText = (source: string) => {
+    const html = new HTMLRenderer().render(new BBCodeDocumentModel({ source }).redRoot!)
+    const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/.exec(html)?.[1] ?? ''
+    return summary.replace(/<[^>]+>/g, '')
+  }
+
+  it.each([
+    ['[box= medal][notice]a[/notice][/box]', ' medal'],
+    ['[box=title ]x[/box]', 'title '],
+    ['[box= ]x[/box]', ' '],
+    ['[box= [b]t[/b] ]x[/box]', ' t '],
+  ])('keeps the spaces of %j', (source, expected) => {
+    expect(summaryText(source)).toBe(expected)
+  })
+})
