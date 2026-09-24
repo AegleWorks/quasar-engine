@@ -10,3 +10,4 @@
 - [7. Extensibility](./07-Extensibility.md)
 - [8. Utilities](./08-Utilities.md)
 - [9. Guarantees](./09-Guarantees.md)
+- [10. Plan: Semantic Model](./10-Semantic-Model-Plan.md)
