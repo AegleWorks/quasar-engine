@@ -229,6 +229,8 @@ export {
   type BBCodeDialect,
 } from './BBCode/BBCodeToGreenNode'
 export type { BBBlock } from './BBCode/BBCodeToGreenNode'
+export { OsuPreviewTree } from './Osu/OsuPreviewTree'
+export type { OsuPreviewTreeOptions, OsuPreviewUpdateStats } from './Osu/OsuPreviewTree'
 
 // ── Events ──
 export { DocumentEventBus, type DocumentEvent, type DocumentEventHandler } from './Events/EventBus'

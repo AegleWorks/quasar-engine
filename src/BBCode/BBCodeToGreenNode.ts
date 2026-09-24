@@ -666,12 +666,23 @@ export function greenToRedNode(
  * rest fresh. Positional lockstep also makes double-adoption impossible: each
  * old red child is adopted at most once, even when interning makes distinct
  * positions share one green object.
+ *
+ * `structural` widens "unchanged" from the same green object to an EQUAL green
+ * subtree (`greenSubtreeEquals`). That is for two independent full parses of
+ * nearly the same text — the osu! preview tree (`Osu/OsuPreviewTree.ts`), which
+ * cannot parse incrementally, so no green is ever shared by reference. Green
+ * equality is still proof: a red node is a function of its green (kind,
+ * metadata and title nodes are all derived from it) plus its offset, which the
+ * adoption sets. An adopted subtree keeps its OLD green object, which is equal
+ * to the new one by construction. Off by default, so the incremental path
+ * keeps its pure reference compare.
  */
 export function greenToRedNodeReusing(
   green: GreenNode,
   oldRed: RedNode,
   start: number = 0,
   stats?: { adopted: number },
+  structural: boolean = false,
 ): RedNode {
   if (green === oldRed.green) {
     // `setStart` records the shift lazily (no subtree walk) and no-ops when the
@@ -718,9 +729,9 @@ export function greenToRedNodeReusing(
   const kids: RedNode[] = new Array(greenKids.length)
   const limit = Math.min(greenKids.length, oldKids.length)
 
-  // Common prefix: same green object, adopt.
+  // Common prefix: same green object (or an equal one, `structural`), adopt.
   let lo = 0
-  while (lo < limit && greenKids[lo] === oldKids[lo].green) {
+  while (lo < limit && sameGreen(greenKids[lo], oldKids[lo].green, structural)) {
     kids[lo] = adoptShifted(oldKids[lo], offsets[lo], stats)
     lo++
   }
@@ -728,7 +739,7 @@ export function greenToRedNodeReusing(
   // Common suffix, stopping before the prefix already consumed.
   let gHi = greenKids.length - 1
   let oHi = oldKids.length - 1
-  while (gHi >= lo && oHi >= lo && greenKids[gHi] === oldKids[oHi].green) {
+  while (gHi >= lo && oHi >= lo && sameGreen(greenKids[gHi], oldKids[oHi].green, structural)) {
     kids[gHi] = adoptShifted(oldKids[oHi], offsets[gHi], stats)
     gHi--
     oHi--
@@ -737,7 +748,7 @@ export function greenToRedNodeReusing(
   if (gHi === lo && oHi === lo) {
     // The single changed child both sides — the keystroke shape. Descend so
     // its own untouched children are still adopted.
-    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], offsets[lo], stats)
+    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], offsets[lo], stats, structural)
   } else {
     // A wider window (multi-node paste, fallback rebuild): build it fresh.
     for (let i = lo; i <= gHi; i++) {
@@ -748,6 +759,39 @@ export function greenToRedNodeReusing(
   // Sets parent and index cache on every child, adopted or fresh.
   red.initChildren(kids)
   return red
+}
+
+/** Reference equality, or subtree equality when `structural`. */
+function sameGreen(a: GreenNode, b: GreenNode, structural: boolean): boolean {
+  return a === b || (structural && greenSubtreeEquals(a, b))
+}
+
+/**
+ * Whether two green subtrees are the same tree: same kind, text and widths at
+ * every node, children in the same order. Everything a green node holds, so
+ * two equal subtrees are interchangeable — the pool (`GreenNodePool`) would
+ * have made them one object. Short-circuits on a shared object and on the
+ * first difference; the width check up front rejects almost every changed
+ * block without descending.
+ */
+export function greenSubtreeEquals(a: GreenNode, b: GreenNode): boolean {
+  if (a === b) return true
+  if (
+    a.width !== b.width ||
+    a.kind !== b.kind ||
+    a.children.length !== b.children.length ||
+    a.leadingWidth !== b.leadingWidth ||
+    a.trailingWidth !== b.trailingWidth ||
+    a.text !== b.text
+  ) {
+    return false
+  }
+  const ak = a.children
+  const bk = b.children
+  for (let i = 0; i < ak.length; i++) {
+    if (!greenSubtreeEquals(ak[i], bk[i])) return false
+  }
+  return true
 }
 
 /** Adopt an old red subtree at (possibly) a new absolute offset. */
