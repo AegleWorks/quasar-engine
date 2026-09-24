@@ -2,6 +2,7 @@ import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode';
 import { RedNode } from '../Syntax/RedNode';
 import type { NodeKind } from '../Types/core';
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode';
+import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers';
 
 /**
  * The colour exactly as the author wrote it in the `style` attribute.
@@ -45,6 +46,7 @@ function textWithLineBreaks(el: Element): string {
   for (const child of Array.from(el.childNodes)) {
     if (child.nodeType === 3) text += child.nodeValue ?? '';
     else if (child.nodeName.toLowerCase() === 'br') text += '\n';
+    else if (child.nodeType === 1 && (child as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)) text += '\n';
     else if (child.nodeType === 1) text += textWithLineBreaks(child as Element);
   }
   return text;
@@ -105,7 +107,15 @@ function domToGreenTree(root: HTMLElement): GreenNode {
       }
     } else if (node.nodeType === 1) { // Element Node
       const el = node as HTMLElement;
-      const tag = el.tagName.toLowerCase();
+      // A newline osu! swallowed: no layout in the preview, but the source
+      // still has it, so it reads back exactly like the `<br>` of a kept one —
+      // except where the bare `\n` it replaces was structural whitespace
+      // (see the text branch above), which reads back as nothing.
+      if (el.hasAttribute(SWALLOWED_NEWLINE_ATTR)) {
+        const parentTag = el.parentNode ? el.parentNode.nodeName.toLowerCase() : '';
+        if (['ul', 'ol', 'table', 'tbody', 'tr'].includes(parentTag)) return [] as any;
+      }
+      const tag = el.hasAttribute(SWALLOWED_NEWLINE_ATTR) ? 'br' : el.tagName.toLowerCase();
       
       switch (tag) {
         case 'b':

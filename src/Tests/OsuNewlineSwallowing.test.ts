@@ -305,16 +305,17 @@ describe('osu newline swallowing', () => {
     })
 
     it('el salto superviviente es UN nodo, no un <br> más una línea vacía', () => {
-      // El `\n` suelto del HTML es el `spacing` que se comió el `[/notice]`:
-      // no se renderiza. Detrás va un único nodo de salto.
+      // El marcador vacío es el `spacing` que se comió el `[/notice]`: no
+      // ocupa nada (osu! lo borra) y solo lo lleva para que el camino
+      // WYSIWYG → BBCode lo recupere. Detrás va un único nodo de salto.
       expect(shape('[notice]x[/notice]\n\nDESPUES')).toBe(
-        '<div class="well">x</div>\n'
+        '<div class="well">x</div><span data-bb-nl hidden></span>'
         + '<div class="bb-empty-line"><br></div>'
         + '<span class="bb-paragraph">DESPUES</span>',
       )
-      // Con un solo salto no queda nada en absoluto.
+      // Con un solo salto no queda nada visible: solo su marcador.
       expect(shape('[notice]x[/notice]\nDESPUES')).toBe(
-        '<div class="well">x</div>\n'
+        '<div class="well">x</div><span data-bb-nl hidden></span>'
         + '<span class="bb-paragraph">DESPUES</span>',
       )
     })

@@ -134,6 +134,15 @@ render, export, forum render and effect byte-for-byte equal to before.
   - Kit, neutral CSS and `<br>`: no regression.
   - `BlockPatcher` equivalence tests are green (the marker has no id, like the
     `'\n'` it replaces).
+- ✅ **Done** — `<span data-bb-nl hidden></span>` (`Visitors/domMarkers.ts`).
+  The importer reads it as the source `\n` (as nothing inside a list or a
+  table, like the whitespace it replaces), the reconciler skips it where it
+  skipped the blank text node, a title turns it back into its line break,
+  and `trimOsuEdges` trims it like the `\n` it was. Kit: real CSS
+  **130/130** (124 strictly, 6 by the accepted empty-media warning), neutral
+  128/130, `<br>` 117/130, all unchanged except real CSS. Differential:
+  every export, effect and HTML import byte-identical; only renders change.
+  Two tests pinned the old shape (a bare `\n` in the DOM) and were updated.
 
 ### Phase 5 — the guarantee
 - Property test: after random incremental edits, the model built on the

@@ -22,6 +22,7 @@ import { RenderTree } from '../RenderPipeline/RenderTree'
 
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
+import { SWALLOWED_NEWLINE_ATTR } from './domMarkers'
 import { clampFontSizeValue, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
@@ -80,6 +81,26 @@ const NEWLINE_RE = /\n/g
 
 /** Saltos de línea de un título de box (ver `boxTitleLineBreaks`). */
 const TITLE_NEWLINE_RE = /\r?\n/g
+
+/**
+ * A newline osu! swallows. osu! DELETES it; the preview still has to carry it,
+ * because the WYSIWYG → BBCode path (`HTMLToGreenNode`, `SurgicalReconciler`)
+ * reads it back as the source newline. It used to be a bare `'\n'`: harmless
+ * after a block, but a real space after an inline-block (`.imagemap`, a
+ * YouTube embed), which moved a word to the next line (measured with osu!'s
+ * own app.css on `originals/tesla.bbcode`). An empty hidden element carries
+ * the newline with no layout at all. See docs/10-Semantic-Model-Plan.md.
+ */
+const SWALLOWED_NEWLINE = `<span ${SWALLOWED_NEWLINE_ATTR} hidden></span>`
+const SWALLOWED_NEWLINE_RE = new RegExp(SWALLOWED_NEWLINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+
+/**
+ * The edge newline `trimOsuEdges` removes. It is a swallowed one, so it
+ * arrives as the marker; a bare `\n` is still trimmed for any other source.
+ */
+const OSU_EDGE = `(?:\\r?\\n|${SWALLOWED_NEWLINE_RE.source})`
+const OSU_LEADING_EDGE_RE = new RegExp(`^[\\t ]*${OSU_EDGE}`)
+const OSU_TRAILING_EDGE_RE = new RegExp(`${OSU_EDGE}[\\t ]*$`)
 
 /** Referencia a un token de diseño dentro de un texto: `$nombre`. */
 const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
@@ -255,7 +276,7 @@ export class HTMLRenderer extends Visitor<string> {
 
   /** osu recorta los saltos pegados a la apertura y al cierre de box/notice. */
   private static trimOsuEdges(html: string): string {
-    return html.replace(/^[\t ]*\r?\n/, '').replace(/\r?\n[\t ]*$/, '')
+    return html.replace(OSU_LEADING_EDGE_RE, '').replace(OSU_TRAILING_EDGE_RE, '')
   }
 
   private idAttr(node: RedNode): string {
@@ -490,10 +511,10 @@ export class HTMLRenderer extends Visitor<string> {
       case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
       case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
-        if (this.semantic.isNewlineSwallowed(node)) return '\n'
+        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
         return `<br${this.idAttr(node)}>`
       case 'empty_line':
-        if (this.semantic.isNewlineSwallowed(node)) return '\n'
+        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
         return `<div class="bb-empty-line"${this.idAttr(node)}><br></div>`
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un
@@ -1302,6 +1323,9 @@ export class HTMLRenderer extends Visitor<string> {
 
   /** See {@link HTMLRendererOptions.boxTitleLineBreaks}. */
   private breakTitleLines(html: string): string {
+    // A title is text, not a flow: a swallowed newline in it is still the
+    // author's line break (or the literal newline without the option).
+    html = html.replace(SWALLOWED_NEWLINE_RE, '\n')
     return this.options.boxTitleLineBreaks ? html.replace(TITLE_NEWLINE_RE, '<br />') : html
   }
 

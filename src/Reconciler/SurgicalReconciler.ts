@@ -1,5 +1,6 @@
 import { RedNode } from '../Syntax/RedNode'
 import { HTMLDocumentModel } from '../HTML/HTMLDocumentModel'
+import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 
@@ -435,7 +436,9 @@ export function reconcileVisualDOMToBBCode(
       const el = node as HTMLElement
       const tag = el.tagName.toLowerCase()
 
-      if (tag === 'br') {
+      // A swallowed newline's marker stands where a blank `\n` text node used
+      // to, which this loop always skipped; the source keeps the newline.
+      if (tag === 'br' || el.hasAttribute(SWALLOWED_NEWLINE_ATTR)) {
         continue
       }
 
