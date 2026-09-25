@@ -20,6 +20,10 @@ the selection is put back on the same text.
 | `toggleInlineFormat(root, source, sel, 'bold' \| 'italic' \| 'underline' \| 'strikethrough')` | inserts `[b]`…`[/b]` per run; off strips the enclosing tag and wraps back what stays formatted, in the author's spelling (`[B]`) |
 | `applyColor(root, source, sel, hex)` | recolors a `[color]` whose content is exactly the selection, touching only its value; otherwise wraps it |
 
+| `insertLineBreak(root, source, sel)` (Enter) | `\n`; in a list item `\n[*]`, or out of the list on an empty last item; a heading closes and reopens (in the author's spelling); at a block's swallowed edge `\n\n` |
+| `joinBackward` / `joinForward` (Backspace / Delete) | removes the line's `\n`, or `\n[*]` between items; never a box's own edge newline (a no-op edit) |
+| `deleteSelection(root, source, sel)` | deletes the range but keeps every tag it cuts through: no orphan `[/b]` |
+
 A selection is cut into **runs**: inline content under one parent, broken at
 line breaks and at blocks. A tag opened in a run closes in the same run, so
 the result is always well nested. A caret *inside* a word applies to the word.
@@ -40,6 +44,36 @@ took (`ReconcileResult.route`):
 Anything that can be a command should be one: inference is where style gets
 lost.
 
+Backspace and Delete in the middle of a word are left to the browser. The
+component decides this cheaply on the DOM (`deletesWithinText`), so those
+keystrokes never pay for a repaint. Indentation before the caret at a line's
+start counts as the line's start, because those spaces collapse on the canvas.
+
+## Inside boxes
+
+A box renders its content inside markup of its own: a heading, and a body
+`<div>`. The reconciler now finds that **content host** (`contentHost`: where
+the children's render appears verbatim) and pairs the children there. It trusts
+the host only if everything outside it is exactly as rendered, so an edit to
+the heading still goes to the coarser paths. The `open` attribute a click gives
+a `<details>` is view state, not an edit, and the comparison ignores it. The
+component also keeps open boxes open across repaints
+(`repaintKeepingOpenBoxes`).
+
+## Lines with no layout
+
+Some newlines render as nothing visible:
+
+- the last lines of a box, which osu! swallows;
+- the end of the document, where a final `<br>` makes no line.
+
+The marker a swallowed newline leaves (`<span data-bb-nl hidden>`) carries its
+node's id, like every other break. After Enter there, `revealLine` turns the
+marker into an empty line with the same id and `data-bb-at` (which side of the
+break typing goes on). After a final `<br>`, it opens a line with
+`data-bb-after`. The reconciler inserts whatever is typed at exactly that
+offset. A line left empty is no edit.
+
 ## Positions
 
 `sourceOffsetOfDomPoint` and `domPointOfSourceOffset` require the canvas to be
@@ -54,10 +88,16 @@ quote's author line, osu!'s literal `[color="…"]`.
 
 ## Measured: the gesture bench
 
-`scripts/wysiwyg-gestures/run.mjs` (Miliastry) plays 33 gestures in real
-Chromium per dialect. It reports each gesture's route, whether the BBCode shows
-what the canvas shows, and whether distant author style survived byte for
-byte. The toolbar helpers are extracted from the component on every run.
+`scripts/wysiwyg-gestures/run.mjs` (Miliastry) plays 43 gestures in real
+Chromium per dialect, with boxes opened as a user opens them. It reports:
+
+- each gesture's route;
+- whether the BBCode shows what the canvas shows;
+- whether distant author style survived byte for byte;
+- for "gesture + type" rows, whether the typed text landed where the caret
+  was.
+
+The component's helpers are extracted from it on every run.
 
 | Original 30 gestures | miliastry: phase 0 → **phase 1** | osu!: phase 0 → **phase 1** |
 |---|---|---|
@@ -68,6 +108,15 @@ byte. The toolbar helpers are extracted from the component on every run.
 | text lost | 0 → 0 | 0 → 0 |
 | distant style lost | 1 → 1 (select all) | 10 → **8** |
 
+Phase 2 (Enter / Backspace / Delete, and editing inside boxes), on all 43
+gestures in both dialects:
+
+- **3 `full`**, all phase 3: pasting a block, inserting a box, select-all and
+  type.
+- **0 text lost** and **0 carets misplaced**.
+- The only remaining `element` rows are typing in a quote or a list, and inline
+  paste. None of them loses style.
+
 Phase 0 was measurement. It found two bugs, both fixed:
 
 - Enter mid-paragraph dropped the text after the caret.
@@ -76,9 +125,8 @@ Phase 0 was measurement. It found two bugs, both fixed:
 
 ## Next
 
-- **Enter / Backspace across structure** (`SplitMerge`). Enter in a box, notice
-  or list duplicates ids and goes `full`; joining paragraphs goes `element`.
 - **Paste and insert block** as a parsed `TextChange` at the caret's source
   offset. Today these are `full` / `unpaired-top-level`.
-- **osu! box edges.** Typing in an osu! box still goes `element` and loses the
-  box's own newlines.
+- **Quote and list item content.** Typing there goes `element`: the author
+  line of a quote and the `<li>` pairing still need a content host of their
+  own.

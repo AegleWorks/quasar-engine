@@ -14,6 +14,8 @@ const E = Q as any
 const strip = (h: string) => h
   .replace(/ data-node-id="[^"]*"/g, '')
   .replace(/(data-node-id(?:=|%3D|%253D)(?:&quot;|&amp;quot;|%22|%2522))n\d+/g, '$1n')
+  // A swallowed newline's marker carries its node's id, escaped inside effects too.
+  .replace(/(data-bb-nl(?: |%20|%2520)hidden)(?: |%20|%2520)data-node-id(?:=|%3D|%253D)(?:&quot;|&amp;quot;|%22|%2522)n(?:&quot;|&amp;quot;|%22|%2522)/g, '$1')
 const DIALECTS = ['osu', 'miliastry', 'lyne'] as const
 const EFFECTS = [
   { kind: 'gradient', colors: ['#ff0000', '#0000ff'] },

@@ -30,6 +30,7 @@ import type { RedNode } from '../Syntax/RedNode'
 import type { NodeKind } from '../Types/core'
 import type { TextChange } from '../Incremental/ChangeTracker'
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode'
+import { transformRange } from '../Collab/positions'
 
 export type ToggleFormat = 'bold' | 'italic' | 'underline' | 'strikethrough'
 
@@ -43,7 +44,7 @@ export interface FormatEdit {
   changes: TextChange[]
   /** Where the formatted text ended up, in the coordinates of the edited source. */
   selection: SourceSelection
-  action: 'wrap' | 'unwrap' | 'recolor'
+  action: 'wrap' | 'unwrap' | 'recolor' | 'break' | 'join' | 'delete'
 }
 
 const OPEN: Record<ToggleFormat, string> = { bold: '[b]', italic: '[i]', underline: '[u]', strikethrough: '[s]' }
@@ -174,24 +175,6 @@ function normalise(changes: TextChange[]): TextChange[] {
   return out
 }
 
-/**
- * Where offset `p` of the source lands once `changes` are applied. An offset
- * on the edge of a change goes `after` the inserted text or `before` it.
- */
-export function mapThroughChanges(p: number, changes: readonly TextChange[], bias: 'before' | 'after'): number {
-  let delta = 0
-  for (const c of changes) {
-    if (c.end < p || (c.end === p && c.start < p && bias === 'after')) {
-      delta += c.text.length - (c.end - c.start)
-      continue
-    }
-    if (c.start > p) break
-    // `p` touches or sits inside this change.
-    return c.start + delta + (bias === 'after' ? c.text.length : 0)
-  }
-  return p + delta
-}
-
 /** Removes the tags of `node`, keeping its content. */
 function strip(node: RedNode, out: TextChange[]): void {
   out.push({ start: node.range.start, end: node.innerStart, text: '' })
@@ -209,10 +192,16 @@ function wrapRuns(scope: RedNode, start: number, end: number, open: string, clos
   }
 }
 
+/**
+ * Where the formatted text lands. The changes are simultaneous (all in the
+ * original coordinates); taken last to first they are a valid SEQUENCE, which
+ * is what `transformRange` maps through — its start sticks right and its end
+ * left, so the tags inserted at the edges stay outside the selection.
+ */
 function selectionOf(requested: SourceSelection, runs: Run[], changes: TextChange[]): SourceSelection {
-  const s = runs.length ? runs[0].start : requested.start
-  const e = runs.length ? runs[runs.length - 1].end : requested.end
-  return { start: mapThroughChanges(s, changes, 'after'), end: mapThroughChanges(e, changes, 'before') }
+  const start = runs.length ? runs[0].start : requested.start
+  const end = runs.length ? runs[runs.length - 1].end : requested.end
+  return transformRange({ start, end }, [...changes].reverse())
 }
 
 /**

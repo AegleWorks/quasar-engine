@@ -103,9 +103,13 @@ const TITLE_NEWLINE_RE = /\r?\n/g
  * YouTube embed), which moved a word to the next line (measured with osu!'s
  * own app.css on `originals/tesla.bbcode`). An empty hidden element carries
  * the newline with no layout at all. See docs/10-Semantic-Model-Plan.md.
+ *
+ * `<span data-bb-nl hidden>` carries its node's id like every other break
+ * (`<br>`, an empty line): the WYSIWYG canvas puts the caret on a line that
+ * has no layout yet — Enter at the end of a box — by finding that line's
+ * node, which it can only do by id. So the pattern allows one.
  */
-const SWALLOWED_NEWLINE = `<span ${SWALLOWED_NEWLINE_ATTR} hidden></span>`
-const SWALLOWED_NEWLINE_RE = new RegExp(SWALLOWED_NEWLINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+const SWALLOWED_NEWLINE_RE = new RegExp(`<span ${SWALLOWED_NEWLINE_ATTR} hidden(?: data-node-id="[^"]*")?></span>`, 'g')
 
 /**
  * The edge newline `trimOsuEdges` removes. It is a swallowed one, so it
@@ -294,6 +298,11 @@ export class HTMLRenderer extends Visitor<string> {
   /** osu recorta los saltos pegados a la apertura y al cierre de box/notice. */
   private static trimOsuEdges(html: string): string {
     return html.replace(OSU_LEADING_EDGE_RE, '').replace(OSU_TRAILING_EDGE_RE, '')
+  }
+
+  /** A swallowed newline's marker, with its node's id (see `SWALLOWED_NEWLINE_RE`). */
+  private swallowedNewline(node: RedNode): string {
+    return `<span ${SWALLOWED_NEWLINE_ATTR} hidden${this.idAttr(node)}></span>`
   }
 
   private idAttr(node: RedNode): string {
@@ -566,10 +575,10 @@ export class HTMLRenderer extends Visitor<string> {
       case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
       case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
-        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
+        if (this.semantic.isNewlineSwallowed(node)) return this.swallowedNewline(node)
         return `<br${this.idAttr(node)}>`
       case 'empty_line':
-        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
+        if (this.semantic.isNewlineSwallowed(node)) return this.swallowedNewline(node)
         return `<div class="bb-empty-line"${this.idAttr(node)}><br></div>`
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un
