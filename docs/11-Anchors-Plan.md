@@ -125,6 +125,12 @@ show 0 differences.
 - Property test: anchor every box, apply random edits outside their opening
   tags through the incremental parser, and check that each anchor resolves to
   the box a fresh parse has at the corresponding range.
+- ✅ **Done** — `src/Anchors/bind.ts` (binary search per level, O(depth · log
+  width)), `Tests/AnchorsBind.test.ts`. 200 random edits outside the openers,
+  each with its undo: every anchor resolves in the patched default tree and
+  in the patched osu! tree exactly as in fresh parses of both. 46 edits took
+  the incremental path (nested boxes limit isolation; the test asserts more
+  than 30). A mutant binary search fails all three binding tests.
 
 ### A3 — selectors (layer 3)
 - `toSelector` and `fromSelector`.

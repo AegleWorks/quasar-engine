@@ -422,3 +422,4 @@ export {
   AnchorSet, mapOffset, mapAnchor, diffText,
   type Anchor, type AddAnchorOptions, type Stickiness, type TextEdit,
 } from './Anchors/AnchorSet'
+export { anchorForNode, resolveNode, openerRange } from './Anchors/bind'
