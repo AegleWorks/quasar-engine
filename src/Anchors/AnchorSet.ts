@@ -8,6 +8,8 @@
  * ProseMirror's `Mapping`. See docs/11-Anchors-Plan.md.
  */
 
+import { commonPrefixSuffix } from '../Utils/textDiff'
+
 /** One edit: `text` replaces the OLD text's `[start, end)`. */
 export interface TextEdit {
   readonly start: number
@@ -72,15 +74,10 @@ export function mapOffset(offset: number, edit: TextEdit, assoc: -1 | 1): number
  */
 export function diffText(before: string, after: string): TextEdit | null {
   if (before === after) return null
-  const shared = Math.min(before.length, after.length)
-  let start = 0
-  while (start < shared && before.charCodeAt(start) === after.charCodeAt(start)) start++
-  let oldEnd = before.length
-  let newEnd = after.length
-  while (oldEnd > start && newEnd > start && before.charCodeAt(oldEnd - 1) === after.charCodeAt(newEnd - 1)) {
-    oldEnd--
-    newEnd--
-  }
+  const scan = commonPrefixSuffix(before, after)
+  let start = scan.prefix
+  let oldEnd = scan.suffixStartA
+  let newEnd = scan.suffixStartB
   if (newEnd === start) {
     // Pure deletion of before[start, oldEnd).
     while (start > 0 && before.charCodeAt(start - 1) === before.charCodeAt(oldEnd - 1)) { start--; oldEnd-- }

@@ -156,8 +156,14 @@ describe('IncrementalParser', () => {
     for (const [name, source, edited] of cases) {
       it(name, () => {
         const model = expectMatchesRebuild(source, [edited])
-        expect(model.lastReparsePath).toBe('full_rebuild')
-        expect(model.lastReparseFallbackReason).not.toBeNull()
+        // The narrow window is declined. The candidate ladder may then find a
+        // wider one that stands on its own — here, the whole outer container,
+        // delimiters included — or rebuild; never splice the narrow one.
+        if (model.lastReparsePath === 'incremental') {
+          expect(model.lastReparseWindow).toEqual({ start: 0, end: edited.length })
+        } else {
+          expect(model.lastReparseFallbackReason).not.toBeNull()
+        }
       })
     }
 
@@ -198,9 +204,15 @@ describe('IncrementalParser', () => {
       const filler = 'relleno de relleno\n\n'
       const base = filler + '[notice]a[b]b[/notice]c\n\n' + filler + '[/b]\n\n' + filler
       const at = base.indexOf('b[/notice]') + 1
-      const model = expectMatchesRebuild(base, [base.slice(0, at) + '[/b]' + base.slice(at)])
-      expect(model.lastReparsePath).toBe('full_rebuild')
-      expect(model.lastReparseFallbackReason).toBe('pending-auto-close')
+      const edited = base.slice(0, at) + '[/b]' + base.slice(at)
+      const model = expectMatchesRebuild(base, [edited])
+      // The narrow window is still turned down (it would adopt the stale
+      // tag); the candidate ladder then widens it until the `[/b]` outside is
+      // INSIDE the re-parsed region, instead of rebuilding the document.
+      expect(model.lastReparsePath).toBe('incremental')
+      const strayAt = edited.lastIndexOf('[/b]')
+      expect(model.lastReparseWindow!.start).toBeLessThanOrEqual(strayAt)
+      expect(model.lastReparseWindow!.end).toBeGreaterThan(strayAt)
     })
 
     it('an untouched crossing in the window is not a reason to rebuild', () => {
@@ -289,6 +301,42 @@ describe('IncrementalParser', () => {
         expect(parser.lastBoundaryScan).toBeLessThanOrEqual(8192)
       }
       expect(model.redRoot!.range.end).toBe(src.length)
+    })
+  })
+
+  describe('the window ladder and its guards (found by the differential fuzz, minimised)', () => {
+    it('typing in a list item splices: an item left open is closed by the next [*]', () => {
+      const items = Array.from({ length: 40 }, (_, i) => `[*]elemento ${i} con algo de texto`).join('\n')
+      const base = `[list]\n${items}\n[/list]\n`
+      const at = base.indexOf('elemento 20') + 'elemento'.length
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + 'X' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('incremental')
+      // Only the items around the caret went back through the parser.
+      expect(model.lastReparseWindow!.end - model.lastReparseWindow!.start).toBeLessThan(200)
+    })
+
+    it('a space typed inside a closing tag splices: its bare `[` is decided by a `]` in the window', () => {
+      const para = Array.from({ length: 30 }, (_, i) => `[color=#FF94C4]${i}[/color]`).join('')
+      const base = `${para}\n\n${para}\n`
+      const at = base.indexOf('[/color]', 200) + '[/col'.length
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + ' ' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('incremental')
+    })
+
+    it('a name pending since exactly the window start is pending there (covers is end-inclusive)', () => {
+      // `[/color]` auto-closes `[size=]`, and the `[/size]` right after it
+      // retires that name at the very offset it became pending. A window
+      // starting there used to see an empty span and keep the `[/size]` as
+      // visible text; the full parse discards it.
+      const base = '[box][color=][size=][/color][/size][s'
+      expectMatchesRebuild(base, [base.slice(0, 35) + '[/code]' + base.slice(37)])
+    })
+
+    it('a root paragraph is never split across a window edge', () => {
+      // `[/notice]` typed so that a notice's tail becomes loose text right
+      // before a paragraph outside a climbed window: the full parse merges them.
+      const base = ' March[/url]\n[/box][/notice]\n[box][box=][/box][notice][box][/box][/box][/notice]/'
+      expectMatchesRebuild(base, [base.slice(0, 54) + '[/notice]' + base.slice(54)])
     })
   })
 })

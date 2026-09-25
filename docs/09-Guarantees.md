@@ -37,7 +37,7 @@ skipped), but every other invariant holds for them too.
 
 | Guarantee | Enforced by |
 |---|---|
-| An incremental reparse yields the tree a full parse of the same text would (ids aside). | Property tests (`RedReuse`, `Chars500kEdits`, `Fuzzer`). |
+| An incremental reparse yields the tree a full parse of the same text would (ids aside) — whichever rung of the window ladder it settled on. | Property tests (`RedReuse`, `Chars500kEdits`, `Fuzzer`, `IncrementalDifferential`: every node's kind, range and text, after every fuzzed edit, both dialects). |
 | …and it satisfies every red-tree invariant above. | `RedTreeInvariants.test.ts` (random edits); `QUASAR_VALIDATE_TREES=1` over any suite. |
 | The osu! preview tree (`OsuPreviewTree`) equals a fresh full osu! parse after every edit, with unchanged blocks as the same objects. | `OsuPreviewTree.test.ts` (random edits, both dialects, invariants checked). |
 | The patched preview DOM equals a full render of the same tree (ids aside), including when the HTML parser reshapes malformed markup. | `OsuPreviewTree.test.ts`, `BlockPatcherReshape.test.ts`, `BlockPatcherAdoption.test.ts`. |

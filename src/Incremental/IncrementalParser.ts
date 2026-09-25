@@ -107,6 +107,13 @@ export interface ReparseResult {
   path: 'incremental' | 'full_rebuild'
   /** When `full_rebuild`, why the incremental path was declined. */
   reason?: FallbackReason
+  /** For `region-not-isolated`, which check it was — for tuning, not semantics. */
+  isolation?: IsolationFailure
+  /**
+   * How many narrower windows were turned down before this result (see the
+   * candidate ladder in `reparse`). For tuning, not semantics.
+   */
+  escalations?: number
   /**
    * The span of `newSource` that went through the parser, in NEW coordinates,
    * or `null` after a full rebuild (where the answer is "all of it").
@@ -148,6 +155,16 @@ export type FallbackReason =
   | 'document-too-small'
   /** The tree's ranges disagree with the source it is supposed to describe. */
   | 'stale-ranges'
+
+/** Which of `regionIsSelfContained`'s checks turned a window down. */
+export type IsolationFailure =
+  | 'bare-bracket'
+  | 'closes-ancestor'
+  | 'closes-pending'
+  | 'open-raw-block'
+  | 'open-before-siblings'
+  | 'open-steals-ancestor-close'
+  | 'paragraph-seam'
 
 /**
  * Kinds the descent refuses to enter, so they can only ever be re-parsed whole.
@@ -195,6 +212,12 @@ const MAX_REGION_FRACTION = 0.7
  * in that gap.
  */
 const MIN_SOURCE_LENGTH = 2500
+
+/** See the ladder's budget in `reparse`. */
+const LADDER_BUDGET_FLOOR = 16384
+
+const LIST_ITEM_ONLY: ReadonlySet<string> = new Set(['list_item'])
+const NOTHING: ReadonlySet<string> = new Set()
 
 /** An orphaned closing tag, as the parser preserves it: a `text` leaf of `[/tag]`. */
 const ORPHAN_CLOSE_RE = /^\[\/([a-zA-Z0-9_*-]+)\]$/
@@ -380,15 +403,26 @@ interface PendingSpan {
  * which is what lets the window guard ignore the deletes almost always.
  *
  * The walk is O(nodes) and runs once per green root. An incremental splice
- * carries it forward instead (`shifted`), because the guard that consults it
- * only passes edits that leave the crossings where they were.
+ * carries it forward instead (`shifted`): the guard that consults it only
+ * passes edits that leave the crossings OUTSIDE the window where they were,
+ * and the crossings inside it are re-measured from the re-parsed window.
  */
 class PendingSpans {
   constructor(private readonly spans: readonly PendingSpan[]) {}
 
+  /**
+   * Whether `kind` is pending when the parser reaches `offset`. The end is
+   * INCLUSIVE: a span ends at the start of the tag that retires the name, and
+   * at that offset the name is still pending — that tag is what spends it.
+   * Found by the differential fuzz: an italic auto-closing a `[size]` exactly
+   * where a `[/size]` began gave an empty span, so a window starting at that
+   * `[/size]` saw nothing pending and kept it as visible text where the full
+   * parse discards it. Inclusive is also the safe side: `covers` only ever
+   * turns a window down.
+   */
   covers(kind: string, offset: number): boolean {
     for (const span of this.spans) {
-      if (span.kind === kind && span.start <= offset && offset < span.end) return true
+      if (span.kind === kind && span.start <= offset && offset <= span.end) return true
     }
     return false
   }
@@ -403,7 +437,7 @@ class PendingSpans {
    * not exactly where, and a span that claims to be pending for slightly
    * longer than it is can only cost a rebuild, never correctness.
    */
-  shifted(windowStart: number, windowEndOld: number, delta: number): PendingSpans {
+  shifted(windowStart: number, windowEndOld: number, delta: number, born: readonly PendingSpan[] = []): PendingSpans {
     const windowEndNew = windowEndOld + delta
     const move = (at: number): number => {
       if (at === Number.POSITIVE_INFINITY || at >= windowEndOld) return at + delta
@@ -415,11 +449,29 @@ class PendingSpans {
       const end = span.end <= windowStart ? span.end : Math.max(windowEndNew, move(span.end))
       spans.push({ kind: span.kind, start, end })
     }
+    // Crossings the new window both opens and retires are invisible to the
+    // guard (their net effect on the text after it is nil) but not to a later
+    // window that starts BETWEEN the two: without them it believed the name
+    // was not pending and kept a stray `[/list]` visible where the full parse
+    // discards it. Found by the differential fuzz once wider windows (the
+    // candidate ladder) made such windows common.
+    for (const span of born) spans.push(span)
     return new PendingSpans(spans)
   }
 }
 
 function collectPendingSpans(root: GreenNode): PendingSpans {
+  return new PendingSpans(pendingSpansOf(root, 0, Number.POSITIVE_INFINITY))
+}
+
+/**
+ * The spans a (sub)tree produces on its own, placed at `base`. A name still
+ * pending when it ends is recorded up to `openEnd`: over a whole document that
+ * is "forever"; over a re-parsed window it is the window's end, since the
+ * guard has already matched whatever leaves the window pending with a span
+ * the old tree had.
+ */
+function pendingSpansOf(root: GreenNode, base: number, openEnd: number): PendingSpan[] {
   const spans: PendingSpan[] = []
   const open = new Map<string, number>()
   const retire = (kind: string, at: number): void => {
@@ -455,12 +507,12 @@ function collectPendingSpans(root: GreenNode): PendingSpans {
       }
     }
   }
-  visit(root, 0)
+  visit(root, base)
 
   // Whatever the document never retired stays pending to its end and beyond:
   // an edit appending text reads it with the name still set.
-  for (const [kind, start] of open) spans.push({ kind, start, end: Number.POSITIVE_INFINITY })
-  return new PendingSpans(spans)
+  for (const [kind, start] of open) spans.push({ kind, start, end: openEnd })
+  return spans
 }
 
 /**
@@ -509,12 +561,33 @@ function collectPendingSpans(root: GreenNode): PendingSpans {
  *    parse auto-closes it at the enclosing delimiter, which is where the window
  *    ends anyway.
  */
+/**
+ * Does the `[` at `at` find its `]` inside `text`, by the lexer's own rule
+ * (bracket depth, `findMatchingBracket`)?
+ */
+function bracketClosesWithin(text: string, at: number): boolean {
+  let depth = 0
+  for (let j = at + 1; j < text.length; j++) {
+    const c = text.charCodeAt(j)
+    if (c === 91 /* [ */) depth++
+    else if (c === 93 /* ] */) {
+      if (depth === 0) return true
+      depth--
+    }
+  }
+  return false
+}
+
+/** Bare `[` leaves a window may vet by scanning, before it just gives up. */
+const MAX_BARE_BRACKET_SCANS = 16
+
 function regionIsSelfContained(
   region: GreenNode,
+  regionText: string,
   ancestorKinds: ReadonlySet<string>,
-  window: { reachesEnd: boolean },
+  window: { reachesEnd: boolean; closedByNextSibling: ReadonlySet<string> },
   pendingKind: (kind: string) => boolean,
-): boolean {
+): IsolationFailure | null {
   // Checked on the PARSED region rather than on a second token scan. Lexing the
   // region twice — once to vet it, once to parse it — cost more than the whole
   // incremental path saved: on a document whose region is most of its length,
@@ -529,15 +602,26 @@ function regionIsSelfContained(
   // in there to begin with. The flag rides the stack beside the node.
   const stack: GreenNode[] = [region]
   const inCode: boolean[] = [false]
+  const offsets: number[] = [0]
+  let bareScans = 0
   while (stack.length > 0) {
     const node = stack.pop()!
     const code = inCode.pop()! || node.kind === 'code' || node.kind === 'inline_code'
+    const at = offsets.pop()!
 
     if (node.children.length === 0) {
       if (node.kind === 'text' && !code) {
-        // The lexer emits a bare '[' as text exactly when it found no matching
-        // bracket — the one case where its decision depends on what follows.
-        if (node.text === '[') return false
+        // The lexer emits a bare `[` in three places. Only one depends on what
+        // follows: no `]` matched it. The other two — a closer whose name is
+        // invalid (`[/col or]`, typed mid-tag), a `[` with no tag name — are
+        // decided by a `]` the lexer DID find; when that `]` is inside the
+        // window, the text between is the same in the full parse and so is the
+        // decision. Refusing every bare `[` cost a whole-document rebuild for
+        // each space typed inside a closing tag: the largest share of the
+        // rebuilds left on the 547 KB fixture.
+        if (node.text === '[') {
+          if (++bareScans > MAX_BARE_BRACKET_SCANS || !bracketClosesWithin(regionText, at)) return 'bare-bracket'
+        }
 
         // A stray closer that is not text after all: an ancestor's, or one
         // the prefix left pending — see the header. Compared by node kind,
@@ -546,14 +630,18 @@ function regionIsSelfContained(
         const orphan = ORPHAN_CLOSE_RE.exec(node.text)
         if (orphan !== null) {
           const kind = tagToNodeKind(orphan[1])
-          if (ancestorKinds.has(kind) || pendingKind(kind)) return false
+          if (ancestorKinds.has(kind)) return 'closes-ancestor'
+          if (pendingKind(kind)) return 'closes-pending'
         }
       }
       continue
     }
+    let childAt = at + node.leadingWidth
     for (const child of node.children as readonly GreenNode[]) {
       stack.push(child)
       inCode.push(code)
+      offsets.push(childAt)
+      childAt += child.width
     }
   }
 
@@ -564,18 +652,124 @@ function regionIsSelfContained(
     if (node !== region && node.leadingWidth > 0 && node.trailingWidth === 0) {
       // `[code]` and `[c]` are the lexer's raw blocks — different kinds, same
       // swallow-everything behaviour.
-      if (node.kind === 'code' || node.kind === 'inline_code') return false
-      if (!window.reachesEnd) return false
+      if (node.kind === 'code' || node.kind === 'inline_code') return 'open-raw-block'
+      if (!window.reachesEnd) {
+        // An item left open is the one open tag whose end the window CAN
+        // see: `[*]` has no closing delimiter, and the full parse ends the
+        // item exactly where the next sibling's `[*]` begins — which is where
+        // the window ends. Only as the region's own top-level node, and only
+        // when that next sibling really is an item; anything still open
+        // INSIDE the item is refused as before, by the next turn of this loop.
+        if (node === region.children[region.children.length - 1] && window.closedByNextSibling.has(node.kind)) {
+          node = node.children[node.children.length - 1] as GreenNode | undefined
+          continue
+        }
+        return 'open-before-siblings'
+      }
       // Any ANCESTOR of the same kind, not just the immediate parent: every
       // ancestor's closing delimiter sits after the window, so whichever one
       // comes first would now close this newly opened tag instead. The fuzz
       // found it with a `[centre]` typed inside a `[list]` inside a `[centre]`.
-      if (ancestorKinds.has(node.kind)) return false
+      if (ancestorKinds.has(node.kind)) return 'open-steals-ancestor-close'
     }
     node = node.children[node.children.length - 1] as GreenNode | undefined
   }
 
-  return true
+  return null
+}
+
+/**
+ * At the root, paragraphs are grouped by looking at their NEIGHBOURS, so a
+ * window whose edge paragraph now touches a paragraph outside it would have
+ * been merged with it by a full parse — two paragraphs are never adjacent in
+ * a grouped tree. The first window's one-sibling widening keeps that seam
+ * inside it; a window one level up, around a block the edit turned into loose
+ * text, may not (found by the differential fuzz once the candidate ladder
+ * produced such windows: a `[/notice]` typed so that a notice's tail became
+ * text next to a paragraph after the window).
+ */
+function paragraphSeam(parent: GreenNode, from: number, to: number, region: GreenNode): IsolationFailure | null {
+  const kids = region.children as readonly GreenNode[]
+  if (kids.length === 0) return null
+  const before = from > 0 ? (parent.children[from - 1] as GreenNode) : null
+  const after = to < parent.children.length ? (parent.children[to] as GreenNode) : null
+  if (before?.kind === 'paragraph' && kids[0].kind === 'paragraph') return 'paragraph-seam'
+  if (after?.kind === 'paragraph' && kids[kids.length - 1].kind === 'paragraph') return 'paragraph-seam'
+  return null
+}
+
+/** One candidate window: a run of `parent`'s children, reached through `spine`. */
+interface CandidateWindow {
+  spine: SpineStep[]
+  parent: GreenNode
+  from: number
+  to: number
+  windowStart: number
+  windowEnd: number
+  ancestorKinds: Set<string>
+}
+
+interface DescentPath extends CandidateWindow {
+  /** Absolute start of the node at each depth of the descent. */
+  levelOffsets: number[]
+  /** Kind of the node at each depth, the root's first. */
+  levelKinds: string[]
+}
+
+/**
+ * The same run, widened to the right: one more sibling, then three, seven…
+ * doubling until it reaches the parent's last child. What a narrow window
+ * cannot see is almost always just past its right edge — the `]` a bare `[`
+ * now pairs with, the siblings a broken closer lets a tag swallow — and at
+ * the root "the parent's end" is the end of the document, far too large to
+ * be worth trying. Doubling finds the near case in a few attempts and costs
+ * at most twice the region it settles on.
+ */
+function* widenedRight(w: CandidateWindow): Generator<CandidateWindow> {
+  const len = w.parent.children.length
+  let to = w.to
+  let windowEnd = w.windowEnd
+  for (let step = 1; to < len; step *= 2) {
+    const next = Math.min(len, to + step)
+    for (let i = to; i < next; i++) windowEnd += (w.parent.children[i] as GreenNode).width
+    to = next
+    yield { ...w, to, windowEnd }
+  }
+}
+
+/**
+ * Every window worth trying for one change, narrowest first: the one
+ * `findReparseWindow` found, then that run widened rightwards, then — one
+ * level up at a time — the ancestor's child that holds the change with a
+ * sibling on each side, widened the same way. Each candidate at a level
+ * contains the previous one, and every one contains the change.
+ */
+function* candidateWindows(path: DescentPath): Generator<CandidateWindow> {
+  yield path
+  yield* widenedRight(path)
+  for (let depth = path.spine.length - 1; depth >= 0; depth--) {
+    const { node: parent, index } = path.spine[depth]
+    const children = parent.children as readonly GreenNode[]
+    let from = Math.max(0, index - 1)
+    const to = Math.min(children.length, index + 2)
+    // Same rule as the first window: never start mid-run of newlines.
+    while (from > 0 && children[from].kind === 'empty_line') from--
+    let windowStart = path.levelOffsets[depth] + parent.leadingWidth
+    for (let i = 0; i < from; i++) windowStart += children[i].width
+    let windowEnd = windowStart
+    for (let i = from; i < to; i++) windowEnd += children[i].width
+    const window: CandidateWindow = {
+      spine: path.spine.slice(0, depth),
+      parent,
+      from,
+      to,
+      windowStart,
+      windowEnd,
+      ancestorKinds: new Set(path.levelKinds.slice(0, depth + 1)),
+    }
+    yield window
+    yield* widenedRight(window)
+  }
 }
 
 export interface IncrementalParserOptions {
@@ -667,6 +861,12 @@ export class IncrementalParser {
     newSource: string,
     end: number,
   ): boolean {
+    if (!this.bracketsSynced) this.syncBrackets(oldGreen, change, newSource)
+    return this.brackets.depthAt(newSource, end) === 0
+  }
+
+  /** Brings the bracket index across `change`, once per `reparse` call. */
+  private syncBrackets(oldGreen: GreenNode, change: TextChange, newSource: string): void {
     const inSync = this.bracketsRoot === oldGreen
     // Unkeyed while it is being moved: should the parse callback throw
     // halfway through this call, no later call can mistake the half-moved
@@ -680,7 +880,6 @@ export class IncrementalParser {
     // Describes `newSource` from here on, whatever the outcome; the key is
     // set once the root that owns that text exists (see `keyed`).
     this.bracketsSynced = true
-    return this.brackets.depthAt(newSource, end) === 0
   }
 
   /**
@@ -765,84 +964,148 @@ export class IncrementalParser {
     const found = this.findReparseWindow(oldRed, change)
     const tFind = performance.now() - tFind0
     if (found === null) return fullRebuild('no-window', tFind)
-    const { spine, parent, from, to, windowStart, windowEnd, ancestorKinds } = found
+    // ─── 2. Re-parse the narrowest window that stands on its own ───
+    //
+    // The window found above is the narrowest candidate, not the only one. A
+    // window that cannot be parsed in isolation — a tag left open that would
+    // swallow the siblings after it, a bracket that pairs beyond its edge — is
+    // not a reason to re-parse the WHOLE document: the same window widened to
+    // the end of its parent, or one level up, usually can. So the candidates
+    // are tried narrowest first, climbing the descent path, and only when the
+    // root itself fails (or a candidate grows past `maxRegionFraction`) does
+    // the parser rebuild. Each candidate goes through every guard below;
+    // widening never relaxes one. Typing inside tag syntax — breaking a
+    // `[/color]` while editing it — used to cost a whole-document rebuild per
+    // keystroke; it now costs the enclosing block.
+    let failure: { reason: FallbackReason; isolation?: IsolationFailure } | null = null
+    let escalations = 0
+    // Characters parsed by candidates that were then turned down. Capped at
+    // one document's worth, so the ladder can never make the worst keystroke
+    // on a large document cost more than twice a plain rebuild; plus a floor
+    // (`LADDER_BUDGET_FLOOR`), because on a small one a few KB of parsing costs
+    // nothing and the window is still worth finding.
+    let wasted = 0
+    let tBoundary = 0
+    let tParse = 0
+    for (const attempt of candidateWindows(found)) {
+      const { spine, parent, from, to, windowStart, windowEnd, ancestorKinds } = attempt
+      // Sized before it is sliced: skipping a candidate that is too large must
+      // not cost a copy of it.
+      const regionLength = windowEnd + delta - windowStart
 
-    // ─── 2. Re-parse just that window ───────────────────────────
-    const region = newSource.slice(windowStart, windowEnd + delta)
+      const tBoundary0 = performance.now()
+      // Re-parsing a region that is nearly the whole document cannot beat simply
+      // rebuilding it, and the splice bookkeeping makes it lose. Measured on a
+      // 32 KB document whose container spanned 95% of the text: 0.86 ms spliced
+      // against 0.20 ms rebuilt. Wider candidates only grow, so this ends the climb.
+      if (regionLength > (newSource.length + 1) * this.maxRegionFraction) {
+        failure ??= { reason: 'region-too-large' }
+        // Wider candidates at THIS level only grow; one level up may still
+        // start narrower (±1 sibling), so the climb is not over — only the
+        // budget below ends it.
+        continue
+      }
+      if (wasted + regionLength > newSource.length + LADDER_BUDGET_FLOOR) {
+        failure ??= { reason: 'region-too-large' }
+        break
+      }
+      const bracketsClose = this.bracketsCloseBefore(oldGreen, change, newSource, windowStart)
+      tBoundary += performance.now() - tBoundary0
+      if (!bracketsClose) {
+        failure ??= { reason: 'open-bracket-before' }
+        escalations++
+        continue
+      }
 
-    const tBoundary0 = performance.now()
-    // Re-parsing a region that is nearly the whole document cannot beat simply
-    // rebuilding it, and the splice bookkeeping makes it lose. Measured on a
-    // 32 KB document whose container spanned 95% of the text: 0.86 ms spliced
-    // against 0.20 ms rebuilt.
-    if (region.length > (newSource.length + 1) * this.maxRegionFraction) {
-      return fullRebuild('region-too-large', tFind)
+      const region = newSource.slice(windowStart, windowEnd + delta)
+      const tParse0 = performance.now()
+      // Paragraph grouping happens at the root and only there, so the window's
+      // content is root content exactly when its parent is the document.
+      const isRoot = parent.kind === 'document'
+      const parsedRegion = parseCallback(region, { normalizeParagraphs: isRoot })
+      tParse += performance.now() - tParse0
+
+      // Measured on the OLD tree, which is the one the incoming set is a fact
+      // about; the guard below is what keeps the answer true of the new one.
+      // Both guards want it, so it is settled before either runs.
+      if (this.pendingRoot !== oldGreen) {
+        this.pendingSpans = collectPendingSpans(oldGreen)
+        this.pendingRoot = oldGreen
+      }
+      const spans = this.pendingSpans
+      const pendingKind = (kind: string): boolean => spans.covers(kind, windowStart)
+
+      const reachesEnd = to === parent.children.length
+      // The sibling right after the window, when it self-closes a same-kind
+      // node left open at the window's end (see `regionIsSelfContained`).
+      const next = reachesEnd ? null : (parent.children[to] as GreenNode)
+      const closedByNextSibling = next !== null && next.kind === 'list_item' && next.leadingWidth > 0
+        ? LIST_ITEM_ONLY
+        : NOTHING
+      const isolation = regionIsSelfContained(parsedRegion, region, ancestorKinds, { reachesEnd, closedByNextSibling }, pendingKind)
+        ?? (isRoot ? paragraphSeam(parent, from, to, parsedRegion) : null)
+      if (isolation !== null) {
+        failure ??= { reason: 'region-not-isolated', isolation }
+        escalations++
+        wasted += region.length
+        continue
+      }
+      // The guard protects the text AFTER the window from parser state leaking
+      // out of it. A window that runs to the end of the document has no such
+      // text — a tag its edit left open simply stays open to the end, which is
+      // what the full parse does too.
+      const nothingAfter = reachesEnd && spine.length === 0
+      if (!nothingAfter && !pendingAutoClosePreserved(
+        parent.children as readonly GreenNode[], from, to, parsedRegion, spans, windowStart,
+      )) {
+        failure ??= { reason: 'pending-auto-close' }
+        escalations++
+        wasted += region.length
+        continue
+      }
+      carriedSpans = this.pendingSpans.shifted(
+        windowStart, windowEnd, delta, pendingSpansOf(parsedRegion, windowStart, windowEnd + delta),
+      )
+
+      // No rebasing step: the parsed region has widths, not offsets, so it is
+      // already correct wherever it ends up.
+      const newChildren = parsedRegion.children as readonly GreenNode[]
+
+      // ─── 3. Rebuild the spine ───────────────────────────────────
+      const tMutate0 = performance.now()
+      const newParent = withChildrenSpliced(parent, from, to, newChildren)
+      const newGreenRoot = spliceGreen(spine, newParent)
+      const tMutate = performance.now() - tMutate0
+
+      const tBuild0 = performance.now()
+      const newRed = buildRedCallback(newGreenRoot)
+      const tBuild = performance.now() - tBuild0
+
+      const total = performance.now() - startTime
+      return keyed({
+        green: newGreenRoot,
+        red: newRed,
+        affectedNodes: [newRed],
+        escalations,
+        duration: total,
+        timings: {
+          findAffected: tFind,
+          safeBoundary: tBoundary,
+          parse: tParse,
+          buildRed: tBuild,
+          mutate: tMutate,
+          other: Math.max(0, total - tFind - tBoundary - tParse - tBuild - tMutate),
+        },
+        path: 'incremental',
+        // The region, in the coordinates of the text it now describes.
+        window: { start: windowStart, end: windowEnd + delta },
+      })
     }
-    if (!this.bracketsCloseBefore(oldGreen, change, newSource, windowStart)) {
-      return fullRebuild('open-bracket-before', tFind)
-    }
-    const tBoundary = performance.now() - tBoundary0
 
-    const tParse0 = performance.now()
-    // Paragraph grouping happens at the root and only there, so the window's
-    // content is root content exactly when its parent is the document.
-    const isRoot = parent.kind === 'document'
-    const parsedRegion = parseCallback(region, { normalizeParagraphs: isRoot })
-    const tParse = performance.now() - tParse0
-
-    // Measured on the OLD tree, which is the one the incoming set is a fact
-    // about; the guard below is what keeps the answer true of the new one.
-    // Both guards want it, so it is settled before either runs.
-    if (this.pendingRoot !== oldGreen) {
-      this.pendingSpans = collectPendingSpans(oldGreen)
-      this.pendingRoot = oldGreen
-    }
-    const spans = this.pendingSpans
-    const pendingKind = (kind: string): boolean => spans.covers(kind, windowStart)
-
-    const reachesEnd = to === parent.children.length
-    if (!regionIsSelfContained(parsedRegion, ancestorKinds, { reachesEnd }, pendingKind)) {
-      return fullRebuild('region-not-isolated', tFind)
-    }
-    if (!pendingAutoClosePreserved(
-      parent.children as readonly GreenNode[], from, to, parsedRegion, spans, windowStart,
-    )) {
-      return fullRebuild('pending-auto-close', tFind)
-    }
-    carriedSpans = this.pendingSpans.shifted(windowStart, windowEnd, delta)
-
-    // No rebasing step: the parsed region has widths, not offsets, so it is
-    // already correct wherever it ends up.
-    const newChildren = parsedRegion.children as readonly GreenNode[]
-
-    // ─── 3. Rebuild the spine ───────────────────────────────────
-    const tMutate0 = performance.now()
-    const newParent = withChildrenSpliced(parent, from, to, newChildren)
-    const newGreenRoot = spliceGreen(spine, newParent)
-    const tMutate = performance.now() - tMutate0
-
-    const tBuild0 = performance.now()
-    const newRed = buildRedCallback(newGreenRoot)
-    const tBuild = performance.now() - tBuild0
-
-    const total = performance.now() - startTime
-    return keyed({
-      green: newGreenRoot,
-      red: newRed,
-      affectedNodes: [newRed],
-      duration: total,
-      timings: {
-        findAffected: tFind,
-        safeBoundary: tBoundary,
-        parse: tParse,
-        buildRed: tBuild,
-        mutate: tMutate,
-        other: Math.max(0, total - tFind - tBoundary - tParse - tBuild - tMutate),
-      },
-      path: 'incremental',
-      // The region, in the coordinates of the text it now describes.
-      window: { start: windowStart, end: windowEnd + delta },
-    })
+    const result = fullRebuild(failure?.reason ?? 'no-window', tFind)
+    result.isolation = failure?.isolation
+    result.escalations = escalations
+    return result
   }
 
   /**
@@ -871,9 +1134,16 @@ export class IncrementalParser {
     windowStart: number
     windowEnd: number
     ancestorKinds: Set<string>
+    parentOffset: number
+    levelOffsets: number[]
+    levelKinds: string[]
   } | null {
     const spine: SpineStep[] = []
     const ancestorKinds = new Set<string>([root.kind])
+    // Per level of the descent: the node's absolute start and its kind, so a
+    // window can later be formed around any ancestor (see `windowAround`).
+    const levelOffsets: number[] = []
+    const levelKinds: string[] = [root.kind]
     let node = root
     // Absolute start of `node` in the source. Accumulated from GREEN widths, not
     // from red `range` reads: the red tree's offsets may carry a pending lazy
@@ -911,11 +1181,13 @@ export class IncrementalParser {
       if (next === -1) break
 
       spine.push({ node: node.green, index: next })
+      levelOffsets.push(nodeOffset)
       // The child's absolute start: the accumulated offset at its index.
       nodeOffset += node.green.leadingWidth
       for (let i = 0; i < next; i++) nodeOffset += node.children[i].green.width
       node = node.children[next]
       ancestorKinds.add(node.kind)
+      levelKinds.push(node.kind)
     }
 
     const children = node.children
@@ -968,6 +1240,9 @@ export class IncrementalParser {
       windowStart,
       windowEnd,
       ancestorKinds,
+      parentOffset: nodeOffset,
+      levelOffsets,
+      levelKinds,
     }
   }
 
