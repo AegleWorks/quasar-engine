@@ -13,3 +13,4 @@
 - [10. Plan: Semantic Model](./10-Semantic-Model-Plan.md)
 - [11. Plan: Anchors](./11-Anchors-Plan.md)
 - [12. Incremental performance](./12-Incremental-Performance.md)
+- [13. WYSIWYG canvas](./13-WYSIWYG.md)

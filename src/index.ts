@@ -138,6 +138,7 @@ export { InsertText } from './Commands/InsertText'
 export { DeleteNode } from './Commands/DeleteNode'
 export { WrapInTag } from './Commands/WrapInTag'
 export { SplitNode, MergeNode } from './Commands/SplitMerge'
+export { toggleInlineFormat, applyColor, mapThroughChanges, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
 // ── Queries ──
 export { QueryEngine } from './Queries/QueryEngine'
@@ -166,6 +167,7 @@ export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpen
 
 // ── Reconciler ──
 export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult, type ReconcileRoute, type ReconcileFullReason, type ReconcileCounts } from './Reconciler/SurgicalReconciler'
+export { sourceOffsetOfDomPoint, domPointOfSourceOffset } from './Reconciler/CanvasPositions'
 
 // ── Lightbulb Engine (fixes, refactorings, fix-all, host) ──
 //
