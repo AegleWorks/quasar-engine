@@ -416,3 +416,9 @@ export type {
 // ── Audio Runtime ──
 export { setupLyneAudioRuntime, bindLyneAudio } from './Visuals/LyneAudio'
 
+
+// ── Anchors (docs/11-Anchors-Plan.md) ──
+export {
+  AnchorSet, mapOffset, mapAnchor, diffText,
+  type Anchor, type AddAnchorOptions, type Stickiness, type TextEdit,
+} from './Anchors/AnchorSet'

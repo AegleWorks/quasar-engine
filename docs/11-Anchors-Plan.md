@@ -114,6 +114,10 @@ show 0 differences.
   - a deletion over an anchor collapses it and flags it.
 - Performance: `updateText` on the 547 KB fixture stays within the budget
   the model's own diff has.
+- ✅ **Done** — `src/Anchors/AnchorSet.ts`, `Tests/Anchors.test.ts`. A mutant
+  that shifts offsets one character wrong after long insertions fails all
+  three properties. The `updateText` property makes 5 330 anchor comparisons
+  and asserts more than 3 000, so it cannot pass vacuously.
 
 ### A2 — binding (layer 2)
 - `anchorForNode` and `resolveNode`, over both the default tree and the
