@@ -191,3 +191,36 @@ which is an application's choice (an idle-time warm-up), not the engine's.
 `Tests/ColdOpen.test.ts` pins the behaviour; each fast path was
 mutation-tested against it.
 
+### Where a cold open's time goes — and "JIT-friendly" tested
+
+The cold/warm gap was split by preparing the process three ways before one
+open of the fixture (`NODE_ENV=production`, six processes each):
+
+| Before the open | Open |
+|---|---|
+| nothing — truly cold | ~62 ms |
+| ~40 MB of unrelated objects allocated and dropped (heap grown, JIT cold) | ~43 ms |
+| six parses of a 30 KB slice (JIT warm, heap small) | ~34 ms |
+| everything warm | ~21 ms |
+
+So a cold open is roughly a third real work, a third the heap growing for the
+first time, and a third V8 learning the code. None of V8's tiering flags
+(`--always-sparkplug`, `--no-lazy-feedback-allocation`, `--no-maglev`,
+`--max-lazy`) moved it, and `--trace-deopt` shows four deoptimisations in a
+whole cold open, all "insufficient type feedback": V8 is not fighting this
+code. Two "JIT-friendly" changes were measured against the previous commit:
+
+- **One hidden class for all tokens** (six fields, one constructor): no
+  effect, cold or warm. Three shapes at a site is polymorphic, not
+  megamorphic, and V8 handles it. Reverted.
+- **The parser loop's two tag branches as their own functions** (`onOpen`,
+  `onClose`): the parser's Turbofan compile went from 24 ms to 8 ms, and a
+  warm open from 21.9 to 20.4 ms (two runs of 16 and 20 alternated
+  processes). A cold open did not move — V8 was not waiting for Turbofan,
+  its earlier tiers were already running the loop. Kept, for the warm gain
+  and a loop that now reads in thirty lines.
+
+The lever left inside the engine for a cold open is memory: every surviving
+byte is heap V8 has to grow into. Past that, an idle-time warm-up in the
+application covers the JIT third.
+
