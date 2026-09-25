@@ -64,12 +64,14 @@ const NO_CHILDREN: readonly GreenNode[] = Object.freeze([])
  * mistakes are made and caught — in development and in the test suite — and
  * production pays nothing for a check that has never once fired there.
  *
- * Evaluated once at module load, so the hot path sees a constant. The `typeof`
- * guard is because this engine also runs inside Workers, where a bundler may
- * not have shimmed `process`.
+ * Evaluated once at module load, so the hot path sees a constant. Without a
+ * `process` at all (a browser bundle nobody shimmed, a Worker) there is no
+ * way to tell development from production, and the answer is the fast one:
+ * the guard is a development aid, and it used to be the other way round —
+ * on in exactly the places where nothing could turn it off.
  */
 const FREEZE_CHILDREN =
-  typeof process === 'undefined' || process.env?.NODE_ENV !== 'production'
+  typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production'
 
 // ─── Green Node ────────────────────────────────────────────────
 
@@ -126,6 +128,10 @@ export class GreenNode {
     this.kind = kind
     this.text = text
     const count = children.length
+    // Copied, not adopted, even from builders that never touch the array
+    // again: those arrays grew by `push`, and the copy is exact-size. Adopting
+    // them was measured — 4 ms off a cold open of the 547 KB fixture, for
+    // 2 MB of push slack kept alive as long as the document is.
     this.children =
       count === 0
         ? NO_CHILDREN
@@ -320,5 +326,5 @@ export function childOffsets(node: GreenNode, start: number): number[] {
  * characters, element nodes carry their attributes — must pass it.
  */
 export function greenLeaf(kind: string, text: string, width: number = text.length): GreenNode {
-  return new GreenNode(kind, text, [], 0, 0, width)
+  return new GreenNode(kind, text, NO_CHILDREN as GreenNode[], 0, 0, width)
 }

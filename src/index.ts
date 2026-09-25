@@ -24,12 +24,12 @@ export type {
 
 // ── Lexer ──
 export { Lexer, type LexerOptions } from './Lexer/Lexer'
-export { scanBBCode, BBCODE_RAW_TAGS, type BBCodeToken, type BBCodeOpenToken, type BBCodeCloseToken, type BBCodeTextToken, type BBCodeNewlineToken } from './Lexer/BBCodeLexer'
+export { scanBBCode, createBBCodeScanner, type BBCodeTokenCursor, BBCODE_RAW_TAGS, type BBCodeToken, type BBCodeOpenToken, type BBCodeCloseToken, type BBCodeTextToken, type BBCodeNewlineToken } from './Lexer/BBCodeLexer'
 export type { Token, TokenKind, Trivia, TriviaKind } from './Types/tokens'
 
 // ── Green/Red Tree ──
 export { GreenNode, greenNode, greenLeaf } from './Syntax/GreenNode'
-export { RedNode } from './Syntax/RedNode'
+export { RedNode, NO_DIAGNOSTICS, NO_METADATA } from './Syntax/RedNode'
 export { checkRedTree, assertRedTree } from './Syntax/redTreeInvariants'
 export type { RedTreeViolation, RedTreeViolationKind, CheckRedTreeOptions } from './Syntax/redTreeInvariants'
 export { RedNodeStore } from './Syntax/RedNodeStore'

@@ -10,7 +10,7 @@
  * Inspired by Roslyn's Semantic Model and LSP diagnostics.
  */
 
-import { RedNode } from '../Syntax/RedNode'
+import { RedNode, NO_DIAGNOSTICS } from '../Syntax/RedNode'
 import { getBBCodeTagNames, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import type { NodeKind } from '../Types/core'
 import type { Range } from '../Types/tokens'
@@ -126,12 +126,12 @@ function runValidator(
       for (let i = 0; i < result.length; i++) {
         const own = detachRange(result[i])
         addDiagnostic(diagnostics, own)
-        node.diagnostics.push(own)
+        node.ownDiagnostics().push(own)
       }
     } else {
       const own = detachRange(result)
       addDiagnostic(diagnostics, own)
-      node.diagnostics.push(own)
+      node.ownDiagnostics().push(own)
     }
   } catch (error) {
     // Validator error should not break the analysis
@@ -1612,7 +1612,7 @@ export class SemanticAnalyzer {
       // Clear here rather than in a pass of its own, and only when there is
       // something to clear: a fresh `[]` per node meant an allocation for every
       // node in the document, and almost none of them carry diagnostics.
-      if (node.diagnostics.length > 0) node.diagnostics = []
+      if (node.diagnostics.length > 0) node.diagnostics = NO_DIAGNOSTICS
 
       const specific = byKind.get(node.kind)
       for (let i = 0; i < always.length; i++) {

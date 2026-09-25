@@ -8,8 +8,8 @@
  * intermediate step. The flow is:
  *
  *   BBCode text
- *     ↓ scanBBCode() [BBCodeLexer]
- *   BBCodeToken[]
+ *     ↓ createBBCodeScanner() [BBCodeLexer] — or scanBBCode(), collected
+ *   BBCodeToken, one at a time
  *     ↓ parseTokensToGreen() [this]
  *   GreenNode
  *     ↓ greenToRedNode()
@@ -28,8 +28,8 @@ import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
 import type { NodeKind } from '../Types/core'
 import { GreenNodePool } from '../Syntax/GreenNodePool'
 import { tagToNodeKind, type BBCodeDialect } from './BBCodeToGreenNode'
-import type { BBCodeToken } from '../Lexer/BBCodeLexer'
-import { scanBBCode } from '../Lexer/BBCodeLexer'
+import type { BBCodeToken, BBCodeTokenCursor } from '../Lexer/BBCodeLexer'
+import { createBBCodeScanner } from '../Lexer/BBCodeLexer'
 import { isBlockKind } from './BBCodeToGreenNode'
 import { applyOsuPairing } from '../Osu/osuPairing'
 
@@ -38,7 +38,7 @@ import { applyOsuPairing } from '../Osu/osuPairing'
 /**
  * Parse BBCode tokens into a GreenNode tree.
  *
- * @param tokens  Flat array of tokens from scanBBCode()
+ * @param input   A scanner from createBBCodeScanner(), or the array scanBBCode() collects
  * @param source  Original source text (used for fallback error text)
  * @returns       A GreenNode tree with 'document' as root
  */
@@ -83,8 +83,20 @@ export interface ParseOptions {
   pairing?: 'quasar' | 'osu';
 }
 
+/** A cursor over a token array, for callers that already hold one. */
+function arrayCursor(tokens: readonly BBCodeToken[]): () => BBCodeToken | null {
+  let at = 0
+  return () => (at < tokens.length ? tokens[at++] : null)
+}
+
+function drain(cursor: BBCodeTokenCursor): BBCodeToken[] {
+  const out: BBCodeToken[] = []
+  for (let t = cursor.next(); t !== null; t = cursor.next()) out.push(t)
+  return out
+}
+
 export function parseTokensToGreen(
-  tokens: BBCodeToken[],
+  input: BBCodeToken[] | BBCodeTokenCursor,
   source: string,
   options: ParseOptions = {}
 ): GreenNode {
@@ -93,8 +105,16 @@ export function parseTokensToGreen(
   const interner = options.interner ?? null;
   const normalizeParagraphs = options.normalizeParagraphs ?? true;
   const extraTags = options.extraTags;
+  // Tokens are consumed strictly in order, so a cursor straight off the lexer
+  // does: each token dies young instead of sitting in a 54.000-slot array
+  // until the tree is built — which is what the collector used to spend a
+  // cold parse copying. osu! pairing needs the whole list (it looks ahead for
+  // closers), so it still gets one.
+  let next: () => BBCodeToken | null
   if (options.pairing === 'osu') {
-    tokens = applyOsuPairing(tokens, source);
+    next = arrayCursor(applyOsuPairing(Array.isArray(input) ? input : drain(input), source));
+  } else {
+    next = Array.isArray(input) ? arrayCursor(input) : () => input.next();
   }
   const root: GreenNode[] = []
   /**
@@ -397,9 +417,8 @@ export function parseTokensToGreen(
     }
   }
 
-  let i = 0
-  while (i < tokens.length) {
-    const tok = tokens[i]
+  let tok = next()
+  while (tok !== null) {
 
     // ── Newline token(s) ─────────────────────────────────────
     if (tok.kind === 'newline') {
@@ -413,14 +432,15 @@ export function parseTokensToGreen(
       // ambiguity that made `shiftRanges` impossible to write correctly.
       let first = true
 
-      while (i < tokens.length && tokens[i].kind === 'newline') {
-        const nl = tokens[i]
+      let nl: BBCodeToken | null = tok
+      while (nl !== null && nl.kind === 'newline') {
         // The first newline is soft spacing (ignored in block context); any
         // subsequent one is a hard empty line (rendered as `<br>` everywhere).
         addToParent(createLeaf(first ? 'spacing' : 'empty_line', '', nl.end - nl.start))
         first = false
-        i++
+        nl = next()
       }
+      tok = nl
 
       continue
     }
@@ -428,7 +448,7 @@ export function parseTokensToGreen(
     // ── Plain text ───────────────────────────────────────────
     if (tok.kind === 'text') {
       addToParent(createLeaf('text', tok.value))
-      i++
+      tok = next()
       continue
     }
 
@@ -447,7 +467,7 @@ export function parseTokensToGreen(
         if (pluginKind === undefined) {
           const tagText = source.slice(tok.start, tok.end)
           addToParent(createLeaf('text', tagText))
-          i++
+          tok = next()
           continue
         }
         openKind = pluginKind
@@ -467,13 +487,13 @@ export function parseTokensToGreen(
           children: [],
           leadingWidth: tok.end - tok.start,
         })
-        i++
+        tok = next()
         continue
       }
 
       if (openKind === 'separator') {
         addToParent(createLeaf('separator', tok.attrs, tok.end - tok.start))
-        i++
+        tok = next()
         continue
       }
 
@@ -497,7 +517,7 @@ export function parseTokensToGreen(
         children: [],
         leadingWidth: tok.end - tok.start,
       })
-      i++
+      tok = next()
       continue
     }
 
@@ -577,7 +597,7 @@ export function parseTokensToGreen(
         }
       }
 
-      i++
+      tok = next()
       continue
     }
   }
@@ -641,13 +661,12 @@ export function parseTokensToGreen(
  * Full parse: BBCode text → GreenNode.
  *
  * Convenience function that combines the lexer and parser.
- * BBCodeDocumentModel internally uses scanBBCode() + parseTokensToGreen() directly.
+ * BBCodeDocumentModel internally uses createBBCodeScanner() + parseTokensToGreen() directly.
  *
  * Usage:
  *   import { parseBBCode } from '../BBCode/Parser'
  *   const tree = parseBBCode('[b]Hello[/b]')
  */
 export function parseBBCode(source: string, options: ParseOptions = {}): GreenNode {
-  const tokens = scanBBCode(source, { pairing: options.pairing })
-  return parseTokensToGreen(tokens, source, options)
+  return parseTokensToGreen(createBBCodeScanner(source, { pairing: options.pairing }), source, options)
 }
