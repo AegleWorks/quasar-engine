@@ -317,11 +317,67 @@ function expectedSlots(node: RedNode, renderer: HTMLRenderer, doc: Document): Ex
  * Returns `null` when the pairing cannot be trusted, which sends the caller to
  * the coarser paths.
  */
+/** Whether a node of the render is what `slot` renders to. */
+function isSlot(n: Node, slot: ExpectedSlot): boolean {
+  if (slot.element === null) return n.nodeType === 3 && (n.nodeValue ?? '') === slot.text
+  if (n.nodeType !== 1) return false
+  const want = slot.element as Element
+  const id = want.getAttribute('data-node-id')
+  return id !== null ? (n as Element).getAttribute('data-node-id') === id : domHtml(n as Element) === domHtml(want)
+}
+
+/**
+ * The DOM's children without the markup the render put between the node's
+ * own children — a quote's "X wrote:" line, the newlines between list items.
+ *
+ * Found by aligning the node's render with its children's: what matches no
+ * child is decoration. It must be in the DOM exactly as rendered — an edit to
+ * the author line is not a typing edit, and the coarser paths see it — and
+ * then it is simply left out of the pairing. Null when the shapes disagree.
+ */
+function withoutDecoration(want: ParentNode, slots: ExpectedSlot[], actual: Node[]): Node[] | null {
+  const rendered = Array.from(want.childNodes)
+  const decoration = new Set<number>()
+  let j = 0
+  for (let i = 0; i < rendered.length; i++) {
+    if (j < slots.length && isSlot(rendered[i], slots[j])) j++
+    else decoration.add(i)
+  }
+  if (j !== slots.length || decoration.size === 0 || actual.length !== rendered.length) return null
+  for (const i of decoration) {
+    const a = actual[i]
+    const r = rendered[i]
+    if (a.nodeType !== r.nodeType) return null
+    if (a.nodeType === 3 ? a.nodeValue !== r.nodeValue : domHtml(a as Element) !== domHtml(r as Element)) return null
+  }
+  return actual.filter((_, i) => !decoration.has(i))
+}
+
+/**
+ * The one text node the DOM has beyond the slots — what was typed into an
+ * element that had no text, a list item just made by Enter — and the offset
+ * it goes to: before the slot it precedes, or after the last one.
+ */
+function typedBetweenSlots(actual: Node[], slots: ExpectedSlot[], node: RedNode): { index: number; at: number } | null {
+  for (let m = 0; m < actual.length; m++) {
+    if (actual[m].nodeType !== 3) continue
+    const rest = actual.filter((_, i) => i !== m)
+    const fits = rest.every((n, i) => slots[i].element === null
+      ? n.nodeType === 3
+      : n.nodeType === 1 && (n as Element).getAttribute('data-node-id') === (slots[i].element as Element).getAttribute('data-node-id'))
+    if (!fits) continue
+    const at = m < slots.length ? slots[m].nodes[0].range.start : slots[slots.length - 1]?.nodes.at(-1)?.range.end ?? node.innerStart
+    return { index: m, at }
+  }
+  return null
+}
+
 function descend(
   node: RedNode,
   el: HTMLElement,
   exporter: BBCodeExporter,
   renderer: HTMLRenderer,
+  want?: ParentNode,
 ): SurgicalEdit[] | null {
   const slots = expectedSlots(node, renderer, el.ownerDocument)
   if (!slots || slots.length === 0) return null
@@ -329,7 +385,7 @@ function descend(
   // Lines the canvas opened after a `<br>` (`revealLine`) have no node: what
   // is typed in one goes right after that break, and it pairs with nothing.
   const opened: SurgicalEdit[] = []
-  const actual = Array.from(el.childNodes).filter(n => {
+  let actual: Node[] = Array.from(el.childNodes).filter(n => {
     const after = n.nodeType === 1 ? (n as Element).getAttribute(REVEALED_AFTER_ATTR) : null
     if (after === null) return true
     const br = node.children.find(c => c.id === after)
@@ -345,6 +401,18 @@ function descend(
   const marks = (n: Node | null | undefined) => n?.nodeType === 1 && (n as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)
   if (slots.length > actual.length && marks(slots[0].element) && !marks(actual[0])) slots.shift()
   if (slots.length > actual.length && marks(slots[slots.length - 1].element) && !marks(actual[actual.length - 1])) slots.pop()
+  if (actual.length !== slots.length && want) actual = withoutDecoration(want, slots, actual) ?? actual
+  if (actual.length === slots.length + 1) {
+    const typed = typedBetweenSlots(actual, slots, node)
+    if (typed) {
+      const text = (actual[typed.index].nodeValue ?? '').replace(ZWSP, '')
+      if (text !== '') {
+        counts.filledLines++
+        opened.push({ start: typed.at, end: typed.at, text })
+      }
+      actual = actual.filter((_, i) => i !== typed.index)
+    }
+  }
   if (actual.length !== slots.length) return null
 
   const edits: SurgicalEdit[] = []
@@ -474,8 +542,11 @@ function editsForNode(
   if (node.kind === 'empty_line') return fillEmptyLine(node, cleanHtml, exporter)
 
   const host = contentHost(node, el, renderer)
+  const probe = el.ownerDocument.createElement('div')
+  probe.innerHTML = rendered
+  const want = probe.firstElementChild ?? undefined
   return (
-    descend(node, el, exporter, renderer)
+    descend(node, el, exporter, renderer, want)
     ?? (host ? descend(node, host, exporter, renderer) : null)
     ?? diffTextLeaves(node, rendered, el)
     ?? reserializeElement(node, cleanHtml, exporter)

@@ -81,6 +81,16 @@ a `<details>` is view state, not an edit, and the comparison ignores it. The
 component also keeps open boxes open across repaints
 (`repaintKeepingOpenBoxes`).
 
+## Decoration between children
+
+A render can also put markup of its own *between* a node's children: a
+quote's "X wrote:" line, or the newlines between list items. `descend` aligns
+the node's render with its children's, and treats whatever matches no child as
+decoration. The decoration must be in the DOM exactly as rendered: an edit to
+the author line is not typing, and the coarser paths see it. It is then left
+out of the pairing. A single text node that pairs with no child (typed into an
+empty list item) is inserted at the offset between its neighbours.
+
 ## Lines with no layout
 
 Some newlines render as nothing visible:
@@ -151,6 +161,6 @@ Phase 0 was measurement. It found two bugs, both fixed:
 
 ## Next
 
-- **Quote and list item content.** Typing there goes `element`: the author
-  line of a quote and the `<li>` pairing still need a content host of their
-  own.
+- Nothing on the bench goes `element` or `full` any more. Every gesture is a
+  `command` or `surgical`, in both dialects. The next gestures worth adding
+  are tables, columns and image maps.
