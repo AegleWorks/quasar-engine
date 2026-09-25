@@ -188,4 +188,29 @@ describe('BracketDepthIndex', () => {
     expect(index.length).toBe(0)
     expect(index.depthAt('', 0)).toBe(0)
   })
+  it('suffixMin is the lowest unclamped running sum after an offset, across random edits', () => {
+    const rand = mulberry32(4242)
+    let s = noisy(rand, 30_000)
+    const index = new BracketDepthIndex()
+    index.rebuild(s)
+    for (let edit = 0; edit < 200; edit++) {
+      const start = Math.floor(rand() * (s.length + 1))
+      const endOld = Math.min(s.length, start + Math.floor(rand() * 40))
+      const text = noisy(rand, Math.floor(rand() * 60))
+      const next = s.slice(0, start) + text + s.slice(endOld)
+      index.applyChange(next, start, endOld, text.length)
+      s = next
+      // One backward pass answers every offset: min over [from, n) = min(0, step + min over [from+1, n)).
+      const table = new Int32Array(s.length + 1)
+      for (let k = s.length - 1; k >= 0; k--) {
+        const c = s.charCodeAt(k)
+        const step = c === 91 ? 1 : c === 93 ? -1 : 0
+        table[k] = Math.min(0, step + table[k + 1])
+      }
+      for (let from = 0; from <= s.length; from += 37) {
+        const got = index.suffixMin(s, from)
+        if (got !== table[from]) expect(got, `suffixMin at ${from} of ${s.length}`).toBe(table[from])
+      }
+    }
+  })
 })

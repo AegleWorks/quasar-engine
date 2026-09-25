@@ -164,6 +164,37 @@ export class BracketDepthIndex {
     return depth
   }
 
+  /**
+   * The lowest UNCLAMPED running bracket sum over `[from, length)`, starting
+   * from 0 at `from` (so never above 0). It is −k exactly when some `]` after
+   * `from` would close the k-th bracket left open before `from` — the
+   * question `IncrementalParser` asks when a `[` before its window has no
+   * `]` before it (see `unmatchedStayUnmatched`).
+   *
+   * Scans the rest of the piece `from` falls in, then composes the summaries
+   * of the pieces after it: a piece whose running sum starts at `r` dips to
+   * exactly `r + dip`.
+   */
+  suffixMin(source: string, from: number): number {
+    const lengths = this.lengths
+    let pos = 0
+    let i = 0
+    while (i < lengths.length && pos + lengths[i] <= from) pos += lengths[i++]
+    let run = 0
+    let min = 0
+    const pieceEnd = i < lengths.length ? pos + lengths[i] : pos
+    for (let k = from; k < pieceEnd; k++) {
+      const c = source.charCodeAt(k)
+      if (c === 91 /* [ */) run++
+      else if (c === 93 /* ] */ && --run < min) min = run
+    }
+    for (i++; i < lengths.length; i++) {
+      if (run + this.dips[i] < min) min = run + this.dips[i]
+      run += this.sums[i]
+    }
+    return min
+  }
+
   /** Summarise `[from, to)` of `source` and append it as a piece. */
   private pushPiece(source: string, from: number, to: number): void {
     let sum = 0

@@ -147,8 +147,8 @@ describe('IncrementalParser', () => {
     const cases: [string, string, string][] = [
       // A nested container of the same kind would steal the closing delimiter.
       ['un [centre] anidado', '[centre]hola[/centre]', '[centre]ho[centre]la[/centre]'],
-      // A half-typed tag leaves a bracket the region cannot resolve alone.
-      ['un [ a medias', '[quote]hola[/quote]', '[quote]ho[la[/quote]'],
+      // A half-typed tag whose bracket a `]` after the region would pair.
+      ['un [ a medias que un ] posterior empareja', '[quote]hola[/quote]]', '[quote]ho[la[/quote]]'],
       // An unclosed [code] would swallow past the region.
       ['un [code] sin cerrar', '[quote]hola[/quote]', '[quote]ho[code]la[/quote]'],
     ]
@@ -166,6 +166,14 @@ describe('IncrementalParser', () => {
         }
       })
     }
+
+    it('a half-typed `[` that nothing after the window can pair splices narrowly', () => {
+      // No `]` after the window closes anything before it, so the `[` is bare
+      // in the full parse too.
+      const model = expectMatchesRebuild('[quote]hola[/quote]', ['[quote]ho[la[/quote]'])
+      expect(model.lastReparsePath).toBe('incremental')
+      expect(model.lastReparseWindow).toEqual({ start: 7, end: 12 })
+    })
 
     it('a stray closer of a KNOWN tag after an auto-close elsewhere: the full parse discards it', () => {
       // `[/quote]` auto-closes the inner `[b]`; the `[/b]` typed two blocks
@@ -337,6 +345,73 @@ describe('IncrementalParser', () => {
       // before a paragraph outside a climbed window: the full parse merges them.
       const base = ' March[/url]\n[/box][/notice]\n[box][box=][/box][notice][box][/box][/box][/notice]/'
       expectMatchesRebuild(base, [base.slice(0, 54) + '[/notice]' + base.slice(54)])
+    })
+  })
+
+  describe('a stray `[` before the window (open-bracket-before)', () => {
+    /** Rebuilt, or re-parsed from a window that holds the `[` itself. */
+    const expectReparsedFrom = (model: BBCodeDocumentModel, bracket: number): void => {
+      if (model.lastReparsePath === 'incremental') expect(model.lastReparseWindow!.start).toBeLessThanOrEqual(bracket)
+    }
+
+    // One unpaired `[` near the top — prose, a half-typed tag — left the
+    // bracket depth above 0 for the rest of the document, and every edit
+    // after it rebuilt everything.
+    const blocks = Array.from({ length: 30 }, (_, i) => `[b]bloque ${i}[/b] con [color=red]texto[/color]`).join('\n\n')
+    const base = `Nota [sic: sin cerrar\n\n${blocks}\n`
+
+    it('typing far after it splices', () => {
+      const at = base.indexOf('bloque 20') + 'bloque'.length
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + 'X' + base.slice(at)])
+      expect(model.lastReparsePath).toBe('incremental')
+      expect(model.lastReparseWindow!.start).toBeGreaterThan(base.indexOf('bloque 19'))
+    })
+
+    it('a `]` typed after it pairs it, and the tree says so', () => {
+      // The new `]` closes `[sic…` into one bracketed run: the text before
+      // the window changes meaning, which no window after it can express.
+      const at = base.indexOf('bloque 20')
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + ']' + base.slice(at)])
+      expectReparsedFrom(model, base.indexOf('[sic'))
+    })
+
+    it('deleting the `]` that paired it is seen on the old side too', () => {
+      // Before the edit the stray `]` paired the `[`; after it the `[` is
+      // bare. Only the OLD window shows the dependency.
+      const paired = base.replace('bloque 20', 'bloque ] 20')
+      const at = paired.indexOf('] 20')
+      const model = expectMatchesRebuild(paired, [paired.slice(0, at) + paired.slice(at + 1)])
+      expectReparsedFrom(model, paired.indexOf('[sic'))
+    })
+
+    it('deleting a `[` whose `]` is far after the window hands that `]` to the stray one', () => {
+      // `[ 20` pairs with the `]` in the last block; delete it and that `]`
+      // pairs `[sic…` instead. The window itself stays balanced: only the
+      // text AFTER it shows the change.
+      const far = base.replace('bloque 20', 'bloque [ 20').replace('bloque 29', 'bloque ] 29')
+      const at = far.indexOf('[ 20')
+      const model = expectMatchesRebuild(far, [far.slice(0, at) + far.slice(at + 1)])
+      expectReparsedFrom(model, far.indexOf('[sic'))
+    })
+
+    it('backspacing the `]` of a `[b]` splices when no `]` after the window can pair its `[`', () => {
+      const at = base.indexOf('[b]bloque 20') + 2
+      const model = expectMatchesRebuild(base, [base.slice(0, at) + base.slice(at + 1)])
+      expect(model.lastReparsePath).toBe('incremental')
+    })
+
+    it('…and does not when a stray `]` after the window would', () => {
+      const stray = base + 'fin ]\n'
+      const at = stray.indexOf('[b]bloque 20') + 2
+      const model = expectMatchesRebuild(stray, [stray.slice(0, at) + stray.slice(at + 1)])
+      // Rebuilt, or re-parsed through the `]` that now pairs the `[`.
+      if (model.lastReparsePath === 'incremental') expect(model.lastReparseWindow!.end).toBeGreaterThanOrEqual(stray.length - 2)
+    })
+
+    it('an unpaired `[/` before the window still refuses it', () => {
+      const slashed = base.replace('[sic', '[/sic')
+      const at = slashed.indexOf('bloque 20') + 'bloque'.length
+      expectMatchesRebuild(slashed, [slashed.slice(0, at) + 'X' + slashed.slice(at)])
     })
   })
 })

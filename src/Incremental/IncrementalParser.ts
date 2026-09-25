@@ -585,7 +585,7 @@ function regionIsSelfContained(
   region: GreenNode,
   regionText: string,
   ancestorKinds: ReadonlySet<string>,
-  window: { reachesEnd: boolean; closedByNextSibling: ReadonlySet<string> },
+  window: { reachesEnd: boolean; closedByNextSibling: ReadonlySet<string>; tailBalanced: () => boolean },
   pendingKind: (kind: string) => boolean,
 ): IsolationFailure | null {
   // Checked on the PARSED region rather than on a second token scan. Lexing the
@@ -619,8 +619,28 @@ function regionIsSelfContained(
         // decision. Refusing every bare `[` cost a whole-document rebuild for
         // each space typed inside a closing tag: the largest share of the
         // rebuilds left on the 547 KB fixture.
+        //
+        // And the one that does depend on what follows is decided the same way
+        // in the full parse when nothing after the window can pair it: a `[`
+        // with no `]` in the window stays unmatched unless some `]` after the
+        // window dips below the depth the window ended at, which the bracket
+        // index answers from summaries (`tailBalanced`). Backspacing the `]`
+        // of a `[b]` leaves exactly that `[`; it used to rebuild the document.
+        // Two reads past the window stay refused: a `[` as the window's last
+        // character peeks at the next one (`[/` or not), and a `[/` searches
+        // for its `]` without regard to depth. Like their twins in
+        // `unmatchedStayUnmatched`, the fuzz never reached either with the
+        // check removed — what lies past a window edge is never the rest of
+        // the same text run — and they stay because they cost nothing.
         if (node.text === '[') {
-          if (++bareScans > MAX_BARE_BRACKET_SCANS || !bracketClosesWithin(regionText, at)) return 'bare-bracket'
+          if (window.tailBalanced()) {
+            if (at === regionText.length - 1) return 'bare-bracket'
+            if (regionText.charCodeAt(at + 1) === 47 /* / */) {
+              if (++bareScans > MAX_BARE_BRACKET_SCANS || regionText.indexOf(']', at) === -1) return 'bare-bracket'
+            }
+          } else if (++bareScans > MAX_BARE_BRACKET_SCANS || !bracketClosesWithin(regionText, at)) {
+            return 'bare-bracket'
+          }
         }
 
         // A stray closer that is not text after all: an ancestor's, or one
@@ -779,6 +799,28 @@ export interface IncrementalParserOptions {
   maxRegionFraction?: number
 }
 
+/** Longest stretch searched for a `[/` between the last `]` and a window. */
+const MAX_SLASH_SCAN = 65536
+
+interface BracketRun {
+  readonly sum: number
+  /** Lowest running sum, counting the empty prefix (so never above 0). */
+  readonly min: number
+}
+const ZERO_RUN: BracketRun = { sum: 0, min: 0 }
+
+/** `acc` continued over `[from, to)` of `text`. */
+function bracketRun(text: string, from: number, to: number, acc: BracketRun): BracketRun {
+  let sum = acc.sum
+  let min = acc.min
+  for (let k = from; k < to; k++) {
+    const c = text.charCodeAt(k)
+    if (c === 91) sum++
+    else if (c === 93 && --sum < min) min = sum
+  }
+  return { sum, min }
+}
+
 export class IncrementalParser {
   private readonly minSourceLength: number
   private readonly maxRegionFraction: number
@@ -865,6 +907,65 @@ export class IncrementalParser {
     return this.brackets.depthAt(newSource, end) === 0
   }
 
+  /**
+   * When a `[` before the window has no `]` before it: does the edit leave
+   * every such bracket exactly as unmatched as it was?
+   *
+   * That is the common reason `bracketsCloseBefore` says no. One stray `[` in
+   * prose ("[sic", a smiley, a half-typed tag) stays open to the end of the
+   * document, and every keystroke after it used to rebuild the whole thing —
+   * on the corpus, the largest remaining cause of rebuilds.
+   *
+   * The lexer pairs a `[` with the first `]` after it at relative depth 0, so
+   * the k-th bracket left open at `windowStart` pairs with the first point
+   * after it where the running sum reaches −k. It stays UNPAIRED — a bare `[`
+   * text token, decided without reading anything past it — exactly when the
+   * running sum from `windowStart` to the end of the text never goes below 0.
+   * That is checked on both texts, old and new: they share everything after
+   * the window, so each is the window's own (sum, lowest point) composed with
+   * the tail's lowest point, which the index answers without reading the tail.
+   * If both hold, every bracket before the window meant, and still means, a
+   * plain `[`, and the text before the window is unchanged.
+   *
+   * Two other ways the lexer reads past a `[`: `[/` looks for the next `]`
+   * with a plain search (no depth), and any `[` peeks at the character after
+   * it. Both are refused outright — a `[/` with no `]` between it and the
+   * window, or a `[` as the window's last outside character. Neither should
+   * be reachable (the window always keeps an untouched sibling on its left,
+   * so what those two read is unchanged text), and the fuzz never reached
+   * them with the checks removed; they stay because they cost nothing and
+   * "should" is not a proof.
+   *
+   * Needs the text the edit removed (the old window is new text around it);
+   * without it the answer is no, as it always was.
+   */
+  private unmatchedStayUnmatched(
+    change: TextChange,
+    newSource: string,
+    removedText: string | undefined,
+    windowStart: number,
+    windowEndNew: number,
+  ): boolean {
+    if (removedText === undefined || removedText.length !== change.end - change.start) return false
+    if (windowStart > 0 && newSource.charCodeAt(windowStart - 1) === 91 /* [ */) return false
+    // A `[/` after the last `]` before the window searches for its `]` inside it.
+    const lastClose = newSource.lastIndexOf(']', windowStart - 1)
+    if (windowStart - lastClose > MAX_SLASH_SCAN) return false
+    for (let k = lastClose + 1; k < windowStart - 1; k++) {
+      if (newSource.charCodeAt(k) === 91 && newSource.charCodeAt(k + 1) === 47 /* / */) return false
+    }
+    const tailMin = this.brackets.suffixMin(newSource, windowEndNew)
+    const insertedEnd = change.start + change.text.length
+    // New window: [windowStart, windowEndNew). Old window: the same text with
+    // the inserted run swapped back for the removed one.
+    const fresh = bracketRun(newSource, windowStart, windowEndNew, ZERO_RUN)
+    if (fresh.min < 0 || fresh.sum + tailMin < 0) return false
+    let old = bracketRun(newSource, windowStart, change.start, ZERO_RUN)
+    old = bracketRun(removedText, 0, removedText.length, old)
+    old = bracketRun(newSource, insertedEnd, windowEndNew, old)
+    return old.min >= 0 && old.sum + tailMin >= 0
+  }
+
   /** Brings the bracket index across `change`, once per `reparse` call. */
   private syncBrackets(oldGreen: GreenNode, change: TextChange, newSource: string): void {
     const inSync = this.bracketsRoot === oldGreen
@@ -895,6 +996,7 @@ export class IncrementalParser {
     newSource: string,
     parseCallback: (text: string, options?: ReparseParseOptions) => GreenNode,
     buildRedCallback: (green: GreenNode) => RedNode,
+    removedText?: string,
   ): ReparseResult {
     const startTime = performance.now()
     const delta = change.text.length - (change.end - change.start)
@@ -1011,7 +1113,7 @@ export class IncrementalParser {
       }
       const bracketsClose = this.bracketsCloseBefore(oldGreen, change, newSource, windowStart)
       tBoundary += performance.now() - tBoundary0
-      if (!bracketsClose) {
+      if (!bracketsClose && !this.unmatchedStayUnmatched(change, newSource, removedText, windowStart, windowEnd + delta)) {
         failure ??= { reason: 'open-bracket-before' }
         escalations++
         continue
@@ -1042,7 +1144,11 @@ export class IncrementalParser {
       const closedByNextSibling = next !== null && next.kind === 'list_item' && next.leadingWidth > 0
         ? LIST_ITEM_ONLY
         : NOTHING
-      const isolation = regionIsSelfContained(parsedRegion, region, ancestorKinds, { reachesEnd, closedByNextSibling }, pendingKind)
+      // No `]` after the window closes a bracket opened before its end. Asked
+      // lazily: only a bare `[` in the region needs it.
+      let tail: boolean | undefined
+      const tailBalanced = (): boolean => (tail ??= this.brackets.suffixMin(newSource, windowEnd + delta) >= 0)
+      const isolation = regionIsSelfContained(parsedRegion, region, ancestorKinds, { reachesEnd, closedByNextSibling, tailBalanced }, pendingKind)
         ?? (isRoot ? paragraphSeam(parent, from, to, parsedRegion) : null)
       if (isolation !== null) {
         failure ??= { reason: 'region-not-isolated', isolation }

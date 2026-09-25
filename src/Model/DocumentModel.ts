@@ -461,6 +461,10 @@ export class DocumentModel {
     // character read of it — the bracket index, in the reparse below —
     // flattened all of it: on the 547 KB fixture, more than half of every
     // keystroke went to that copy.
+    // What the edit removes — the parser rebuilds the old window's brackets
+    // from it (`IncrementalParser.unmatchedStayUnmatched`). Usually a few
+    // characters; a slice of a flat string, so no copy of the document.
+    const removedText = this._source.slice(change.start, change.end)
     const concatenated = change.start + change.text.length + (this._source.length - change.end)
     if (resultingSource !== undefined && resultingSource.length === concatenated) {
       this._source = resultingSource
@@ -493,6 +497,7 @@ export class DocumentModel {
           this._source,
           (text: string, opts?: ReparseParseOptions) => this.parseToGreen(text, opts),
           buildRed,
+          removedText,
         )
         // `reparse` always returns a result now: when it cannot splice safely
         // it does the full rebuild itself rather than handing back a null the

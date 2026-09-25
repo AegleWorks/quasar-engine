@@ -31,6 +31,13 @@ import { join } from 'node:path'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 
 const PROFILE = process.env.PROFILE === '1'
+/**
+ * `QUASAR_VALIDATE_TREES=1` walks the whole tree after every edit, on purpose
+ * (see `DocumentModel`). Under it a keystroke is O(n) by construction and the
+ * timing budgets below would measure the validator, not the parser; the two
+ * that time keystrokes step aside. The counting budgets still run.
+ */
+const VALIDATING = process.env.QUASAR_VALIDATE_TREES === '1'
 
 function loadFixture(): string {
   const candidates = [
@@ -120,7 +127,7 @@ function report(name: string, result: BurstResult, full: number): void {
 }
 
 describe('Quasar @ 500k — the incremental budget', () => {
-  it('escribir al FINAL del documento no cuesta un documento', () => {
+  it.skipIf(VALIDATING)('escribir al FINAL del documento no cuesta un documento', () => {
     // The caret's home while a post is being written, and the case that used
     // to be worst: the bracket boundary check scanned the whole prefix, so
     // the further into the document the caret sat, the more each keystroke
@@ -141,7 +148,7 @@ describe('Quasar @ 500k — the incremental budget', () => {
     expect(percentile(result.perKey, 0.95)).toBeLessThan(full / 3)
   }, 600_000)
 
-  it('escribir en MITAD del documento tampoco', () => {
+  it.skipIf(VALIDATING)('escribir en MITAD del documento tampoco', () => {
     const src = loadFixture()
     const full = fullRebuildCost(src)
     // Inside a paragraph halfway down, moving forward as the text grows.
