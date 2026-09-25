@@ -37,6 +37,7 @@ export { TreeBuilder, type BuildResult } from './Syntax/TreeBuilder'
 export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
 
 // ── Semantic ──
+export { lineOf, linesOf, resolveLineId, isLineId, hasLines, breaksLine, LINE_ID_PREFIX, type TextLine } from './Semantic/lines'
 export { SemanticAnalyzer, type AnalyzeResult, type SemanticAnalyzerOptions, type CrossedTags, type UnknownTag } from './Semantic/SemanticAnalyzer'
 /**
  * Whether an analysis walked the document or only the edit — see
