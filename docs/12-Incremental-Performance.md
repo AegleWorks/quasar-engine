@@ -17,8 +17,9 @@ corpus (`docs/ai`, 65 documents) and the 547 KB fixture.
 
 The output did not change. The differential (`scripts/differential`) shows 0
 of 52 097 outputs differing. Every patched tree equals a full parse: 128 000
-fuzzed edits, both dialects, in `scratch/incr/fuzz.ts`. A smaller version is
-committed as `Tests/IncrementalDifferential.test.ts`.
+fuzzed edits over the Miliastry corpus, both dialects, with 0 divergences.
+The same fuzz, smaller and on documents that live in this repository, is
+`Tests/IncrementalDifferential.test.ts`.
 
 ## What was costing what
 
