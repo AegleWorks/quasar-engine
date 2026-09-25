@@ -243,8 +243,8 @@ export { transformOffset, transformRange, type TransformBias } from './Collab/po
 // ── Visuals ──
 export { visualThemes } from './Visuals/index'
 export type { VisualThemeId } from './Visuals/index'
-export { bindBoxDrawer, toggleBoxWithDrawer, toggleSpoilerboxWithDrawer } from './Visuals/BoxDrawer'
-export type { BoxDrawerOptions } from './Visuals/BoxDrawer'
+export { bindBoxDrawer, toggleBoxWithDrawer, toggleSpoilerboxWithDrawer, BOX_TOGGLE_EVENT } from './Visuals/BoxDrawer'
+export type { BoxDrawerOptions, BoxToggleDetail } from './Visuals/BoxDrawer'
 
 // ── Tree Transformers (document-wide effects) ──
 export { applyGradient, applyGrow, applyRainbow, applyCentralGradient, applyMultiGradient, applyEffect, countTextLength } from './Utils/treeTransformers'
@@ -416,3 +416,14 @@ export type {
 // ── Audio Runtime ──
 export { setupLyneAudioRuntime, bindLyneAudio } from './Visuals/LyneAudio'
 
+
+// ── Anchors (docs/11-Anchors-Plan.md) ──
+export {
+  AnchorSet, mapOffset, mapAnchor, diffText,
+  type Anchor, type AddAnchorOptions, type Stickiness, type TextEdit,
+} from './Anchors/AnchorSet'
+export { anchorForNode, resolveNode, openerRange } from './Anchors/bind'
+export {
+  toSelector, fromSelector, restoreAnchors, SELECTOR_CONTEXT, MIN_CONTEXT_SCORE, DISTANCE_SCALE, DISTANCE_WEIGHT,
+  type AnchorSelector, type Reanchored,
+} from './Anchors/selector'

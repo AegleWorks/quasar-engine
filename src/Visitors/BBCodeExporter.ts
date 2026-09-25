@@ -13,7 +13,7 @@ import { Visitor } from './Visitor'
 import type { VisitorContext } from './Visitor'
 import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 import { clampFontSizeValue } from '../Utils/FontSizeLimits'
-import { HTMLRenderer } from './HTMLRenderer'
+import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
 import { parseBBCode } from '../BBCode/Parser'
 import { greenToRedNode } from '../BBCode/BBCodeToGreenNode'
 import { resolveEditConflicts } from '../Edits/EditPlan'
@@ -83,8 +83,8 @@ function expandTokenRefs(text: string, resolve: TokenResolverFn): string {
  *
  * Also hands the rule a THUNK that builds a RedNode view of that SAME parse
  * (`greenToRedNode`, no store — this is a one-off read, not a document the
- * incremental parser will ever touch again) on demand, plus an `osu`-dialect
- * `HTMLRenderer` (reusing `ghostResolver()`'s cached instance), so a dropped
+ * incremental parser will ever touch again) on demand, plus an `osu`
+ * {@link OsuSemanticModel} of that same tree, so a dropped
  * BLOCK tag (`center`/`left`/`right`/`heading`) can reconcile the newlines it
  * used to eat against `NEWLINE_RULES` — see `FlattenOsuNestingRule.
  * fixupBlockNewlines`'s own doc comment. A thunk, not the tree itself: most
@@ -104,7 +104,7 @@ function expandTokenRefs(text: string, resolve: TokenResolverFn): string {
  * `emitSplit` itself (deleting the ancestor's own delimiter on a side with
  * nothing else, rather than duplicating it into an empty pair).
  */
-function flattenOsuUnsupportedNesting(source: string, getRenderer: () => HTMLRenderer): string {
+function flattenOsuUnsupportedNesting(source: string): string {
   if (!source || !mayHaveSameNameNesting(source)) return source
   let root
   try {
@@ -119,7 +119,7 @@ function flattenOsuUnsupportedNesting(source: string, getRenderer: () => HTMLRen
   } catch {
     return source
   }
-  const proposed = new FlattenOsuNestingRule({ redRoot: () => greenToRedNode(root), renderer: getRenderer() }).run({ source, root })
+  const proposed = new FlattenOsuNestingRule({ redRoot: () => greenToRedNode(root), semantic: new OsuSemanticModel('osu') }).run({ source, root })
   if (proposed.length === 0) return source
   const plan = resolveEditConflicts(proposed, source.length)
   return applyEditsToSource(source, plan.accepted)
@@ -363,32 +363,26 @@ export class BBCodeExporter extends Visitor<string> {
   private expandTokens: TokenResolverFn | null = null
 
   /**
-   * Cache of {@link HTMLRenderer.newlineEatenByGhostCloser} by dialect — the
-   * ONE place the stranded-closer newline budget lives (`NEWLINE_RULES`,
-   * `discardedTagRule`, the sibling walk). `BBCodeExporter` never repeats
-   * that table: a `discarded_tag`/`discarded_box_close` leaf's own bracket
-   * never survives export (see `exportNode`'s first line), so nothing is
-   * left in the exported text to do the eating osu's render did invisibly —
-   * `exportChildren` asks the renderer which of a dropped ghost's neighbour
-   * newlines it swallowed, and drops those same newlines as literal text
-   * instead. Keyed by dialect (not recreated per node): `target` can change
-   * mid-lifetime via `setTarget`/`export(root, target)`, and each renderer
-   * instance is cheap but not free to build.
+   * What the tree being exported means under osu!'s rules — the ONE place the
+   * stranded-closer newline budget lives (`Semantic/osu`). `BBCodeExporter`
+   * never repeats that table: a `discarded_tag`/`discarded_box_close` leaf's
+   * own bracket never survives export (see `exportNode`'s first line), so
+   * nothing is left in the exported text to do the eating osu!'s render did
+   * invisibly — `exportChildren` asks the model which of a dropped ghost's
+   * neighbour newlines osu! swallowed, and drops those same newlines as
+   * literal text instead. One model per `visit()`: a model answers for one
+   * tree snapshot, and it is built only when a ghost actually shows up.
    */
-  private ghostResolverCache = new Map<string, HTMLRenderer>()
+  private semantic: OsuSemanticModel | null = null
 
-  private ghostResolver(): HTMLRenderer {
-    // `HTMLRendererOptions.dialect` only knows 'osu' | 'miliastry' | 'lyne';
-    // 'lyne' is the one exact match, everything else that isn't 'osu' (i.e.
-    // 'miliastry') falls back the same way the renderer's own constructor
-    // default does.
-    const dialect = this.target === 'osu' || this.target === 'lyne' ? this.target : 'miliastry'
-    let resolver = this.ghostResolverCache.get(dialect)
-    if (!resolver) {
-      resolver = new HTMLRenderer({ dialect })
-      this.ghostResolverCache.set(dialect, resolver)
+  private semanticModel(): OsuSemanticModel {
+    if (this.semantic === null) {
+      // The model's dialect follows the renderer's constructor default:
+      // 'osu' and 'lyne' are exact, every other target reads as 'miliastry'.
+      const dialect = this.target === 'osu' || this.target === 'lyne' ? this.target : 'miliastry'
+      this.semantic = new OsuSemanticModel(dialect)
     }
-    return resolver
+    return this.semantic
   }
 
   constructor(
@@ -448,6 +442,7 @@ export class BBCodeExporter extends Visitor<string> {
   visit(node: RedNode, context?: VisitorContext): string {
     if (context) this.context = context
     this.depth = 0
+    this.semantic = null
     this.expandTokens =
       this.tokenResolver !== undefined && this.shouldResolveTokens() ? this.tokenResolver : null
     return this.exportNode(node)
@@ -486,7 +481,7 @@ export class BBCodeExporter extends Visitor<string> {
     // `Edits/Rules/flattenOsuNesting.ts`'s doc comment and the
     // `quasar-nested-color-is-supported` memory) — every other target is
     // untouched, so this can never change what the default preview shows.
-    return this.target === 'osu' ? flattenOsuUnsupportedNesting(raw, () => this.ghostResolver()) : raw
+    return this.target === 'osu' ? flattenOsuUnsupportedNesting(raw) : raw
   }
 
   /**
@@ -529,8 +524,8 @@ export class BBCodeExporter extends Visitor<string> {
    * separate questions per region: how many of its newlines, from the
    * START, will the nearest REAL closer before it eat for free after
    * export (`naturalCount`, from the SAME `NEWLINE_RULES` table via
-   * {@link HTMLRenderer.closingBudget}); and, per newline, did osu's render
-   * swallow it at all ({@link HTMLRenderer.isNewlineSwallowedPublic}, the
+   * {@link OsuSemanticModel.closingBudget}); and, per newline, did osu's render
+   * swallow it at all ({@link OsuSemanticModel.isNewlineSwallowed}, the
    * exact verdict the default preview used). Only a swallowed newline PAST
    * `naturalCount` needs dropping here — one within it is already spoken
    * for, and dropping it too would just shove the next one into the reach
@@ -542,7 +537,7 @@ export class BBCodeExporter extends Visitor<string> {
     let out = ''
     // The node before the current region. Its closing budget is only needed
     // when a ghost follows, which is rare, so it is resolved lazily: asking
-    // the renderer for every child made the whole export ~4× slower.
+    // the model for every child made the whole export ~4× slower.
     let pendingRealChild: RedNode | null = null
     let i = 0
     while (i < children.length) {
@@ -568,7 +563,7 @@ export class BBCodeExporter extends Visitor<string> {
         // `quasar-exporter-no-trivia` promises byte-for-byte: touching it
         // broke `RoundTrip.test.ts` (`[centre]\n[color=…]` lost its
         // newline, because `center`'s own `afterOpen` rule alone made
-        // `isNewlineSwallowedPublic` true with no ghost involved at all).
+        // `isNewlineSwallowed` true with no ghost involved at all).
         if (!hasGhost) {
           for (let j = regionStart; j < i; j++) out += this.exportNode(children[j]) // 'spacing'/'empty_line' → '\n'
           pendingRealChild = null
@@ -576,8 +571,8 @@ export class BBCodeExporter extends Visitor<string> {
         }
 
         const region = children.slice(regionStart, i)
-        const resolver = this.ghostResolver()
-        const pendingRealRule = pendingRealChild ? resolver.closingBudget(pendingRealChild) : null
+        const semantic = this.semanticModel()
+        const pendingRealRule = pendingRealChild ? semantic.closingBudget(pendingRealChild) : null
         const newlineNodes = region.filter(isNewlineKind)
         const naturalCount = pendingRealRule ? Math.min(newlineNodes.length, pendingRealRule.afterClose) : 0
 
@@ -588,7 +583,7 @@ export class BBCodeExporter extends Visitor<string> {
             continue
           }
           const k = newlineIndex++
-          const swallowed = resolver.isNewlineSwallowedPublic(regionChild)
+          const swallowed = semantic.isNewlineSwallowed(regionChild)
           if (k < naturalCount || !swallowed) out += '\n'
         }
         pendingRealChild = null

@@ -350,13 +350,15 @@ describe('patchBlocksInto — keyed reconciliation', () => {
 
 describe('patchBlocksInto — text runs (HTML text-node merging)', () => {
   it('un doc con text run (spacing+empty_line \'\n\' antes de [code]) mantiene la alineación', () => {
-    // El \n\n antes de [code] renderiza spacing('\n') + empty_line('\n'): dos
-    // bloques de texto adyacentes que el parser de HTML fusiona en UN textNode.
-    // La reconciliación debe alinearse contra ese nodo fusionado sin desviarse.
+    // El \n\n tras [/quote] son dos saltos que osu! se traga. Antes salían
+    // como dos '\n' sueltos que el parser de HTML fusionaba en UN textNode
+    // (un text run); ahora cada uno es su marcador vacío, un elemento propio,
+    // así que hay un nodo DOM por bloque. La reconciliación debe seguir
+    // alineada en los dos casos.
     const model = new BBCodeDocumentModel({ source: '[quote]cita[/quote]\n\n[code]x[/code]' })
     const el = document.createElement('div')
     patchBlocksInto(el, model.redRoot!, { renderer })
-    expect(el.childNodes.length).toBeLessThan(model.redRoot!.children.length)
+    expect(el.childNodes.length).toBe(model.redRoot!.children.length)
 
     // Editar DENTRO del quote (después del run): los nodos no deben desalinearse.
     model.applyTextUpdate('[quote]cita EDITADA[/quote]\n\n[code]x[/code]')

@@ -37,10 +37,11 @@ skipped), but every other invariant holds for them too.
 
 | Guarantee | Enforced by |
 |---|---|
-| An incremental reparse yields the tree a full parse of the same text would (ids aside). | Property tests (`RedReuse`, `Chars500kEdits`, `Fuzzer`). |
+| An incremental reparse yields the tree a full parse of the same text would (ids aside) — whichever rung of the window ladder it settled on. | Property tests (`RedReuse`, `Chars500kEdits`, `Fuzzer`, `IncrementalDifferential`: every node's kind, range and text, after every fuzzed edit, both dialects). |
 | …and it satisfies every red-tree invariant above. | `RedTreeInvariants.test.ts` (random edits); `QUASAR_VALIDATE_TREES=1` over any suite. |
 | The osu! preview tree (`OsuPreviewTree`) equals a fresh full osu! parse after every edit, with unchanged blocks as the same objects. | `OsuPreviewTree.test.ts` (random edits, both dialects, invariants checked). |
 | The patched preview DOM equals a full render of the same tree (ids aside), including when the HTML parser reshapes malformed markup. | `OsuPreviewTree.test.ts`, `BlockPatcherReshape.test.ts`, `BlockPatcherAdoption.test.ts`. |
+| The osu! semantic model (swallowed newlines, closing budgets, ghosts, title claims) answers on an incrementally patched tree exactly as on a fresh full parse. | `OsuSemanticModel.test.ts` (random edits and their undo, compared by range). |
 
 ## Rendering and transforms
 
@@ -48,6 +49,15 @@ skipped), but every other invariant holds for them too.
 |---|---|
 | A renderer's id mode is its own; no render changes another's output. | Per-instance `idMode` option (`RendererIsolation.test.ts`). |
 | Effect transforms return a new tree and leave their input untouched and valid. | `TreeTransformersPurity.test.ts`. |
+| Publishing never depends on presentation: the exporter and the edit rules reach no renderer, directly or through any chain of imports. What osu! swallows or hides comes from one `OsuSemanticModel`, shared by render and export. | `Architecture.test.ts` (transitive import graph). |
+
+## Anchors (`src/Anchors/`, docs/11-Anchors-Plan.md)
+
+| Guarantee | Enforced by |
+|---|---|
+| An anchor no edit touches keeps covering exactly the same text; every anchor stays in bounds; a deleted anchor is collapsed and flagged, never dropped. | `Anchors.test.ts` (random edits, all four stickiness modes). |
+| An anchored node resolves to the same node through incremental edits, in the default tree and in the osu! preview tree alike. | `AnchorsBind.test.ts` (patched trees against fresh parses). |
+| Re-anchoring unchanged text is exact. Re-anchoring changed text is never wrong silently: a placement that had a plausible rival (a twin) is flagged `ambiguous`. | `AnchorsSelector.test.ts` (80 fuzzed seeds; 0 silent errors). |
 
 ## Debug validation
 

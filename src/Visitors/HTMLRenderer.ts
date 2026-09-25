@@ -20,8 +20,9 @@ import { Visitor } from './Visitor'
 import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree } from '../RenderPipeline/RenderTree'
 
-import { tagToNodeKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
-import { scanBBCode } from '../Lexer/BBCodeLexer'
+import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
+import { SWALLOWED_NEWLINE_ATTR } from './domMarkers'
 import { clampFontSizeValue, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
@@ -81,6 +82,26 @@ const NEWLINE_RE = /\n/g
 /** Saltos de línea de un título de box (ver `boxTitleLineBreaks`). */
 const TITLE_NEWLINE_RE = /\r?\n/g
 
+/**
+ * A newline osu! swallows. osu! DELETES it; the preview still has to carry it,
+ * because the WYSIWYG → BBCode path (`HTMLToGreenNode`, `SurgicalReconciler`)
+ * reads it back as the source newline. It used to be a bare `'\n'`: harmless
+ * after a block, but a real space after an inline-block (`.imagemap`, a
+ * YouTube embed), which moved a word to the next line (measured with osu!'s
+ * own app.css on `originals/tesla.bbcode`). An empty hidden element carries
+ * the newline with no layout at all. See docs/10-Semantic-Model-Plan.md.
+ */
+const SWALLOWED_NEWLINE = `<span ${SWALLOWED_NEWLINE_ATTR} hidden></span>`
+const SWALLOWED_NEWLINE_RE = new RegExp(SWALLOWED_NEWLINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+
+/**
+ * The edge newline `trimOsuEdges` removes. It is a swallowed one, so it
+ * arrives as the marker; a bare `\n` is still trimmed for any other source.
+ */
+const OSU_EDGE = `(?:\\r?\\n|${SWALLOWED_NEWLINE_RE.source})`
+const OSU_LEADING_EDGE_RE = new RegExp(`^[\\t ]*${OSU_EDGE}`)
+const OSU_TRAILING_EDGE_RE = new RegExp(`${OSU_EDGE}[\\t ]*$`)
+
 /** Referencia a un token de diseño dentro de un texto: `$nombre`. */
 const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
 
@@ -111,7 +132,11 @@ export class HTMLRenderer extends Visitor<string> {
       boxTitleLineBreaks: options.boxTitleLineBreaks ?? true,
       idMode: options.idMode,
     }
+    this.semantic = new OsuSemanticModel(this.options.dialect)
   }
+
+  /** What the document means under osu!'s rules; see `Semantic/osu/OsuSemanticModel`. */
+  private readonly semantic: OsuSemanticModel
 
   setTokens(tokens?: TokenSource): void {
     this.tokenResolver = toTokenResolver(tokens)
@@ -123,13 +148,6 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   // ─── Tag → HTML Element Map ─────────────────────────────
-
-  private readonly BLOCK_TAGS = new Set([
-    'notice', 'wnotice', 'spoilerbox', 'box', 'boxw', 'list', 'quote', 'code', 'svg',
-    'heading', 'center', 'right', 'left', 'align', 'imagemap', 'image', 'document',
-    'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll',
-    'container',
-  ])
 
   private readonly INLINE_TAGS = new Set([
     'bold', 'italic', 'underline', 'strikethrough',
@@ -258,97 +276,7 @@ export class HTMLRenderer extends Visitor<string> {
 
   /** osu recorta los saltos pegados a la apertura y al cierre de box/notice. */
   private static trimOsuEdges(html: string): string {
-    return html.replace(/^[\t ]*\r?\n/, '').replace(/\r?\n[\t ]*$/, '')
-  }
-
-  /**
-   * Whether a stray closer in a box's body closes a tag its rich title left
-   * open — and so, in osu!, shows nothing.
-   *
-   * osu! pairs lazily over the raw text (see `Osu/osuPairing.ts`), so in
-   * `[box=[size=85]🔧 Settings][/size]` the `[/size]` after the `]` closes the
-   * title's `[size=85]`; neither shows. Quasar parses the title on its own,
-   * which leaves that `[/size]` an orphan text leaf, rendered as literal text
-   * (measured with the parity kit's visual comparison on `docs/ai/examples/3`
-   * and `docs/ai/hxovc`). The TREE keeps it as text on purpose: the export
-   * must still publish it, since osu! needs it to close the title's tag, and
-   * the incremental parser must not depend on a title outside its window.
-   * Only the preview stops painting it. Not for Lyne, a platform without
-   * osu!'s lazy pairing.
-   */
-  private isClaimedByBoxTitle(node: RedNode): boolean {
-    if (this.options.dialect === 'lyne' || node.children.length > 0) return false
-    const text = node.text
-    if (text.length < 4 || text.charCodeAt(0) !== 91 /* [ */ || text.charCodeAt(1) !== 47 /* / */) return false
-    for (let a = node.parent; a !== null; a = a.parent) {
-      if ((a.kind === 'box' || a.kind === 'spoilerbox') && this.titleClaims(a).has(node)) return true
-    }
-    return false
-  }
-
-  /** An element inside a rich-titled box whose closer the title claimed. */
-  private isClaimedElement(node: RedNode): boolean {
-    if (this.options.dialect === 'lyne') return false
-    for (let a = node.parent; a !== null; a = a.parent) {
-      if ((a.kind === 'box' || a.kind === 'spoilerbox') && this.titleClaims(a).has(node)) return true
-    }
-    return false
-  }
-
-  /** The title tag's spelling each claimed element answers to, for its literal opener. */
-  private readonly claimedTag = new WeakMap<RedNode, string>()
-
-  /** Per box: the closers its title claims (leaves or elements). See `isClaimedByBoxTitle`. */
-  private readonly titleClaimCache = new WeakMap<RedNode, ReadonlySet<RedNode>>()
-
-  private titleClaims(box: RedNode): ReadonlySet<RedNode> {
-    const cached = this.titleClaimCache.get(box)
-    if (cached !== undefined) return cached
-    const claims = new Set<RedNode>()
-    const rawTitle = box.metadata?.rawTitle
-    if (typeof rawTitle === 'string' && rawTitle.includes('[')) {
-      // What the title opens and never closes, by exact (lowercase) spelling:
-      // osu!'s passes are case-sensitive.
-      const pending = new Map<string, number>()
-      for (const t of scanBBCode(rawTitle)) {
-        if ((t.kind !== 'open' && t.kind !== 'close') || t.tag === '*') continue
-        const spelled = rawTitle.slice(t.start, t.end)
-        if (spelled !== spelled.toLowerCase()) continue
-        pending.set(t.tag, (pending.get(t.tag) ?? 0) + (t.kind === 'open' ? 1 : -1))
-      }
-      // The FIRST closers of those tags after the title, in document order —
-      // the lazy pass takes the nearest one, whatever it closes in Quasar's
-      // tree: an orphan text leaf (`[box=[size=85]T][/size]`), or the closing
-      // delimiter of a same-kind element opened in the body
-      // (`[box=[size=85]T][size=80]x[/size]` — then osu! shows `[size=80]`
-      // as text). A node's closer comes after its children, so the walk
-      // visits children first. Raw blocks hold text, not closers.
-      const kindOf = new Map<string, string>()
-      for (const tag of pending.keys()) kindOf.set(tagToNodeKind(tag, this.options.dialect), tag)
-      const claim = (tag: string | undefined, n: RedNode): void => {
-        if (tag === undefined) return
-        const left = pending.get(tag) ?? 0
-        if (left <= 0) return
-        claims.add(n)
-        this.claimedTag.set(n, tag)
-        pending.set(tag, left - 1)
-      }
-      const walk = (n: RedNode): void => {
-        for (const c of n.children) {
-          if (c.kind === 'code' || c.kind === 'inline_code') continue
-          if (c.kind === 'text' && c.children.length === 0) {
-            const m = /^\[\/([a-z0-9_-]+)\]$/.exec(c.text)
-            if (m !== null) claim(m[1], c)
-            continue
-          }
-          walk(c)
-          if (c.green.trailingWidth > 0) claim(kindOf.get(c.kind), c)
-        }
-      }
-      walk(box)
-    }
-    this.titleClaimCache.set(box, claims)
-    return claims
+    return html.replace(OSU_LEADING_EDGE_RE, '').replace(OSU_TRAILING_EDGE_RE, '')
   }
 
   private idAttr(node: RedNode): string {
@@ -428,13 +356,13 @@ export class HTMLRenderer extends Visitor<string> {
     // An element whose closer a box title claimed (see `isClaimedByBoxTitle`):
     // osu! swallowed its opener as plain text, so it shows as written, its
     // content unwrapped, its closer gone.
-    if (node.green.trailingWidth > 0 && node.green.leadingWidth > 0 && this.isClaimedElement(node)) {
-      const tag = this.claimedTag.get(node) ?? node.kind
+    if (node.green.trailingWidth > 0 && node.green.leadingWidth > 0 && this.semantic.isClaimedElement(node)) {
+      const tag = this.semantic.claimedTagOf(node) ?? node.kind
       return this.escapeHtml(`[${tag}${node.text}]`) + this.renderChildren(node)
     }
     // Leaf nodes
     if (node.children.length === 0 && node.kind === 'text') {
-      if (this.isClaimedByBoxTitle(node) || this.isOrphanBoxCloseText(node)) return ''
+      if (this.semantic.isClaimedByBoxTitle(node) || this.semantic.isOrphanBoxCloseText(node)) return ''
       let rawText = node.text
       // El `indexOf` va delante: casi ningún texto lleva un `$`, y así ni se
       // arranca el motor de expresiones regulares. El patrón es de módulo
@@ -583,10 +511,10 @@ export class HTMLRenderer extends Visitor<string> {
       case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
       case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
-        if (this.isNewlineSwallowed(node)) return '\n'
+        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
         return `<br${this.idAttr(node)}>`
       case 'empty_line':
-        if (this.isNewlineSwallowed(node)) return '\n'
+        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
         return `<div class="bb-empty-line"${this.idAttr(node)}><br></div>`
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un
@@ -633,421 +561,6 @@ export class HTMLRenderer extends Visitor<string> {
     }
   }
 
-  // ─── Newline swallowing ─────────────────────────────────
-  //
-  // osu! turns newlines into `<br />` with one flat rule at the very end of
-  // `BBCodeFromDB::toHTML` — `str_replace("\n", '<br />')`. Every subtlety
-  // lives BEFORE that line: each block pass is a regex that eats the newlines
-  // touching its own tags, so those newlines are simply gone by the time the
-  // flat rule runs. The amount eaten differs per tag, and the asymmetries are
-  // not decorative:
-  //
-  //   parseBox      `\[box=…\]\n*`   `\n*\[/box\]\n?`
-  //   parseCode     `\[code\]\n*`    `\n*\[/code\]\n?`
-  //   parseNotice   `\[notice\]\n*`  `\n*\[/notice\]\n?`
-  //   parseList     `\s*\[\*\]`      `\s*\[/list\]\n?\n?`
-  //   parseQuote    `\[quote…\]\s*`  `\s*\[/quote\]\n?\n?`
-  //   parseHeading  —                `\[/heading\]\n?`
-  //   parseImagemap —                `\[/imagemap\]\n?`
-  //   parseAlignment  strtr of `[centre]\n` and `[/centre]\n` — exactly one
-  //
-  // Quasar used to approximate all of that with two neighbourhood heuristics
-  // (`isPrevBlockBoundary` / `isTrailingBlockBoundary`) that treated every
-  // block alike, so they over-ate at `[centre]`/`[/imagemap]` and under-ate at
-  // `[/list]`/`[/quote]`. This models the real rules instead.
-  //
-  // Deliberately NOT gated on the dialect: Miliastry is "osu with steroids"
-  // and has to break lines the same way. Blocks that only exist in Miliastry
-  // (tables, gallery, columns, scroll, …) have no osu counterpart to copy, so
-  // they keep the legacy behaviour via {@link HTMLRenderer.LEGACY_BLOCK_RULE}.
-
-  /** How many newlines a construct swallows around its own tags. */
-  private static readonly NEWLINE_RULES: Record<string, {
-    /** Newlines eaten right after the opening tag. */
-    afterOpen: 'all' | 'whitespace' | 'one' | 'none'
-    /** Newlines eaten right before the closing tag. */
-    beforeClose: 'all' | 'whitespace' | 'none'
-    /** Whitespace eaten right before the OPENING tag (`\s*\[\*\]`). */
-    beforeOpen: 'whitespace' | 'none'
-    /** Newlines eaten right after the closing tag. */
-    afterClose: number
-  }> = {
-    // `\n*` inside both edges, one newline after the close.
-    box:        { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
-    boxw:       { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
-    spoilerbox: { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
-    notice:     { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
-    wnotice:    { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
-    code:       { afterOpen: 'all', beforeClose: 'all', beforeOpen: 'none', afterClose: 1 },
-    // `\s*` — not just newlines — and TWO newlines after the close.
-    quote:      { afterOpen: 'whitespace', beforeClose: 'whitespace', beforeOpen: 'none', afterClose: 2 },
-    // `[list]` itself eats nothing after its opening tag: the pass that eats
-    // is `\s*\[\*\]`, which needs an item to follow. `[list]\n\nloose text`
-    // keeps both newlines; `[list]\n[*]a` loses one to the item, not the list.
-    list:       { afterOpen: 'none', beforeClose: 'whitespace', beforeOpen: 'none', afterClose: 2 },
-    // `\s*\[\*\]`. The matching `[/*]` of the table exists only in legacy
-    // phpBB rows — `BBCodeForDB` never emits one — so the item's close is
-    // width-less here and its two-newline budget is unreachable by design;
-    // `[*]a\n\n[*]b` loses both newlines to the NEXT item's `\s*`, which is
-    // the same output by a different route.
-    list_item:  { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'whitespace', afterClose: 0 },
-    // strtr with `[centre]\n` / `[/centre]\n`: exactly one on each outer edge,
-    // and nothing before the close — `x\n[/centre]` really does keep its `<br>`.
-    center:     { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
-    left:       { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
-    right:      { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
-    align:      { afterOpen: 'one', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
-    heading:    { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
-    imagemap:   { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 1 },
-    // `[img]` is inline in osu and swallows nothing at all.
-    image:      { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 0 },
-    document:   { afterOpen: 'none', beforeClose: 'none', beforeOpen: 'none', afterClose: 0 },
-    // No `discarded_box_close` row here on purpose: it is never looked up by
-    // KIND (it is a leaf, never a `parent.kind` in the `eaten*` scans below)
-    // — `closingRule` resolves its budget from its own text instead, the
-    // same way `discarded_tag` always has (see `discardedTagRule`), because
-    // it can now stand for any of FIVE different tags, not just `box`/
-    // `spoilerbox` (`Parser.ts`'s `closeDivUnits`).
-  }
-
-  /**
-   * What a Miliastry-only block does. This is what the old
-   * `isPrevBlockBoundary` / `isTrailingBlockBoundary` pair did for every block:
-   * eat the first newline after the open, every newline before the close, and
-   * the first newline after the close.
-   */
-  private static readonly LEGACY_BLOCK_RULE = {
-    afterOpen: 'one', beforeClose: 'all', beforeOpen: 'none', afterClose: 1,
-  } as const
-
-  /**
-   * Containers whose opening tag occupies no source text, so a backwards scan
-   * has to walk straight through them.
-   */
-  private static readonly WIDTHLESS_OPEN = new Set(['paragraph', 'group'])
-
-  /**
-   * Same for the closing side. `list_item` is here because `[/*]` is never
-   * written: an item ends where the next `[*]` or the `[/list]` begins, so
-   * `\s*\[/list\]` sees the newline that Quasar stores inside the item.
-   */
-  private static readonly WIDTHLESS_CLOSE = new Set(['paragraph', 'group', 'list_item'])
-
-  /**
-   * `pairing: 'osu'` only — the four div-emitting kinds that can be closed
-   * by an UNRELATED crossing closer instead of their own (`Parser.ts`'s
-   * `closeDivUnits`; `box`/`spoilerbox` are deliberately NOT here — their
-   * own crossing already has a dedicated `box_tail`/`WIDTHLESS_CLOSE`-free
-   * path). See `eatenByClosingTag`.
-   */
-  private static readonly CROSSABLE_DIV_KINDS = new Set(['notice', 'center', 'left', 'right'])
-
-  /**
-   * Descend through widthless-open wrappers (`paragraph`, `group`) to the
-   * FIRST real child, the mirror of how `eatenAfterClosingTag` descends
-   * through `WIDTHLESS_CLOSE` to the LAST one. Used only to find a
-   * `discarded_box_close` that root normalization left as a paragraph's
-   * first child instead of a direct root-level sibling (see Parser.ts).
-   */
-  private static firstNonWidthlessOpenChild(node: RedNode): RedNode {
-    let cur = node
-    while (HTMLRenderer.WIDTHLESS_OPEN.has(cur.kind) && cur.children.length > 0) {
-      cur = cur.children[0]
-    }
-    return cur
-  }
-
-  private newlineRule(kind: string) {
-    const rule = HTMLRenderer.NEWLINE_RULES[kind]
-    if (rule) return rule
-    return this.BLOCK_TAGS.has(kind) ? HTMLRenderer.LEGACY_BLOCK_RULE : null
-  }
-
-  /**
-   * `[/box]` recovered from a `discarded_tag` leaf's own text, same shape as
-   * `SemanticAnalyzer`'s `DISCARDED_CLOSING_TAG` (which pairs these leaves
-   * with the opener a crossing auto-closed, for the `crossed-tags`
-   * diagnostic). A `discarded_tag` never arises any other way — the legacy
-   * closing-tag walk in `Parser.ts` only mints one when `tok.tag` is already
-   * in `autoClosed`, i.e. an opener for it existed earlier and a crossing
-   * close already claimed it — so every leaf here really did close SOME
-   * tag, just too late to count. A genuinely orphan lazy-family closer with
-   * no opener anywhere is never even a `discarded_tag`/`discarded_box_close`
-   * — `Osu/osuPairing.ts`'s `sealLazy` forces it to plain literal `text`
-   * before the tree is even built (see its own module doc).
-   */
-  private static readonly DISCARDED_CLOSING_TAG = /^\[\/([a-zA-Z0-9_*-]+)\]$/
-
-  /**
-   * The close-side newline rule the tag a `discarded_tag`/`discarded_box_close`
-   * leaf WOULD have closed carries, if any — `[/box]` gets `box`'s own
-   * `beforeClose`/`afterClose` budget, `[/centre]` gets `center`'s (a
-   * DIFFERENT budget — see `NEWLINE_RULES`), `[/b]` gets `null` (inline tags
-   * carry no newline budget in osu, so a stranded `[/b]` eats nothing, same
-   * as a matched one). Resolved from the leaf's own text rather than
-   * threaded through as metadata: the tag name only exists once, in the
-   * source, and every other consumer of `discarded_tag` (the `crossed-tags`
-   * diagnostic, the incremental parser) already recovers it the same way
-   * instead of widening the node shape. Also covers `discarded_box_close`
-   * (`pairing: 'osu'` only): `Parser.ts`'s `closeDivUnits` mints one for ANY
-   * of its five div-emitting tags — not just `box`/`spoilerbox` — once
-   * arriving with nothing left open to close, and each needs ITS OWN budget,
-   * not box's.
-   */
-  private discardedTagRule(node: RedNode) {
-    const match = HTMLRenderer.DISCARDED_CLOSING_TAG.exec(node.text)
-    if (!match) return null
-    return this.newlineRule(tagToNodeKind(match[1].toLowerCase(), this.options.dialect))
-  }
-
-  /**
-   * The newline rule a CLOSING node carries — its own kind for a real,
-   * matched close, or the kind it stands in for when it is a ghost of one:
-   * `discarded_tag` (a stranded closer of an auto-closed tag, any dialect,
-   * any pairing) or `discarded_box_close` (`pairing: 'osu'` only — a
-   * `box`/`spoilerbox`/`notice`/`centre`/`left`/`right` closer that reached
-   * `Parser.ts`'s `closeDivUnits` with nothing left open). Both ghosts are
-   * invisible in the render the same way a matched close's own tag is, so
-   * they swallow newlines the same way too, and BOTH resolve their budget
-   * from their own leaf text — `discarded_box_close` used to carry one fixed
-   * table row (`box`'s own budget) back when it could only ever be a
-   * `box`/`spoilerbox`; now that it can be any of the five, it needs the
-   * same per-tag lookup `discarded_tag` already does.
-   */
-  private closingRule(node: RedNode) {
-    return this.isGhost(node)
-      ? this.discardedTagRule(node)
-      : this.newlineRule(node.kind)
-  }
-
-  /**
-   * A closer the render shows nothing for, standing in for a real one's
-   * newline budget: the parser's ghosts, plus an orphan `[/box]` text leaf
-   * (see {@link isOrphanBoxCloseText}).
-   */
-  private isGhost(node: RedNode): boolean {
-    return node.kind === 'discarded_tag' || node.kind === 'discarded_box_close' || this.isOrphanBoxCloseText(node)
-  }
-
-  /**
-   * An orphan `[/box]`/`[/spoilerbox]`, which the default pairing keeps as a
-   * literal text leaf: the preview renders it as the `discarded_box_close`
-   * `pairing: 'osu'` makes of it — invisible, eating newlines like a real
-   * box closer — because osu! seals every such closer and HTMLPurifier drops
-   * the stray `</div>` (measured with the parity kit's visual comparison on
-   * `docs/ai/NyuPenyu`, where a crossed `[/box]` showed as text).
-   *
-   * Only the render changes. The tree keeps the text and the export still
-   * publishes it (`BBCodeExporter`'s own ghost test is by kind), so what goes
-   * to osu! is byte-for-byte what it was. Exact lowercase spelling, as osu!'s
-   * pass is case-sensitive; not inside raw blocks, whose text is content; not
-   * for Lyne, a platform without osu!'s sealing.
-   */
-  private isOrphanBoxCloseText(node: RedNode): boolean {
-    if (node.kind !== 'text' || node.children.length > 0 || this.options.dialect === 'lyne') return false
-    const text = node.text
-    if (text !== '[/box]' && text !== '[/spoilerbox]') return false
-    for (let a = node.parent; a !== null; a = a.parent) {
-      if (a.kind === 'code' || a.kind === 'inline_code') return false
-    }
-    return true
-  }
-
-  private static isNewlineNode(node: RedNode): boolean {
-    return node.kind === 'spacing' || node.kind === 'empty_line'
-  }
-
-  private static isBlankText(node: RedNode): boolean {
-    return node.kind === 'text' && node.children.length === 0 && node.text.trim() === ''
-  }
-
-  /**
-   * Whether this `spacing` / `empty_line` leaf is eaten by a neighbouring tag
-   * and therefore renders nothing.
-   *
-   * Each leaf is exactly ONE source newline (the parser splits a run into one
-   * node per `\n`), so the four scans below can be read straight off the
-   * regexes they mirror. A newline eaten by any of them is eaten: osu's passes
-   * run in a fixed order, but since a consumed newline is consumed whichever
-   * pass claimed it, the union is enough — the per-pass order only matters for
-   * a budget that could be spent elsewhere, and budgets here are counted from
-   * the tag outwards, exactly as `\n?\n?` counts.
-   */
-  private isNewlineSwallowed(node: RedNode): boolean {
-    return this.eatenByOpeningTag(node)
-      || this.eatenByClosingTag(node)
-      || this.eatenAfterClosingTag(node)
-      || this.eatenBeforeOpeningTag(node)
-  }
-
-  /**
-   * Shared with `BBCodeExporter`: the newline budget a CLOSING node carries —
-   * public so both consumers read it from the one table (`NEWLINE_RULES`)
-   * instead of a second, drifting copy. Works on a real, matched close (its
-   * own kind) exactly the same as on a `discarded_tag`/`discarded_box_close`
-   * ghost (the kind it stands in for), which is the point: the exporter has
-   * to reason about ghosts and real closers with the SAME budget lookup,
-   * since after a ghost's bracket is dropped (see `BBCodeExporter.exportNode`)
-   * a REAL closer can end up newly adjacent to newlines the ghost used to
-   * sit between, and it is not safe to assume which one osu's re-parse will
-   * credit — see `BBCodeExporter.exportChildren`'s run-by-run accounting.
-   */
-  closingBudget(node: RedNode) {
-    return this.closingRule(node)
-  }
-
-  /**
-   * Shared with `BBCodeExporter`: whether this SOURCE-tree `spacing`/
-   * `empty_line` leaf renders nothing in the default preview. Public for the
-   * same reason as {@link closingBudget} — the exporter needs the render's
-   * own verdict on each newline to know which ones a dropped ghost's budget
-   * was covering, without re-deriving `NEWLINE_RULES` and the four eaten-by-*
-   * scans a second time.
-   */
-  isNewlineSwallowedPublic(node: RedNode): boolean {
-    return this.isNewlineSwallowed(node)
-  }
-
-  /** `\[box\]\n*`, `\[quote\]\s*`, `[centre]\n`. */
-  private eatenByOpeningTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    let newlinesBetween = 0
-    let blankBetween = false
-    for (;;) {
-      const prev = cur.previousSibling
-      if (prev) {
-        if (HTMLRenderer.isNewlineNode(prev)) { newlinesBetween++; cur = prev; continue }
-        if (HTMLRenderer.isBlankText(prev)) { blankBetween = true; cur = prev; continue }
-        return false
-      }
-      const parent = cur.parent
-      if (!parent) return false
-      if (HTMLRenderer.WIDTHLESS_OPEN.has(parent.kind)) { cur = parent; continue }
-      const rule = this.newlineRule(parent.kind)
-      if (!rule) return false
-      switch (rule.afterOpen) {
-        case 'whitespace': return true
-        // `\n*` matches newlines only: a stray space breaks the run.
-        case 'all': return !blankBetween
-        case 'one': return !blankBetween && newlinesBetween === 0
-        default: return false
-      }
-    }
-  }
-
-  /**
-   * `\n*\[/box\]`, `\s*\[/quote\]`, `\s*\[/list\]` — and, for a discarded
-   * closing leaf sitting among its own siblings rather than at the tail of a
-   * real container's children, the same `beforeClose` budget applied to it
-   * directly (this method's usual climb to an ENCLOSING parent's boundary
-   * does not apply — a leaf has no children to be the last one of). That
-   * covers `discarded_box_close` (an orphan `[/box]`/`[/spoilerbox]` under
-   * `pairing: 'osu'`) and `discarded_tag` (a stranded closer of a tag a
-   * crossing auto-closed, any dialect, any pairing — see `closingRule`).
-   * Scoped to those two kinds deliberately: eating `beforeClose` for an
-   * arbitrary NEXT sibling would also eat newlines before a real block's
-   * OPENING tag, which osu! never does (`eatenByOpeningTag` already covers
-   * openings).
-   */
-  private eatenByClosingTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    let blankBetween = false
-    for (;;) {
-      const next = cur.nextSibling
-      if (next) {
-        if (HTMLRenderer.isNewlineNode(next)) { cur = next; continue }
-        if (HTMLRenderer.isBlankText(next)) { blankBetween = true; cur = next; continue }
-        // `discarded_box_close` is deliberately NOT paragraph-flushed (see
-        // Parser.ts), so it can sit as the FIRST child of a `paragraph` —
-        // widthless on this side too — instead of always a direct sibling.
-        // `discarded_tag` never needs that descent (it IS flushed out of
-        // paragraphs, see Parser.ts's root-normalization loop) but reusing
-        // the same helper is harmless: it is a no-op when `next` is not
-        // itself a paragraph/group.
-        const boundary = HTMLRenderer.firstNonWidthlessOpenChild(next)
-        if (this.isGhost(boundary)) {
-          const rule = this.closingRule(boundary)
-          return rule?.beforeClose === 'all' ? !blankBetween : rule?.beforeClose === 'whitespace'
-        }
-        return false
-      }
-      const parent = cur.parent
-      if (!parent) return false
-      if (HTMLRenderer.WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
-      // `pairing: 'osu'` crossing: a `notice`/`center`/`left`/`right` with NO
-      // closing delimiter of its own (`trailingWidth === 0`) was closed by
-      // an UNRELATED closer's cascade (`Parser.ts`'s `closeDivUnits`), not by
-      // its own `[/tag]` — so its own `beforeClose` budget never actually
-      // ran against this content. osu!'s real per-tag regex pass for THIS
-      // content is whichever closer's bytes come LATER in the source
-      // (tracked as a `discarded_tag` further out, past this node's own
-      // `nextSibling` — see the `next` branch above): climb past this node
-      // the same way as a `WIDTHLESS_CLOSE` wrapper instead of applying its
-      // own rule. Measured: `[centre][notice]x[/centre]\n\n[/notice]\n\nb`
-      // — real osu! eats the WHOLE seam via `notice`'s own `beforeClose`
-      // (unlimited), even though it sits, in this tree, inside `centre`.
-      // Scoped to these four kinds only. `trailingWidth === 0` can ALSO
-      // happen under the default `'quasar'` pairing (its own, unrelated
-      // auto-close of an inner tag crossed by an outer one — see
-      // `Parser.ts`'s legacy branch), in which case this climbs past it too;
-      // the full suite (`OsuNewlineSwallowing.test.ts` and everything else
-      // exercising quasar-pairing auto-close) stays green with this in
-      // place, so it has not been observed to change that pairing's output —
-      // but it was not written FOR it, only measured not to break it.
-      if (HTMLRenderer.CROSSABLE_DIV_KINDS.has(parent.kind) && parent.green.trailingWidth === 0) {
-        cur = parent
-        continue
-      }
-      const rule = this.newlineRule(parent.kind)
-      if (!rule) return false
-      switch (rule.beforeClose) {
-        case 'whitespace': return true
-        case 'all': return !blankBetween
-        default: return false
-      }
-    }
-  }
-
-  /** `\[/box\]\n?`, `\[/list\]\n?\n?`. */
-  private eatenAfterClosingTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    let newlinesBetween = 0
-    for (;;) {
-      const prev = cur.previousSibling
-      if (!prev) {
-        const parent = cur.parent
-        if (parent && HTMLRenderer.WIDTHLESS_OPEN.has(parent.kind)) { cur = parent; continue }
-        return false
-      }
-      if (HTMLRenderer.isNewlineNode(prev)) { newlinesBetween++; cur = prev; continue }
-      // Descend to whatever real closing tag sits immediately to our left.
-      // `discarded_tag`/`discarded_box_close` are leaves (no children), so
-      // this stops on them unchanged — `closingRule` then resolves what they
-      // stand in for.
-      let closer: RedNode = prev
-      while (HTMLRenderer.WIDTHLESS_CLOSE.has(closer.kind) && closer.children.length > 0) {
-        closer = closer.children[closer.children.length - 1]
-      }
-      const rule = this.closingRule(closer)
-      return rule !== null && newlinesBetween < rule.afterClose
-    }
-  }
-
-  /** `\s*\[\*\]` — the only pass that eats whitespace BEFORE an opening tag. */
-  private eatenBeforeOpeningTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    for (;;) {
-      const next = cur.nextSibling
-      if (next) {
-        if (HTMLRenderer.isNewlineNode(next) || HTMLRenderer.isBlankText(next)) { cur = next; continue }
-        return this.newlineRule(next.kind)?.beforeOpen === 'whitespace'
-      }
-      const parent = cur.parent
-      if (!parent) return false
-      if (HTMLRenderer.WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
-      return false
-    }
-  }
 
   // ─── Render Helpers ─────────────────────────────────────
 
@@ -1810,6 +1323,9 @@ export class HTMLRenderer extends Visitor<string> {
 
   /** See {@link HTMLRendererOptions.boxTitleLineBreaks}. */
   private breakTitleLines(html: string): string {
+    // A title is text, not a flow: a swallowed newline in it is still the
+    // author's line break (or the literal newline without the option).
+    html = html.replace(SWALLOWED_NEWLINE_RE, '\n')
     return this.options.boxTitleLineBreaks ? html.replace(TITLE_NEWLINE_RE, '<br />') : html
   }
 

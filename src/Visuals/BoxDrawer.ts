@@ -65,7 +65,8 @@ function prefersReducedMotion(): boolean {
 
 /**
  * Animate one `<details>` to its opposite state, reversing cleanly when it is
- * already mid-animation.
+ * already mid-animation. Returns the state it is heading to (`true`: opening),
+ * which the attribute cannot tell while a close is still animating.
  *
  * Exported so hosts that toggle boxes programmatically (a keyboard command, an
  * "expand all" action) go through the same animation as a click.
@@ -75,10 +76,11 @@ function animateDrawer(
   isOpen: () => boolean,
   setOpen: (v: boolean) => void,
   options: BoxDrawerOptions = {}
-): void {
+): boolean {
   if (typeof details.animate !== 'function' || prefersReducedMotion()) {
-    setOpen(!isOpen())
-    return
+    const next = !isOpen()
+    setOpen(next)
+    return next
   }
 
   // Height as painted right now — read BEFORE cancelling, so an interrupted
@@ -146,6 +148,7 @@ function animateDrawer(
 
   animation.addEventListener('finish', () => settle(true))
   animation.addEventListener('cancel', () => settle(false))
+  return opening
 }
 
 /**
@@ -155,8 +158,8 @@ function animateDrawer(
 export function toggleBoxWithDrawer(
   details: HTMLDetailsElement,
   options: BoxDrawerOptions = {}
-): void {
-  animateDrawer(details, () => details.open, (v) => { details.open = v }, options)
+): boolean {
+  return animateDrawer(details, () => details.open, (v) => { details.open = v }, options)
 }
 
 /**
@@ -169,13 +172,29 @@ export function toggleBoxWithDrawer(
 export function toggleSpoilerboxWithDrawer(
   box: HTMLElement,
   options: BoxDrawerOptions = {}
-): void {
-  animateDrawer(
+): boolean {
+  return animateDrawer(
     box,
     () => box.classList.contains(OSU_OPEN_CLASS),
     (v) => box.classList.toggle(OSU_OPEN_CLASS, v),
     options
   )
+}
+
+/**
+ * Dispatched (bubbling) on a box that the USER opened or closed by clicking,
+ * with `detail.open` set to the state it is heading to. Hosts that remember
+ * which boxes are open listen for this; programmatic toggles (the editor
+ * cursor revealing a box) do not fire it, since they are not a choice to keep.
+ */
+export const BOX_TOGGLE_EVENT = 'quasar:box-toggle'
+
+export interface BoxToggleDetail {
+  open: boolean
+}
+
+function announceToggle(box: HTMLElement, open: boolean): void {
+  box.dispatchEvent(new CustomEvent<BoxToggleDetail>(BOX_TOGGLE_EVENT, { bubbles: true, detail: { open } }))
 }
 
 /**
@@ -201,7 +220,7 @@ export function bindBoxDrawer(
       const box = osuLink.closest('.js-spoilerbox')
       if (!(box instanceof HTMLElement) || !root.contains(box)) return
       e.preventDefault()   // el <a href="#"> saltaria al principio del documento
-      toggleSpoilerboxWithDrawer(box, options)
+      announceToggle(box, toggleSpoilerboxWithDrawer(box, options))
       return
     }
 
@@ -215,7 +234,7 @@ export function bindBoxDrawer(
     // Enter/Space on the summary also arrive here as a click, so the keyboard
     // is covered without a separate handler.
     e.preventDefault()
-    toggleBoxWithDrawer(details, options)
+    announceToggle(details, toggleBoxWithDrawer(details, options))
   }
 
   root.addEventListener('click', handleClick)
