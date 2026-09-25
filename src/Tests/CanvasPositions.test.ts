@@ -74,10 +74,12 @@ describe.each(['miliastry', 'osu', 'lyne'] as const)('canvas positions — %s', 
     for (const t of textNodes(container)) {
       const offset = sourceOffsetOfDomPoint(root, container, t, 0)!
       expect(offset).not.toBeNull()
-      // Never inside a tag's own brackets.
+      // Never inside a tag's own brackets — except text the tag really holds,
+      // a box heading, which lands on its own characters (see below).
       const before = SOURCE.lastIndexOf('[', offset - 1)
       const closer = SOURCE.lastIndexOf(']', offset - 1)
-      expect(before <= closer || offset === before + 0, JSON.stringify(t.nodeValue)).toBe(true)
+      const itsOwnText = SOURCE.startsWith(t.nodeValue ?? '', offset) && (t.nodeValue ?? '').trim() !== ''
+      expect(before <= closer || itsOwnText, JSON.stringify(t.nodeValue)).toBe(true)
     }
   })
 
@@ -109,5 +111,14 @@ describe('the toolbar loop, end to end', () => {
       expect(range.toString()).toBe('párrafo')
       expect(a.node.parentElement!.tagName).toBe('STRONG')
     }
+  })
+})
+
+describe('a box heading is its opener\'s attribute', () => {
+  it.each(['miliastry', 'osu'] as const)('%s: a caret in "Mi Caja" is inside `[box=Mi Caja]`', (dialect) => {
+    const source = '[box=Mi Caja]\n  Primera\n[/box]'
+    const { root, container } = paint(source, dialect)
+    const heading = textNodes(container).find(t => t.nodeValue === 'Mi Caja')!
+    expect(sourceOffsetOfDomPoint(root, container, heading, 2)).toBe(source.indexOf('Mi Caja') + 2)
   })
 })

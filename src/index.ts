@@ -139,6 +139,7 @@ export { DeleteNode } from './Commands/DeleteNode'
 export { WrapInTag } from './Commands/WrapInTag'
 export { SplitNode, MergeNode } from './Commands/SplitMerge'
 export { insertLineBreak, joinBackward, joinForward, deleteSelection } from './Commands/StructuralEdits'
+export { insertContent, isBlockContent, type ParseSource } from './Commands/InsertContent'
 export { toggleInlineFormat, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
 // ── Queries ──

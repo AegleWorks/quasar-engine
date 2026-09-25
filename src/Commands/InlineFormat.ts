@@ -44,7 +44,7 @@ export interface FormatEdit {
   changes: TextChange[]
   /** Where the formatted text ended up, in the coordinates of the edited source. */
   selection: SourceSelection
-  action: 'wrap' | 'unwrap' | 'recolor' | 'break' | 'join' | 'delete'
+  action: 'wrap' | 'unwrap' | 'recolor' | 'break' | 'join' | 'delete' | 'insert'
 }
 
 const OPEN: Record<ToggleFormat, string> = { bold: '[b]', italic: '[i]', underline: '[u]', strikethrough: '[s]' }

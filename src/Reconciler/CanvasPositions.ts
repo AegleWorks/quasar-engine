@@ -124,6 +124,14 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
     return leaf.range.start + Math.min(width, visibleBefore(text.nodeValue ?? '', at))
   }
 
+  // A heading painted from the opener's attribute — `[box=Mi Caja]` — is text
+  // of the source, just not a leaf: it lives in the tag. `node.text` is that
+  // attribute, `=` included, ending right before the opener's `]`.
+  const value = (text.nodeValue ?? '').replace(ZWSP, '')
+  const attr = scope.parent && scope.range.start < scope.innerStart ? scope.text : ''
+  const inAttr = value.trim() !== '' ? attr.indexOf(value) : -1
+  if (inAttr > 0) return scope.innerStart - 1 - attr.length + inAttr + visibleBefore(text.nodeValue ?? '', at)
+
   // Made-up text: the nearest paired text before it, else after it.
   const texts = domTexts(el)
   const i = texts.indexOf(text)

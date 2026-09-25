@@ -23,6 +23,27 @@ the selection is put back on the same text.
 | `insertLineBreak(root, source, sel)` (Enter) | `\n`; in a list item `\n[*]`, or out of the list on an empty last item; a heading closes and reopens (in the author's spelling); at a block's swallowed edge `\n\n` |
 | `joinBackward` / `joinForward` (Backspace / Delete) | removes the line's `\n`, or `\n[*]` between items; never a box's own edge newline (a no-op edit) |
 | `deleteSelection(root, source, sel)` | deletes the range but keeps every tag it cuts through: no orphan `[/b]` |
+| `insertContent(root, source, sel, content, parse)` (paste, toolbar blocks, links, typing over a selection) | one insertion, see the placement rules below |
+
+### Where pasted content goes
+
+**Where the caret is.** The caret is the author's intent. Content moves only
+when that place cannot sensibly hold it:
+
+| Caret in | Inline content | Block content |
+|---|---|---|
+| text, a box, a notice, a list item | at the caret | at the caret |
+| `[b]`, `[i]`, `[color]`, `[url]`… | at the caret | end of the line, outside every inline tag |
+| `[heading]` | at the caret | right after the heading |
+| a box heading (`[box=…]`) | at the caret | first line of that box's content |
+| `[code]` | literally, at the caret | literally, at the caret |
+
+osu! accepts a box inside `[b]` (all of it turns bold) and even a `[notice]`
+inside a box heading (painted inside the clickable title). Both were checked on
+osu! itself, and Quasar's osu! mode renders them the same way. Moving the block
+out is a choice of style, not a correction. A selection is replaced: deleted
+with `deleteSelection`, then the rule is applied where that leaves the caret.
+The result is one change against the original source.
 
 A selection is cut into **runs**: inline content under one parent, broken at
 line breaks and at blocks. A tag opened in a run closes in the same run, so
@@ -117,6 +138,11 @@ gestures in both dialects:
 - The only remaining `element` rows are typing in a quote or a list, and inline
   paste. None of them loses style.
 
+Phase 3 (paste, toolbar blocks, links, typing over a selection): **0 `full`
+in both dialects**. No gesture on the bench rewrites the document any more.
+Text lost, carets misplaced and distant style lost are all 0. A box heading's
+text now maps to its place in the opener's attribute.
+
 Phase 0 was measurement. It found two bugs, both fixed:
 
 - Enter mid-paragraph dropped the text after the caret.
@@ -125,8 +151,6 @@ Phase 0 was measurement. It found two bugs, both fixed:
 
 ## Next
 
-- **Paste and insert block** as a parsed `TextChange` at the caret's source
-  offset. Today these are `full` / `unpaired-top-level`.
 - **Quote and list item content.** Typing there goes `element`: the author
   line of a quote and the `<li>` pairing still need a content host of their
   own.
