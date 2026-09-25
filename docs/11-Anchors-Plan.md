@@ -140,6 +140,22 @@ show 0 differences.
     report an orphan — never a wrong place. The wrong-place rate is measured
     and stated;
   - duplicate text is disambiguated by its context.
+- ✅ **Done** — `src/Anchors/selector.ts`, `Tests/AnchorsSelector.test.ts`.
+  The first measurement changed the design. osu! userpages repeat sections,
+  so a quote often has **twins with identical context**. When an edit damaged
+  the true one's context, a far twin scored higher on context alone. Three
+  consequences:
+  - each side of the context is scored on its own;
+  - candidates are ranked by context minus a distance penalty `d / (d + 4096)`,
+    which never flattens, so the nearer of two equals wins;
+  - a placement that had a plausible rival is flagged `ambiguous`.
+
+  Twins cannot always be told apart without the edit history, so the
+  guarantee is **never wrong silently**, not "never wrong". Fuzz over 80
+  seeds, where 1 in 10 edits pastes 5 000 characters copied from the document
+  itself: 1 670 right, 45 wrong (all 45 flagged), 0 orphans. The flag is
+  conservative (675 right placements carry it too). A mutant that never flags
+  fails the test.
 
 ### A4 — first client: open boxes (Miliastry)
 - An `openBoxes` store per `DocumentInstance`.
@@ -171,7 +187,7 @@ diagnostic stops hiding its identical twins elsewhere.
 |---|---|
 | An anchor no edit touches keeps covering exactly the same text. | A1 property test. |
 | An anchored node resolves to the same node through incremental edits, in any tree. | A2 property test. |
-| Re-anchoring unchanged text is exact; re-anchoring changed text never lands on the wrong place silently. | A3 tests (wrong-place rate measured). |
+| Re-anchoring unchanged text is exact; re-anchoring changed text never lands on the wrong place silently (a placement with a plausible rival is flagged `ambiguous`). | A3 tests (wrong-place rate measured). |
 
 ## What this plan does not do
 

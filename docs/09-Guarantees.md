@@ -51,6 +51,14 @@ skipped), but every other invariant holds for them too.
 | Effect transforms return a new tree and leave their input untouched and valid. | `TreeTransformersPurity.test.ts`. |
 | Publishing never depends on presentation: the exporter and the edit rules reach no renderer, directly or through any chain of imports. What osu! swallows or hides comes from one `OsuSemanticModel`, shared by render and export. | `Architecture.test.ts` (transitive import graph). |
 
+## Anchors (`src/Anchors/`, docs/11-Anchors-Plan.md)
+
+| Guarantee | Enforced by |
+|---|---|
+| An anchor no edit touches keeps covering exactly the same text; every anchor stays in bounds; a deleted anchor is collapsed and flagged, never dropped. | `Anchors.test.ts` (random edits, all four stickiness modes). |
+| An anchored node resolves to the same node through incremental edits, in the default tree and in the osu! preview tree alike. | `AnchorsBind.test.ts` (patched trees against fresh parses). |
+| Re-anchoring unchanged text is exact. Re-anchoring changed text is never wrong silently: a placement that had a plausible rival (a twin) is flagged `ambiguous`. | `AnchorsSelector.test.ts` (80 fuzzed seeds; 0 silent errors). |
+
 ## Debug validation
 
 Run any suite with `QUASAR_VALIDATE_TREES=1` and `DocumentModel` asserts

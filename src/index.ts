@@ -423,3 +423,7 @@ export {
   type Anchor, type AddAnchorOptions, type Stickiness, type TextEdit,
 } from './Anchors/AnchorSet'
 export { anchorForNode, resolveNode, openerRange } from './Anchors/bind'
+export {
+  toSelector, fromSelector, restoreAnchors, SELECTOR_CONTEXT, MIN_CONTEXT_SCORE, DISTANCE_SCALE, DISTANCE_WEIGHT,
+  type AnchorSelector, type Reanchored,
+} from './Anchors/selector'
