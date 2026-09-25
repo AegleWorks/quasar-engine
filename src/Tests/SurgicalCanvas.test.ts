@@ -23,11 +23,14 @@ function makeCanvas(source: string) {
   let current = source
   let baseSource = source
   let baseAST = model.redRoot!
+  let last: ReturnType<typeof reconcileVisualDOMToBBCode> | null = null
   container.innerHTML = renderer.render(baseAST)
 
   return {
     container,
     get source() { return current },
+    /** The reconciler's own account of the last pass (`route`, `counts`). */
+    get last() { return last! },
     /** One keystroke. The canvas is NOT repainted, exactly as in the component. */
     type(mutate: (c: HTMLElement) => void) {
       mutate(container)
@@ -43,6 +46,7 @@ function makeCanvas(source: string) {
      */
     flush() {
       const result = reconcileVisualDOMToBBCode(baseSource, baseAST, container)
+      last = result
       const edits = computeTextDelta(current, result.resultingSource)
       for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
         current = current.slice(0, edit.start) + edit.text + current.slice(edit.end)
@@ -219,6 +223,30 @@ describe('untouched bytes stay untouched', () => {
     const canvas = makeCanvas('[box=Titulo]\n  cuerpo\n[/box]\n\n[color=#ABCDEF]intacto[/color]')
     canvas.type(c => { (c.querySelector('.bb-box-heading') as HTMLElement).textContent = 'Otro' })
     expect(canvas.source).toBe('[box=Otro]\n  cuerpo\n[/box]\n\n[color=#ABCDEF]intacto[/color]')
+  })
+
+  it('Enter in the middle of a paragraph keeps the text after the caret', () => {
+    // The browser puts the break INSIDE the paragraph's span; re-imported, that
+    // is a paragraph, a break and another paragraph. Only the first used to be
+    // exported, so everything after the caret left the document while the
+    // canvas still showed it. Found by the WYSIWYG gesture bench in Chromium.
+    const canvas = makeCanvas('Hola a todos, esto es un párrafo normal.\n\nOtro párrafo.')
+    canvas.type(c => {
+      const para = c.querySelector('.bb-paragraph') as HTMLElement
+      para.innerHTML = 'Hola a todos, esto es un pár<br>rafo normal.'
+    })
+    expect(canvas.source).toContain('rafo normal.')
+    expect(canvas.source).toBe('Hola a todos, esto es un pár\nrafo normal.\n\nOtro párrafo.')
+    expect(canvas.last.route).toBe('element')
+  })
+
+  it('says how it got there: surgical for typed text, and what it touched', () => {
+    const canvas = makeCanvas('[b]fuerte[/b] y suave\n\n[color=#ABCDEF]intacto[/color]')
+    canvas.type(c => { (c.querySelector('strong') as HTMLElement).firstChild!.nodeValue = 'FUERTE' })
+    expect(canvas.source).toBe('[b]FUERTE[/b] y suave\n\n[color=#ABCDEF]intacto[/color]')
+    expect(canvas.last.route).toBe('surgical')
+    expect(canvas.last.counts.textLeaves).toBe(1)
+    expect(canvas.last.counts.reserialized).toBe(0)
   })
 
   it('keeps the quoted author when the quote body is edited', () => {

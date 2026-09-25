@@ -14,6 +14,46 @@ export interface ReconcileResult {
   edits: SurgicalEdit[]
   hasChanges: boolean
   resultingSource: string
+  /**
+   * How the DOM was turned into edits — the reconciler's own account, for
+   * measuring how often each gesture stays surgical:
+   *
+   *  - `unchanged`: nothing to do;
+   *  - `surgical`: only text leaves, line breaks, filled blank lines and
+   *    deleted blocks — every byte around them is the author's;
+   *  - `element`: at least one element was rebuilt from its DOM through the
+   *    exporter (`reserializeElement`), normalising the author's spelling
+   *    inside it;
+   *  - `full`: the whole document went through HTML and back.
+   */
+  route: ReconcileRoute
+  /** Why the whole document was re-serialised, when `route` is `full`. */
+  fullReason?: ReconcileFullReason
+  /** What the edits were made of. */
+  counts: ReconcileCounts
+}
+
+export type ReconcileRoute = 'unchanged' | 'surgical' | 'element' | 'full'
+export type ReconcileFullReason = 'no-baseline' | 'duplicate-ids' | 'unpaired-top-level'
+
+export interface ReconcileCounts {
+  /** Text leaves rewritten in place. */
+  textLeaves: number
+  /** Runs of line breaks rewritten as typed. */
+  lineRuns: number
+  /** Blank lines the user typed into. */
+  filledLines: number
+  /** Elements rebuilt from their DOM. */
+  reserialized: number
+  /** Top-level blocks the user removed. */
+  deletions: number
+}
+
+/** The counts of the reconcile in progress (single-threaded, reset per call). */
+let counts: ReconcileCounts = zeroCounts()
+
+function zeroCounts(): ReconcileCounts {
+  return { textLeaves: 0, lineRuns: 0, filledLines: 0, reserialized: 0, deletions: 0 }
 }
 
 const ZWSP = /​/g
@@ -134,6 +174,7 @@ function diffTextLeaves(
   const edits: SurgicalEdit[] = []
   for (let i = 0; i < leaves.length; i++) {
     if (before[i] === after[i]) continue
+    counts.textLeaves++
     edits.push({
       start: leaves[i].range.start,
       end: leaves[i].range.end,
@@ -163,12 +204,13 @@ function fillEmptyLine(
   if (!subtree.redRoot || subtree.redRoot.children.length === 0) return null
 
   const typed = exporter
-    .export(subtree.redRoot.children[0])
+    .export(wholeFragment(subtree.redRoot))
     // A contenteditable keeps a bogus trailing `<br>` in a block it just filled;
     // it is the caret's placeholder, not a line the author asked for.
     .replace(/\n+$/, '')
   if (typed === '') return null
 
+  counts.filledLines++
   return [{ start: originalNode.range.start, end: originalNode.range.end, text: `${typed}\n` }]
 }
 
@@ -265,6 +307,7 @@ function descend(
       // as written. The one thing it must not do is lose the newline that used
       // to close the run, or the typed text glues onto the block below it.
       const closed = trailingNewlines(slot.text) > 0
+      counts.lineRuns++
       edits.push({
         start: slot.nodes[0].range.start,
         end: slot.nodes[slot.nodes.length - 1].range.end,
@@ -313,6 +356,19 @@ function editsForNode(
   )
 }
 
+/**
+ * What an element's DOM imports to, as one thing to export.
+ *
+ * Usually a single node. But the browser edits inside an element, and an
+ * Enter in the middle of a paragraph leaves `<span>uno<br>dos</span>`, which
+ * imports as a paragraph, a break and another paragraph. Exporting only the
+ * first of them dropped everything after the caret from the document while
+ * the canvas still showed it.
+ */
+function wholeFragment(root: RedNode): RedNode {
+  return root.children.length === 1 ? root.children[0] : root
+}
+
 /** Last resort for one element: rebuild just that block from its DOM. */
 function reserializeElement(
   originalNode: RedNode,
@@ -321,11 +377,12 @@ function reserializeElement(
 ): SurgicalEdit[] | null {
   const subtree = HTMLDocumentModel.fromHTML(cleanHtml)
   if (!subtree.redRoot || subtree.redRoot.children.length === 0) return null
+  counts.reserialized++
   return [
     {
       start: originalNode.range.start,
       end: originalNode.range.end,
-      text: exporter.export(subtree.redRoot.children[0]).trim(),
+      text: exporter.export(wholeFragment(subtree.redRoot)).trim(),
     },
   ]
 }
@@ -356,6 +413,7 @@ function deletionsFor(
   for (const child of originalAST.children) {
     if (!child.id || present.has(child.id)) continue
     if (!renderer.render(child).includes('data-node-id')) continue
+    counts.deletions++
     out.push({ start: child.range.start, end: child.range.end, text: '' })
   }
   return out
@@ -402,18 +460,19 @@ export function reconcileVisualDOMToBBCode(
   exporter: BBCodeExporter = new BBCodeExporter(),
   renderer: HTMLRenderer = new HTMLRenderer()
 ): ReconcileResult {
-  const fullFallback = (): ReconcileResult => {
+  counts = zeroCounts()
+  const fullFallback = (fullReason: ReconcileFullReason): ReconcileResult => {
     const rawHtml = editorContainer.innerHTML.replace(ZWSP, '').trim()
     const doc = HTMLDocumentModel.fromHTML(rawHtml)
     const exported = doc.redRoot
       ? exporter.export(doc.redRoot)
       : editorContainer.innerText.replace(ZWSP, '').trim()
     const edits = computeTextDelta(originalSource, exported)
-    return { edits, hasChanges: edits.length > 0, resultingSource: exported }
+    return { edits, hasChanges: edits.length > 0, resultingSource: exported, route: 'full', fullReason, counts: zeroCounts() }
   }
 
-  if (!originalAST || !originalSource) return fullFallback()
-  if (hasDuplicateNodeIds(editorContainer)) return fullFallback()
+  if (!originalAST || !originalSource) return fullFallback('no-baseline')
+  if (hasDuplicateNodeIds(editorContainer)) return fullFallback('duplicate-ids')
 
   const idMap = buildNodeIdMap(originalAST)
 
@@ -465,7 +524,7 @@ export function reconcileVisualDOMToBBCode(
     }
   }
 
-  if (requiresFullFallback) return fullFallback()
+  if (requiresFullFallback) return fullFallback('unpaired-top-level')
 
   return finalise(originalSource, [...edits, ...deletionsFor(originalAST, editorContainer, renderer)])
 }
@@ -477,6 +536,8 @@ function finalise(originalSource: string, edits: SurgicalEdit[]): ReconcileResul
       edits: [],
       hasChanges: false,
       resultingSource: originalSource,
+      route: 'unchanged',
+      counts,
     }
   }
 
@@ -490,5 +551,7 @@ function finalise(originalSource: string, edits: SurgicalEdit[]): ReconcileResul
     edits: sortedEdits,
     hasChanges: true,
     resultingSource: updatedSource,
+    route: counts.reserialized > 0 ? 'element' : 'surgical',
+    counts,
   }
 }

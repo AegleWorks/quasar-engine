@@ -165,7 +165,7 @@ export { PluginRegistry, type PluginManifest, type PluginContribution } from './
 export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpener } from './Repair/NestingRepair'
 
 // ── Reconciler ──
-export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult } from './Reconciler/SurgicalReconciler'
+export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult, type ReconcileRoute, type ReconcileFullReason, type ReconcileCounts } from './Reconciler/SurgicalReconciler'
 
 // ── Lightbulb Engine (fixes, refactorings, fix-all, host) ──
 //
