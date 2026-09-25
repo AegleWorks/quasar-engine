@@ -8,8 +8,8 @@
  * intermediate step. The flow is:
  *
  *   BBCode text
- *     ↓ scanBBCode() [BBCodeLexer]
- *   BBCodeToken[]
+ *     ↓ createBBCodeScanner() [BBCodeLexer] — or scanBBCode(), collected
+ *   BBCodeToken, one at a time
  *     ↓ parseTokensToGreen() [this]
  *   GreenNode
  *     ↓ greenToRedNode()
@@ -28,8 +28,8 @@ import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
 import type { NodeKind } from '../Types/core'
 import { GreenNodePool } from '../Syntax/GreenNodePool'
 import { tagToNodeKind, type BBCodeDialect } from './BBCodeToGreenNode'
-import type { BBCodeToken } from '../Lexer/BBCodeLexer'
-import { scanBBCode } from '../Lexer/BBCodeLexer'
+import type { BBCodeToken, BBCodeTokenCursor, BBCodeOpenToken, BBCodeCloseToken } from '../Lexer/BBCodeLexer'
+import { createBBCodeScanner } from '../Lexer/BBCodeLexer'
 import { isBlockKind } from './BBCodeToGreenNode'
 import { applyOsuPairing } from '../Osu/osuPairing'
 
@@ -38,7 +38,7 @@ import { applyOsuPairing } from '../Osu/osuPairing'
 /**
  * Parse BBCode tokens into a GreenNode tree.
  *
- * @param tokens  Flat array of tokens from scanBBCode()
+ * @param input   A scanner from createBBCodeScanner(), or the array scanBBCode() collects
  * @param source  Original source text (used for fallback error text)
  * @returns       A GreenNode tree with 'document' as root
  */
@@ -83,8 +83,20 @@ export interface ParseOptions {
   pairing?: 'quasar' | 'osu';
 }
 
+/** A cursor over a token array, for callers that already hold one. */
+function arrayCursor(tokens: readonly BBCodeToken[]): () => BBCodeToken | null {
+  let at = 0
+  return () => (at < tokens.length ? tokens[at++] : null)
+}
+
+function drain(cursor: BBCodeTokenCursor): BBCodeToken[] {
+  const out: BBCodeToken[] = []
+  for (let t = cursor.next(); t !== null; t = cursor.next()) out.push(t)
+  return out
+}
+
 export function parseTokensToGreen(
-  tokens: BBCodeToken[],
+  input: BBCodeToken[] | BBCodeTokenCursor,
   source: string,
   options: ParseOptions = {}
 ): GreenNode {
@@ -93,8 +105,16 @@ export function parseTokensToGreen(
   const interner = options.interner ?? null;
   const normalizeParagraphs = options.normalizeParagraphs ?? true;
   const extraTags = options.extraTags;
+  // Tokens are consumed strictly in order, so a cursor straight off the lexer
+  // does: each token dies young instead of sitting in a 54.000-slot array
+  // until the tree is built — which is what the collector used to spend a
+  // cold parse copying. osu! pairing needs the whole list (it looks ahead for
+  // closers), so it still gets one.
+  let next: () => BBCodeToken | null
   if (options.pairing === 'osu') {
-    tokens = applyOsuPairing(tokens, source);
+    next = arrayCursor(applyOsuPairing(Array.isArray(input) ? input : drain(input), source));
+  } else {
+    next = Array.isArray(input) ? arrayCursor(input) : () => input.next();
   }
   const root: GreenNode[] = []
   /**
@@ -397,9 +417,154 @@ export function parseTokensToGreen(
     }
   }
 
-  let i = 0
-  while (i < tokens.length) {
-    const tok = tokens[i]
+  // The two tag branches live in their own functions, not inline in the
+  // loop. As one 650-line function, the loop was a single unit for V8 to
+  // optimise: a cold open measured 24 ms of Turbofan compile before the
+  // parser ran optimised at all, against a parse of about 30. Split, the
+  // loop is small and each branch is compiled on its own, early.
+  // ── Opening tag: [tag] or [tag=attrs] ──────────────────
+  function onOpen(tok: BBCodeOpenToken): void {
+    // Unknown tags (not in the BBCode spec) must be preserved
+    // as literal text. Treating them as real tags would cause
+    // their content to disappear from the preview.
+    // E.g. [Gateron], [90 misses], [b][Gateron][/b] → visible text
+    //
+    // Plugin-registered tags (`extraTags`) are the one exception: they are
+    // known — just not to the built-in table — and parse as containers.
+    let openKind = tagToNodeKind(tok.tag, dialect)
+    if (openKind === 'custom') {
+      const pluginKind = extraTags?.get(tok.tag)
+      if (pluginKind === undefined) {
+        const tagText = source.slice(tok.start, tok.end)
+        addToParent(createLeaf('text', tagText))
+        return
+      }
+      openKind = pluginKind
+    }
+
+    if (tok.tag === '*') {
+      // Auto-close previous [*] if it's currently open. It ends where this
+      // one begins and owns no closing delimiter.
+      if (stack.length > 0 && stack[stack.length - 1].tag === '*') {
+        addToParent(closeFrame(stack.pop()!, 0))
+      }
+      autoClosed.delete(tok.tag)
+      stack.push({
+        tag: tok.tag,
+        kind: openKind,
+        attrs: tok.attrs,
+        children: [],
+        leadingWidth: tok.end - tok.start,
+      })
+      return
+    }
+
+    if (openKind === 'separator') {
+      addToParent(createLeaf('separator', tok.attrs, tok.end - tok.start))
+      return
+    }
+
+    let attrs = tok.attrs
+    if (openKind === 'effect' || openKind === 'anim' || openKind === 'container') {
+      if (tok.tag !== openKind) {
+        const param = tok.attrs.startsWith('=') ? tok.attrs.slice(1) : tok.attrs
+        attrs = param ? `=${tok.tag}:${param}` : `=${tok.tag}`
+      }
+    } else if (openKind === 'style_tag' && tok.tag !== 'style') {
+      if (tok.tag === 'nowrap') attrs = '=white-space:nowrap'
+      else if (tok.tag === 'smallcaps') attrs = '=font-variant:small-caps'
+    }
+
+    // Push onto the stack — children will be added later.
+    autoClosed.delete(tok.tag)
+    stack.push({
+      tag: tok.tag,
+      kind: openKind,
+      attrs,
+      children: [],
+      leadingWidth: tok.end - tok.start,
+    })
+  }
+
+  // ── Closing tag: [/tag] ──────────────────────────────────
+  function onClose(tok: BBCodeCloseToken): void {
+    const closeWidth = tok.end - tok.start
+
+    if (strictMode) {
+      if (stack.length > 0 && stack[stack.length - 1].tag === '*' && tok.tag === 'list') {
+        // Auto-close [*] before closing [list] even in strict mode. The
+        // `[/list]` belongs to the list, not to the item.
+        addToParent(closeFrame(stack.pop()!, 0))
+      }
+      // STRICT MODE: Only match the very top of the stack.
+      if (stack.length > 0 && stack[stack.length - 1].tag === tok.tag) {
+        addToParent(closeFrame(stack.pop()!, closeWidth))
+      } else {
+        // Strict Mode Mismatch: Emit an 'error' node with the raw tag as child
+        const expected = stack.length > 0 ? stack[stack.length - 1].tag : 'nothing'
+        const text = source.slice(tok.start, tok.end)
+        const errMsg = `Syntax Error: Expected /${expected}, got /${tok.tag}`
+        addToParent(createNode('error', errMsg, [createLeaf('text', text)]))
+      }
+    } else if (options.pairing === 'osu' && DIV_UNITS[tok.tag] !== undefined) {
+      closeDivUnits(tok.tag, closeWidth, tok.start, tok.end)
+    } else if (autoClosed.has(tok.tag)) {
+      // Este cierre llega tarde: su etiqueta ya se cerró sola cuando un
+      // cierre anterior pasó por encima de ella. No puede reclamar un
+      // ancestro del mismo nombre — hacerlo cerraba el contenedor de fuera
+      // y expulsaba de él a todo el resto del documento.
+      //
+      // Se conserva como nodo `discarded_tag`, que guarda su rango pero no
+      // se ve ni se exporta. Como texto volvía a salir del exportador
+      // convertido en etiqueta viva, y el documento dejaba de ser estable al
+      // reexportarlo (lo cazó `Fuzzer`).
+      autoClosed.delete(tok.tag)
+      addToParent(createLeaf('discarded_tag', source.slice(tok.start, tok.end)))
+    } else {
+      // LEGACY MODE: Walk backwards, auto-close inner tags, ignore orphaned closing tags.
+      let found = -1
+      for (let j = stack.length - 1; j >= 0; j--) {
+        if (stack[j].tag === tok.tag) {
+          found = j
+          break
+        }
+      }
+
+      if (found !== -1) {
+        // Auto-close any tags that were opened inside this one. They end
+        // where the closing delimiter BEGINS — the delimiter itself is owned
+        // by the tag it actually closes, so an auto-closed inner tag gets a
+        // trailing width of 0. This used to hand them `tok.end`, which made
+        // `[b][i]x[/b]` produce an `italic` and a `bold` both ending at 10,
+        // overlapping on the four characters of `[/b]`.
+        const autoClosedHere: string[] = []
+        while (stack.length - 1 > found) {
+          const inner = stack.pop()!
+          autoClosedHere.push(inner.tag)
+          currentBucket().push(closeFrame(inner, 0))
+        }
+
+        // Close the matched tag itself — this one does own the delimiter.
+        addToParent(closeFrame(stack.pop()!, closeWidth))
+        // Las etiquetas que se cerraron solas quedan pendientes en el nivel
+        // que ha quedado abierto tras cerrar esta.
+        for (const tag of autoClosedHere) autoClosed.add(tag)
+      } else {
+        // Orphaned closing tag: no matching opener anywhere on the stack.
+        //
+        // This used to be dropped silently, which punched a hole in the
+        // source coverage — those characters belonged to no node, so the
+        // tree could not answer "what is at this offset?" for them. They are
+        // now kept as literal text, exactly as unknown tags already were
+        // (see the `custom` branch above), which is also what the user
+        // typed and therefore what they expect to see.
+        addToParent(createLeaf('text', source.slice(tok.start, tok.end)))
+      }
+    }
+  }
+
+  let tok = next()
+  while (tok !== null) {
 
     // ── Newline token(s) ─────────────────────────────────────
     if (tok.kind === 'newline') {
@@ -413,14 +578,15 @@ export function parseTokensToGreen(
       // ambiguity that made `shiftRanges` impossible to write correctly.
       let first = true
 
-      while (i < tokens.length && tokens[i].kind === 'newline') {
-        const nl = tokens[i]
+      let nl: BBCodeToken | null = tok
+      while (nl !== null && nl.kind === 'newline') {
         // The first newline is soft spacing (ignored in block context); any
         // subsequent one is a hard empty line (rendered as `<br>` everywhere).
         addToParent(createLeaf(first ? 'spacing' : 'empty_line', '', nl.end - nl.start))
         first = false
-        i++
+        nl = next()
       }
+      tok = nl
 
       continue
     }
@@ -428,156 +594,19 @@ export function parseTokensToGreen(
     // ── Plain text ───────────────────────────────────────────
     if (tok.kind === 'text') {
       addToParent(createLeaf('text', tok.value))
-      i++
+      tok = next()
       continue
     }
 
-    // ── Opening tag: [tag] or [tag=attrs] ──────────────────
     if (tok.kind === 'open') {
-      // Unknown tags (not in the BBCode spec) must be preserved
-      // as literal text. Treating them as real tags would cause
-      // their content to disappear from the preview.
-      // E.g. [Gateron], [90 misses], [b][Gateron][/b] → visible text
-      //
-      // Plugin-registered tags (`extraTags`) are the one exception: they are
-      // known — just not to the built-in table — and parse as containers.
-      let openKind = tagToNodeKind(tok.tag, dialect)
-      if (openKind === 'custom') {
-        const pluginKind = extraTags?.get(tok.tag)
-        if (pluginKind === undefined) {
-          const tagText = source.slice(tok.start, tok.end)
-          addToParent(createLeaf('text', tagText))
-          i++
-          continue
-        }
-        openKind = pluginKind
-      }
-
-      if (tok.tag === '*') {
-        // Auto-close previous [*] if it's currently open. It ends where this
-        // one begins and owns no closing delimiter.
-        if (stack.length > 0 && stack[stack.length - 1].tag === '*') {
-          addToParent(closeFrame(stack.pop()!, 0))
-        }
-        autoClosed.delete(tok.tag)
-        stack.push({
-          tag: tok.tag,
-          kind: openKind,
-          attrs: tok.attrs,
-          children: [],
-          leadingWidth: tok.end - tok.start,
-        })
-        i++
-        continue
-      }
-
-      if (openKind === 'separator') {
-        addToParent(createLeaf('separator', tok.attrs, tok.end - tok.start))
-        i++
-        continue
-      }
-
-      let attrs = tok.attrs
-      if (openKind === 'effect' || openKind === 'anim' || openKind === 'container') {
-        if (tok.tag !== openKind) {
-          const param = tok.attrs.startsWith('=') ? tok.attrs.slice(1) : tok.attrs
-          attrs = param ? `=${tok.tag}:${param}` : `=${tok.tag}`
-        }
-      } else if (openKind === 'style_tag' && tok.tag !== 'style') {
-        if (tok.tag === 'nowrap') attrs = '=white-space:nowrap'
-        else if (tok.tag === 'smallcaps') attrs = '=font-variant:small-caps'
-      }
-
-      // Push onto the stack — children will be added later.
-      autoClosed.delete(tok.tag)
-      stack.push({
-        tag: tok.tag,
-        kind: openKind,
-        attrs,
-        children: [],
-        leadingWidth: tok.end - tok.start,
-      })
-      i++
+      onOpen(tok)
+      tok = next()
       continue
     }
 
-    // ── Closing tag: [/tag] ──────────────────────────────────
     if (tok.kind === 'close') {
-      const closeWidth = tok.end - tok.start
-
-      if (strictMode) {
-        if (stack.length > 0 && stack[stack.length - 1].tag === '*' && tok.tag === 'list') {
-          // Auto-close [*] before closing [list] even in strict mode. The
-          // `[/list]` belongs to the list, not to the item.
-          addToParent(closeFrame(stack.pop()!, 0))
-        }
-        // STRICT MODE: Only match the very top of the stack.
-        if (stack.length > 0 && stack[stack.length - 1].tag === tok.tag) {
-          addToParent(closeFrame(stack.pop()!, closeWidth))
-        } else {
-          // Strict Mode Mismatch: Emit an 'error' node with the raw tag as child
-          const expected = stack.length > 0 ? stack[stack.length - 1].tag : 'nothing'
-          const text = source.slice(tok.start, tok.end)
-          const errMsg = `Syntax Error: Expected /${expected}, got /${tok.tag}`
-          addToParent(createNode('error', errMsg, [createLeaf('text', text)]))
-        }
-      } else if (options.pairing === 'osu' && DIV_UNITS[tok.tag] !== undefined) {
-        closeDivUnits(tok.tag, closeWidth, tok.start, tok.end)
-      } else if (autoClosed.has(tok.tag)) {
-        // Este cierre llega tarde: su etiqueta ya se cerró sola cuando un
-        // cierre anterior pasó por encima de ella. No puede reclamar un
-        // ancestro del mismo nombre — hacerlo cerraba el contenedor de fuera
-        // y expulsaba de él a todo el resto del documento.
-        //
-        // Se conserva como nodo `discarded_tag`, que guarda su rango pero no
-        // se ve ni se exporta. Como texto volvía a salir del exportador
-        // convertido en etiqueta viva, y el documento dejaba de ser estable al
-        // reexportarlo (lo cazó `Fuzzer`).
-        autoClosed.delete(tok.tag)
-        addToParent(createLeaf('discarded_tag', source.slice(tok.start, tok.end)))
-      } else {
-        // LEGACY MODE: Walk backwards, auto-close inner tags, ignore orphaned closing tags.
-        let found = -1
-        for (let j = stack.length - 1; j >= 0; j--) {
-          if (stack[j].tag === tok.tag) {
-            found = j
-            break
-          }
-        }
-
-        if (found !== -1) {
-          // Auto-close any tags that were opened inside this one. They end
-          // where the closing delimiter BEGINS — the delimiter itself is owned
-          // by the tag it actually closes, so an auto-closed inner tag gets a
-          // trailing width of 0. This used to hand them `tok.end`, which made
-          // `[b][i]x[/b]` produce an `italic` and a `bold` both ending at 10,
-          // overlapping on the four characters of `[/b]`.
-          const autoClosedHere: string[] = []
-          while (stack.length - 1 > found) {
-            const inner = stack.pop()!
-            autoClosedHere.push(inner.tag)
-            currentBucket().push(closeFrame(inner, 0))
-          }
-
-          // Close the matched tag itself — this one does own the delimiter.
-          addToParent(closeFrame(stack.pop()!, closeWidth))
-          // Las etiquetas que se cerraron solas quedan pendientes en el nivel
-          // que ha quedado abierto tras cerrar esta.
-          for (const tag of autoClosedHere) autoClosed.add(tag)
-        } else {
-          // Orphaned closing tag: no matching opener anywhere on the stack.
-          //
-          // This used to be dropped silently, which punched a hole in the
-          // source coverage — those characters belonged to no node, so the
-          // tree could not answer "what is at this offset?" for them. They are
-          // now kept as literal text, exactly as unknown tags already were
-          // (see the `custom` branch above), which is also what the user
-          // typed and therefore what they expect to see.
-          addToParent(createLeaf('text', source.slice(tok.start, tok.end)))
-        }
-      }
-
-      i++
+      onClose(tok)
+      tok = next()
       continue
     }
   }
@@ -641,13 +670,12 @@ export function parseTokensToGreen(
  * Full parse: BBCode text → GreenNode.
  *
  * Convenience function that combines the lexer and parser.
- * BBCodeDocumentModel internally uses scanBBCode() + parseTokensToGreen() directly.
+ * BBCodeDocumentModel internally uses createBBCodeScanner() + parseTokensToGreen() directly.
  *
  * Usage:
  *   import { parseBBCode } from '../BBCode/Parser'
  *   const tree = parseBBCode('[b]Hello[/b]')
  */
 export function parseBBCode(source: string, options: ParseOptions = {}): GreenNode {
-  const tokens = scanBBCode(source, { pairing: options.pairing })
-  return parseTokensToGreen(tokens, source, options)
+  return parseTokensToGreen(createBBCodeScanner(source, { pairing: options.pairing }), source, options)
 }

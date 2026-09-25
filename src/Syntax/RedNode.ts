@@ -19,13 +19,33 @@ import { createNodeId } from '../Types/core'
 import type { Diagnostic } from '../Types/diagnostics'
 import type { Range } from '../Types/tokens'
 
+// ─── Shared empties ────────────────────────────────────────────
+//
+// Most red nodes are leaves with no children, no diagnostics and no metadata,
+// and every one of them used to get three fresh empty objects of its own —
+// about 60 bytes and three allocations per node, 38.522 nodes on the 547 KB
+// fixture, all surviving into the old generation for the collector to copy.
+// They share these instead. Frozen, so a writer that assumed it owned the
+// empty fails loudly rather than writing into every node at once: the
+// mutators below swap in an own array first (`ownChildren`), and the one
+// writer of `diagnostics` does the same (`ownDiagnostics`).
+
+const NO_CHILDREN: readonly RedNode[] = Object.freeze([])
+/** The `diagnostics` of a node that has none. Frozen; see `ownDiagnostics`. */
+export const NO_DIAGNOSTICS: Diagnostic[] = Object.freeze([]) as unknown as Diagnostic[]
+/** The `metadata` of a node that has none. Frozen: replace it, never write into it. */
+export const NO_METADATA: NodeMetadata = Object.freeze({}) as NodeMetadata
+
 // ─── Red Node ──────────────────────────────────────────────────
 
 export class RedNode {
   /** The underlying immutable green node */
   readonly green: GreenNode
-  /** Stable identity */
-  readonly id: NodeId
+  /**
+   * Minted on first read, not at construction (see `id`). `declare`: no
+   * field initialiser, the constructor assigns it.
+   */
+  private declare _id: NodeId | undefined
   /** Parent reference (null for root) */
   parent: RedNode | null
   /**
@@ -67,28 +87,29 @@ export class RedNode {
   private declare _idxCache: number
 
   /**
-   * Absolute start offset in the source.
-   *
-   * This is the red tree's job now: a green node knows its width, not its
-   * place, so that identical structures can be the same object (see the header
-   * of `GreenNode.ts`). The offset is accumulated on the way down during
-   * construction — one addition per node — and stored, so `range` stays the
-   * O(1) property every consumer already assumes it is.
-   *
-   * Held as the `Range` object itself rather than a number plus a getter that
-   * builds one: `range` is read from 148 call sites, and allocating there would
-   * trade a parse-time win for a read-time cost on every consumer. This is the
-   * same shape green nodes used to hold, so nothing downstream changes.
+   * Absolute start offset. The end is always `_start + green.width` — every
+   * shift moves both by the same delta — so it is not stored.
    *
    * `declare` for the usual reason: no `defineProperty` per construction.
    */
-  private declare _range: Range
+  private declare _start: number
+
+  /**
+   * The `range` object, made the first time anyone reads `range` and kept in
+   * step with `_start` from then on (`moveBy`), so a caller holding it sees
+   * the same live object it always did.
+   *
+   * Not made at construction: the renderer never reads `range`, and a cold
+   * open of the 547 KB fixture built 38.522 of these objects for nobody —
+   * each one surviving into the old generation for the collector to copy.
+   */
+  private declare _rangeObj: Range | undefined
 
   /**
    * Pending offset shift for this subtree, applied on first read.
    *
    * `setStart` defers the walk: it records how far the subtree moved instead of
-   * adding the delta to every node's `_range` on the spot. The shift is a single
+   * adding the delta to every node's `_start` on the spot. The shift is a single
    * integer here, on the adopted subtree ROOT — the node `setStart` was called
    * on. Any offset read (`range`, `innerStart`, `innerEnd`, `findNodeAtOffset`)
    * materializes the nearest pending ancestor's subtree via {@link materialize}.
@@ -110,7 +131,7 @@ export class RedNode {
    *
    * Composition across reparses: a node re-adopted while its ancestor is still
    * pending must end up at the SUM of both deltas. `setStart` recomputes the
-   * delta from the untouched base `_range`, which is exactly the pending
+   * delta from the untouched base `_start`, which is exactly the pending
    * ancestor's base too, so composing during `materialize` (add the ancestor's
    * delta into a child's pending delta) stays consistent.
    */
@@ -129,17 +150,17 @@ export class RedNode {
     },
   ) {
     this.green = green
-    this.id = options?.id ?? createNodeId()
+    this._id = options?.id
     this.parent = options?.parent ?? null
-    this.children = []
+    this.children = NO_CHILDREN
     this.version = 1
-    this.diagnostics = options?.diagnostics ?? []
-    this.metadata = options?.metadata ?? {}
+    this.diagnostics = options?.diagnostics ?? NO_DIAGNOSTICS
+    this.metadata = options?.metadata ?? NO_METADATA
     this.kind = options?.kind ?? (green.kind as NodeKind)
     this._idxCache = -1
     this._lazyShift = 0
-    const start = options?.start ?? 0
-    this._range = { start, end: start + green.width }
+    this._start = options?.start ?? 0
+    this._rangeObj = undefined
   }
 
   /**
@@ -159,11 +180,11 @@ export class RedNode {
    * Re-adoption composes: a node whose subtree was shifted in a previous
    * reparse and never read still carries a pending `_lazyShift`. The new
    * target is absolute, so the delta is measured from the CURRENT effective
-   * start (`_range.start + _lazyShift`) and accumulated, not overwritten —
+   * start (`_start + _lazyShift`) and accumulated, not overwritten —
    * otherwise the earlier shift would be applied twice.
    */
   setStart(start: number): void {
-    const delta = start - (this._range.start + this._lazyShift)
+    const delta = start - (this._start + this._lazyShift)
     if (delta === 0) return
     this._lazyShift += delta
   }
@@ -171,10 +192,10 @@ export class RedNode {
   /**
    * Apply `delta` to `node`'s subtree, composing with any nested pending shift.
    *
-   * A node with its own pending shift has a base `_range` the parent's delta is
+   * A node with its own pending shift has a base `_start` the parent's delta is
    * relative to as well (both were computed from the same pre-shift tree), so
    * the parent's delta can be folded into the child's pending delta instead of
-   * into its `_range` — the child's later materialization applies the sum. This
+   * into its `_start` — the child's later materialization applies the sum. This
    * is what makes nested shifts across reparses compose without double counting.
    */
   private static applyShift(node: RedNode, delta: number): void {
@@ -183,8 +204,7 @@ export class RedNode {
       node._lazyShift += delta
       return
     }
-    node._range.start += delta
-    node._range.end += delta
+    node.moveBy(delta)
     RedNode.shiftDescendants(node, delta)
   }
 
@@ -222,7 +242,7 @@ export class RedNode {
    * settled, this node itself is materialized if it still carries a shift.
    *
    * The common case — nothing pending anywhere on the path — is one upward
-   * pointer walk that allocates nothing: `_range` is read from 148 call sites,
+   * pointer walk that allocates nothing: `range` is read from 148 call sites,
    * and a per-read allocation there would show up in every phase. The chain
    * array is only built after a pending shift is actually found.
    */
@@ -247,8 +267,7 @@ export class RedNode {
       const delta = ancestor._lazyShift
       if (delta === 0) continue
       ancestor._lazyShift = 0
-      ancestor._range.start += delta
-      ancestor._range.end += delta
+      ancestor.moveBy(delta)
       RedNode.shiftDescendants(ancestor, delta)
     }
   }
@@ -301,6 +320,24 @@ export class RedNode {
 
   // ─── Properties ──────────────────────────────────────────
 
+  /**
+   * Stable identity, minted the first time anything asks for it.
+   *
+   * A cold open of the 547 KB fixture builds 38.522 red nodes, and the
+   * renderer reads the id of the block-level ones only (`HTMLRenderer.idMode`):
+   * the 22.000 text leaves were each paying for a string nobody read. Ids are
+   * unique per process either way; only the ORDER they are minted in changes,
+   * and nothing compares ids by order.
+   */
+  get id(): NodeId {
+    return (this._id ??= createNodeId())
+  }
+
+  /** Only `preserveNodeIds` carries an id across trees. */
+  set id(id: NodeId) {
+    this._id = id
+  }
+
   get text(): string {
     return this.green.text
   }
@@ -308,19 +345,34 @@ export class RedNode {
   /** Absolute span in the source. */
   get range(): Range {
     this.materialize()
-    return this._range
+    let range = this._rangeObj
+    if (range === undefined) {
+      range = { start: this._start, end: this._start + this.green.width }
+      this._rangeObj = range
+    }
+    return range
+  }
+
+  /** Move this node alone by `delta`, and its `range` object if it has one. */
+  private moveBy(delta: number): void {
+    this._start += delta
+    const range = this._rangeObj
+    if (range !== undefined) {
+      range.start += delta
+      range.end += delta
+    }
   }
 
   /** Absolute offset of this node's first child, past its opening delimiter. */
   get innerStart(): number {
     this.materialize()
-    return this._range.start + this.green.leadingWidth
+    return this._start + this.green.leadingWidth
   }
 
   /** Absolute offset where this node's closing delimiter begins. */
   get innerEnd(): number {
     this.materialize()
-    return this._range.end - this.green.trailingWidth
+    return this._start + this.green.width - this.green.trailingWidth
   }
 
   get isLeaf(): boolean {
@@ -435,7 +487,8 @@ export class RedNode {
    */
   findNodeAtOffset(offset: number): RedNode | null {
     this.materialize()
-    const { start, end } = this._range
+    const start = this._start
+    const end = start + this.green.width
     const isEndOfDocument = offset === end && this.parent === null
     if ((offset < start || offset >= end) && !isEndOfDocument) return null
 
@@ -459,7 +512,14 @@ export class RedNode {
 
   /** The writable view of `children`, for this class's own mutators only. */
   private get ownChildren(): RedNode[] {
+    if (this.children === NO_CHILDREN) (this as { children: readonly RedNode[] }).children = []
     return this.children as RedNode[]
+  }
+
+  /** `diagnostics`, as an array this node owns and a writer may push into. */
+  ownDiagnostics(): Diagnostic[] {
+    if (this.diagnostics === NO_DIAGNOSTICS) this.diagnostics = []
+    return this.diagnostics
   }
 
   /**
@@ -477,16 +537,22 @@ export class RedNode {
    * accidental child count.
    *
    * Only safe while `this` is still unreachable from the rest of the tree. Use
-   * `appendChild` and friends for anything after that.
+   * `appendChild` and friends for anything after that. Takes ownership of
+   * `children`: the caller must not keep or change that array.
    */
   initChildren(children: readonly RedNode[]): void {
-    const own = this.ownChildren
     for (let i = 0; i < children.length; i++) {
       const child = children[i]
       child.parent = this
       child._idxCache = i
-      own.push(child)
     }
+    if (children.length === 0) return
+    // The array is TAKEN, not copied: every builder hands over one it made for
+    // this call and never touches again. Copying it pushed each child into a
+    // second array that grew by reallocation — a spare array per node, plus
+    // slack, on the hottest allocation path of a cold parse.
+    if (this.children === NO_CHILDREN) (this as { children: readonly RedNode[] }).children = children
+    else this.ownChildren.push(...children)
   }
 
   // ─── Mutation ────────────────────────────────────────────

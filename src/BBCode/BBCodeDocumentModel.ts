@@ -9,8 +9,8 @@
  *
  * Architecture:
  *   BBCode text
- *     ↓ BBCodeLexer.scanBBCode()
- *   BBCodeToken[]
+ *     ↓ BBCodeLexer.createBBCodeScanner()
+ *   BBCodeToken, one at a time
  *     ↓ Parser.parseTokensToGreen()
  *   GreenNode
  *     ↓ BBCodeToGreenNode.greenToRedNode()
@@ -30,7 +30,7 @@ import { GreenNode, greenLeaf } from '../Syntax/GreenNode'
 import { RedNode } from '../Syntax/RedNode'
 import { greenToRedNode, greenToRedNodeReusing, type BBCodeDialect } from './BBCodeToGreenNode'
 import { parseTokensToGreen } from './Parser'
-import { scanBBCode } from '../Lexer/BBCodeLexer'
+import { createBBCodeScanner } from '../Lexer/BBCodeLexer'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { HTMLRenderer, type HTMLRendererOptions } from '../Visitors/HTMLRenderer'
 
@@ -173,7 +173,8 @@ export class BBCodeDocumentModel extends DocumentModel {
   protected parseToGreen(source: string, options?: ReparseParseOptions): GreenNode {
     try {
       // 1. Lex: BBCode text → tokens (with explicit newline tokens)
-      const tokens = scanBBCode(source, { pairing: this._pairing })
+      // A cursor, not an array: see `createBBCodeScanner`.
+      const tokens = createBBCodeScanner(source, { pairing: this._pairing })
 
       // Plugin tags reach the parser here. Memoized against the registry's
       // version: with no plugins (the common case) this is one integer

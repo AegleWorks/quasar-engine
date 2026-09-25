@@ -6,7 +6,14 @@
 import * as Q from '@q'
 
 const E = Q as any
-const strip = (h: string) => h.replace(/ data-node-id="[^"]*"/g, '')
+// Node ids are a process-local counter, so their NUMBERS are not output: two
+// engines that mint them in a different order render the same page. Stripped
+// as an attribute, and normalised where a render nested inside an attribute
+// (a `[profile]` whose name holds a tag) carries them escaped once or twice
+// (`&quot;`, `&amp;quot;`, `%22`, `%2522`).
+const strip = (h: string) => h
+  .replace(/ data-node-id="[^"]*"/g, '')
+  .replace(/(data-node-id(?:=|%3D|%253D)(?:&quot;|&amp;quot;|%22|%2522))n\d+/g, '$1n')
 const DIALECTS = ['osu', 'miliastry', 'lyne'] as const
 const EFFECTS = [
   { kind: 'gradient', colors: ['#ff0000', '#0000ff'] },

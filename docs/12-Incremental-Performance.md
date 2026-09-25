@@ -128,3 +128,99 @@ affordable window:
 On the 547 KB fixture's random keystrokes, 7 of 380 still rebuild, all of
 them one of the first two kinds. `ReparseResult.isolation` /
 `DocumentModel.lastReparseIsolation` name the check behind each one.
+
+## Opening a document
+
+A full parse — opening a document, and every rebuild — was untouched by the
+two rounds above. Measured on the 547 KB fixture with `NODE_ENV=production`,
+each figure the median of 10 alternated processes against the previous
+commit:
+
+| | Before | After |
+|---|---|---|
+| Cold open (first parse in the process) | 75.8 ms | **59.2 ms** |
+| Warm open, p50 | 32.0 ms | **21.6 ms** |
+| Warm open, best | 24.1 ms | **16.8 ms** |
+| Heap kept by an open document | 20.2 MB | **12.5 MB** |
+| Cold HTML render right after | 55.1 ms | 45.0 ms |
+
+Nearly half of a warm open was the garbage collector, and what it spent its
+time on was copying: almost everything a parse allocates survives, so each
+young-generation collection moved the whole tree built so far. The work was
+to allocate less of what survives, and to let what does not survive die young.
+
+- **Tokens stream.** The parser reads tokens strictly in order, so it pulls
+  them from a scanner (`createBBCodeScanner`) in batches of 512 instead of
+  receiving an array of 54 733. A token is garbage before the next
+  collection. `scanBBCode` still returns the array for everyone else, and osu!
+  pairing, which looks ahead, still collects one.
+- **Red nodes share their empties.** Leaves have no children, no diagnostics
+  and no metadata, and each used to get three fresh empty objects. They share
+  frozen ones (`NO_DIAGNOSTICS`, `NO_METADATA`, an empty children array); the
+  writers take their own copy first (`ownDiagnostics`, `ownChildren`), and an
+  unknown writer fails loudly instead of writing into every node.
+- **`initChildren` takes the builder's array** instead of pushing each child
+  into a second one that grew by reallocation.
+- **`range` and `id` are made on first read.** The renderer reads neither for
+  most nodes. A red node stores its start offset; the `range` object is
+  created when asked for and kept in step with shifts from then on, so a
+  caller holding one sees the same live object as before. Ids are minted on
+  first read: still unique, only in a different order. (The differential
+  normalises id numbers, which a nested render can carry escaped inside an
+  attribute.)
+- **Plain leaves skip the metadata and title calls** in `greenToRedNode`.
+- **The lexer's scans go native where it can.** A `[` whose next `]` comes
+  before any other `[` pairs with it (`indexOf`, no char loop); plain text
+  ends at the next `[`, `\n` or `\r`, each position cached so the three
+  searches stay linear. Correct and cheaper, though a cold open turned out
+  to be bound per token, not per character.
+- **`FREEZE_CHILDREN` was on where it could not be turned off.** Its guard
+  read "no `process` means development", so a browser bundle without a
+  `process` shim froze every children array — a guard its own comment prices
+  at 32% of the parser. Without a `process` it is now off.
+
+Tried and reverted: letting `GreenNode` adopt the parser's children arrays.
+It saved about 4 ms of a cold open but kept each array's `push` slack alive —
+2 MB on the fixture, for as long as the document is open.
+
+What is left of a cold open is mostly V8 running the lexer, parser and red
+build before it has optimised them: a larger young generation changes
+nothing, and a cold open is still about 2.7× a warm one. Parsing some 150 KB
+of anything first brings the next cold open of the fixture from 60 to 37 ms,
+which is an application's choice (an idle-time warm-up), not the engine's.
+`Tests/ColdOpen.test.ts` pins the behaviour; each fast path was
+mutation-tested against it.
+
+### Where a cold open's time goes — and "JIT-friendly" tested
+
+The cold/warm gap was split by preparing the process three ways before one
+open of the fixture (`NODE_ENV=production`, six processes each):
+
+| Before the open | Open |
+|---|---|
+| nothing — truly cold | ~62 ms |
+| ~40 MB of unrelated objects allocated and dropped (heap grown, JIT cold) | ~43 ms |
+| six parses of a 30 KB slice (JIT warm, heap small) | ~34 ms |
+| everything warm | ~21 ms |
+
+So a cold open is roughly a third real work, a third the heap growing for the
+first time, and a third V8 learning the code. None of V8's tiering flags
+(`--always-sparkplug`, `--no-lazy-feedback-allocation`, `--no-maglev`,
+`--max-lazy`) moved it, and `--trace-deopt` shows four deoptimisations in a
+whole cold open, all "insufficient type feedback": V8 is not fighting this
+code. Two "JIT-friendly" changes were measured against the previous commit:
+
+- **One hidden class for all tokens** (six fields, one constructor): no
+  effect, cold or warm. Three shapes at a site is polymorphic, not
+  megamorphic, and V8 handles it. Reverted.
+- **The parser loop's two tag branches as their own functions** (`onOpen`,
+  `onClose`): the parser's Turbofan compile went from 24 ms to 8 ms, and a
+  warm open from 21.9 to 20.4 ms (two runs of 16 and 20 alternated
+  processes). A cold open did not move — V8 was not waiting for Turbofan,
+  its earlier tiers were already running the loop. Kept, for the warm gain
+  and a loop that now reads in thirty lines.
+
+The lever left inside the engine for a cold open is memory: every surviving
+byte is heap V8 has to grow into. Past that, an idle-time warm-up in the
+application covers the JIT third.
+

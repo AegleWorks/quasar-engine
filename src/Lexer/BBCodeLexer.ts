@@ -189,7 +189,40 @@ function attributeMayNest(source: string, attrStart: number, closeBracket: numbe
 }
 
 export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeToken[] {
+  const cursor = createBBCodeScanner(source, options)
   const tokens: BBCodeToken[] = []
+  for (let t = cursor.next(); t !== null; t = cursor.next()) tokens.push(t)
+  return tokens
+}
+
+/** Hands out the tokens of a source one at a time — see {@link createBBCodeScanner}. */
+export interface BBCodeTokenCursor {
+  /** The next token, or null once the source is exhausted. */
+  next(): BBCodeToken | null
+}
+
+/**
+ * The same scan as {@link scanBBCode}, as a cursor: each `next()` runs the
+ * scanner only as far as the next token.
+ *
+ * This is what a full parse reads. Collected into an array first, every token
+ * of a large document stayed alive until the tree was built, so each young-
+ * generation collection during the parse had to COPY all of them — on the
+ * 547 KB fixture, 54.733 tokens and a fifth of a cold open. Handed over one
+ * at a time, a token is garbage by the time the next collection runs, and a
+ * dead object costs a collector nothing.
+ *
+ * Tokens are scanned in batches of `BATCH` into a small reused buffer rather
+ * than one per call: one call per token kept the scanner's loop too short
+ * for V8 to optimise it early, which a cold open (the first document of a
+ * session) pays for in full. A batch is still garbage long before the tree is.
+ */
+/** Tokens per scanner batch — see {@link createBBCodeScanner}. */
+const BATCH = 512
+
+export function createBBCodeScanner(source: string, options?: ScanBBCodeOptions): BBCodeTokenCursor {
+  const tokens: BBCodeToken[] = []
+  let head = 0
   const length = source.length
   let pos = 0
 
@@ -214,6 +247,20 @@ export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeT
   /** Sticky: once `indexOf(']')` fails, no `]` exists in the rest of the source. */
   let noCloseBracketRemains = false
 
+  // Where plain text ends: the next `[`, `\n` or `\r`. Each position is
+  // cached and searched again (natively) only once the scan has passed it, so
+  // the three searches stay linear over the whole source — a document with no
+  // `\r` at all asks for it once, not once per text run. `length` means none.
+  let nextBracket = -1
+  let nextLF = -1
+  let nextCR = -1
+  function nextStop(at: number): number {
+    if (nextBracket < at) { nextBracket = source.indexOf('[', at); if (nextBracket === -1) nextBracket = length }
+    if (nextLF < at) { nextLF = source.indexOf('\n', at); if (nextLF === -1) nextLF = length }
+    if (nextCR < at) { nextCR = source.indexOf('\r', at); if (nextCR === -1) nextCR = length }
+    return nextBracket < nextLF ? (nextBracket < nextCR ? nextBracket : nextCR) : (nextLF < nextCR ? nextLF : nextCR)
+  }
+
   function findMatchingBracket(from: number): number {
     // The map is empty on any document without unmatched brackets, and a size
     // check is cheaper than a lookup that is going to miss. Instrumented on the
@@ -222,6 +269,21 @@ export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeT
       const memo = bracketMatch.get(from)
       if (memo !== undefined) return memo
     }
+
+    // The common case, answered natively: no `[` before the next `]`, so that
+    // `]` is at depth 0. `indexOf` is a native scan, fast even before V8 has
+    // optimised this function — which is the whole of a cold open, where the
+    // char loop below ran in the interpreter for every tag of the document.
+    // No `]` left at all is sticky (`noCloseBracketRemains`): a run of
+    // `[[[[…` asks once, not once per bracket.
+    if (noCloseBracketRemains) return -1
+    const close = source.indexOf(']', from + 1)
+    if (close === -1) {
+      noCloseBracketRemains = true
+      return -1
+    }
+    const nested = source.indexOf('[', from + 1)
+    if (nested === -1 || nested > close) return close
 
     const open: number[] = []
     let result = -1
@@ -260,207 +322,216 @@ export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeT
     return result
   }
 
-  while (pos < length) {
-    const ch = source.charCodeAt(pos)
+  function fill(): void {
+    while (pos < length && tokens.length < BATCH) {
+      const ch = source.charCodeAt(pos)
 
-    // ── Newlines ───────────────────────────────────────────────
-    if (ch === CHAR_LF || ch === CHAR_CR) {
-      const start = pos
-      // Consume \r\n as a single token
-      if (ch === CHAR_CR && pos + 1 < length && source.charCodeAt(pos + 1) === CHAR_LF) {
-        pos += 2
-      } else {
-        pos++
+      // ── Newlines ───────────────────────────────────────────────
+      if (ch === CHAR_LF || ch === CHAR_CR) {
+        const start = pos
+        // Consume \r\n as a single token
+        if (ch === CHAR_CR && pos + 1 < length && source.charCodeAt(pos + 1) === CHAR_LF) {
+          pos += 2
+        } else {
+          pos++
+        }
+        tokens.push({
+          kind: 'newline',
+          value: source.slice(start, pos),
+          start,
+          end: pos,
+        })
+        continue
       }
-      tokens.push({
-        kind: 'newline',
-        value: source.slice(start, pos),
-        start,
-        end: pos,
-      })
-      continue
-    }
 
-    // ── Potential tag: [...] ───────────────────────────────────
-    if (ch === CHAR_BRACKET_OPEN) {
-      // ── Closing tags: [/tag] ──────────────────────────────
-      // Simple ] find is sufficient since close tags never nest.
-      if (pos + 1 < length && source.charCodeAt(pos + 1) === CHAR_SLASH) {
-        const closeBracket = noCloseBracketRemains ? -1 : source.indexOf(']', pos)
-        if (closeBracket === -1) noCloseBracketRemains = true
-        if (closeBracket !== -1) {
-          // Validate in place. The name must fill the whole span — `[/has space]`
-          // is not a close tag — which is exactly what the old
-          // `isValidTagName(slice)` checked, without the slice or the regex.
-          const nameStart = pos + 2
-          const scanned = scanNameChars(source, nameStart, closeBracket)
-          const nameLength = scanned & NAME_LENGTH_MASK
-          if (nameLength > 0 && nameStart + nameLength === closeBracket) {
-            const raw = source.slice(nameStart, closeBracket)
+      // ── Potential tag: [...] ───────────────────────────────────
+      if (ch === CHAR_BRACKET_OPEN) {
+        // ── Closing tags: [/tag] ──────────────────────────────
+        // Simple ] find is sufficient since close tags never nest.
+        if (pos + 1 < length && source.charCodeAt(pos + 1) === CHAR_SLASH) {
+          const closeBracket = noCloseBracketRemains ? -1 : source.indexOf(']', pos)
+          if (closeBracket === -1) noCloseBracketRemains = true
+          if (closeBracket !== -1) {
+            // Validate in place. The name must fill the whole span — `[/has space]`
+            // is not a close tag — which is exactly what the old
+            // `isValidTagName(slice)` checked, without the slice or the regex.
+            const nameStart = pos + 2
+            const scanned = scanNameChars(source, nameStart, closeBracket)
+            const nameLength = scanned & NAME_LENGTH_MASK
+            if (nameLength > 0 && nameStart + nameLength === closeBracket) {
+              const raw = source.slice(nameStart, closeBracket)
+              const tagName = (scanned & NAME_HAS_UPPER) !== 0 ? raw.toLowerCase() : raw
+              tokens.push({
+                kind: 'close',
+                tag: tagName,
+                start: pos,
+                end: closeBracket + 1,
+              })
+              pos = closeBracket + 1
+              continue
+            }
+          }
+          // Invalid close tag → treat '[' as text
+          tokens.push({ kind: 'text', value: '[', start: pos, end: pos + 1 })
+          pos++
+          continue
+        }
+
+        // ── Opening tags: [tag] or [tag=nested[bb]code[/bb]] ─
+        // Bracket depth is tracked so nested BBCode in attributes
+        // (e.g. [box=[b]title[/b]]) resolves to the right `]`.
+        const closeBracket = findMatchingBracket(pos)
+
+        // No matching closing bracket → lone '[' = plain text
+        if (closeBracket === -1) {
+          tokens.push({ kind: 'text', value: '[', start: pos, end: pos + 1 })
+          pos++
+          continue
+        }
+
+        // The name runs from just after the `[`. Scanned over char codes, so no
+        // `inner` slice is needed to find it and no second regex to validate it:
+        // every character the scan accepted is by definition a valid name
+        // character, so the old `isValidTagName(tagName)` could only ever be true.
+        const nameStart = pos + 1
+        const scanned = scanNameChars(source, nameStart, closeBracket)
+        const nameEnd = scanned & NAME_LENGTH_MASK
+
+        // Nested brackets belong to an attribute VALUE (`[box=[b]title[/b]]`),
+        // so they are honoured only after `=`. `[Lekker [color=red]L60[/color]]`
+        // is not a tag with a bracketed attribute: it is a literal `[`, a word,
+        // and a real `[color]` — which is what osu! shows (measured with the
+        // parity harness on `docs/ai/examples/Mimiyu.bbc`). Spanning to the
+        // balanced `]` swallowed the colour into one unknown tag, rendered as
+        // text. Without a nested `[` nothing changes, so bare-word attributes
+        // (`[img round]`) are untouched.
+        //
+        // The `[` goes out TOGETHER with the plain text after it (`[Lekker `),
+        // never as a bare `[` leaf. The incremental parser reads a bare `[` as
+        // "no `]` matched it", a decision that depends on text past its window,
+        // and refuses to splice (`regionIsSelfContained`). This one is local:
+        // the nested `[` and the matching `]` both lie between the `[` and its
+        // `]`, so a window holding the `[` but not the `]` never gets here — the
+        // `[` is unmatched there, and that path still emits it bare.
+        if (nameEnd > 0 && !attributeMayNest(source, nameStart + nameEnd, closeBracket)) {
+          let end = pos + 1
+          while (end < length) {
+            const c = source.charCodeAt(end)
+            if (c === CHAR_BRACKET_OPEN || c === CHAR_LF || c === CHAR_CR) break
+            end++
+          }
+          tokens.push({ kind: 'text', value: source.slice(pos, end), start: pos, end })
+          pos = end
+          continue
+        }
+
+        if (nameEnd > 0) {
+          {
+            const raw = source.slice(nameStart, nameStart + nameEnd)
             const tagName = (scanned & NAME_HAS_UPPER) !== 0 ? raw.toLowerCase() : raw
+            const rawAttrs = source.slice(nameStart + nameEnd, closeBracket)
+            const attrs = TITLE_TAG_SET.has(tagName) ? rawAttrs.trimStart() : rawAttrs.trim()
             tokens.push({
-              kind: 'close',
+              kind: 'open',
               tag: tagName,
+              attrs,
               start: pos,
               end: closeBracket + 1,
             })
             pos = closeBracket + 1
+
+            // ── RAW BLOCK HANDLING (see BBCODE_RAW_TAGS) ──
+            // Contents of raw blocks are strictly literal. No inner tags or newline tokens.
+            if (RAW_TAG_SET.has(tagName)) {
+              const endTag = `[/${tagName}]`
+              const closeIdx = lowerOf().indexOf(endTag, pos)
+
+              // Under `pairing: 'osu'`, only ISOLATE the block — protecting its
+              // content from normal tokenising — when osu! itself would seal
+              // this occurrence: a closer must exist, and for `c` (non-dotall
+              // in osu!, see `Osu/osuPairing.ts`'s `OSU_FAMILY`) reaching it
+              // must not cross a newline. `code` is dotall, so only "no closer
+              // at all" applies to it.
+              const isOsu = options?.pairing === 'osu'
+              const crossesNewline =
+                isOsu && tagName === 'c' && closeIdx !== -1 && /[\r\n]/.test(source.slice(pos, closeIdx))
+              const isolate = closeIdx !== -1 && !crossesNewline
+
+              if (isolate) {
+                if (closeIdx > pos) {
+                  tokens.push({
+                    kind: 'text',
+                    value: source.slice(pos, closeIdx),
+                    start: pos,
+                    end: closeIdx,
+                  })
+                }
+                tokens.push({
+                  kind: 'close',
+                  tag: tagName,
+                  start: closeIdx,
+                  end: closeIdx + endTag.length,
+                })
+                pos = closeIdx + endTag.length
+              } else if (!isOsu) {
+                // Unclosed raw block consumes the rest of the document — only
+                // under the default 'quasar' pairing. Under 'osu' an opener
+                // that would not seal (no closer, or — for `c` — only a closer
+                // reachable across a newline) is left as the ordinary 'open'
+                // token already pushed above, and lexing just continues
+                // normally from here: `applyOsuPairing` demotes it to literal
+                // text once it fails to find a sealed contiguous pair,
+                // exactly like every other lazy-family tag, and everything
+                // after it — including `[/tag]` itself, if one exists — keeps
+                // tokenising normally instead of being swallowed. Real osu!
+                // measured behaviour: `[code]a[b]y[/b]` → `[code]a<strong>y
+                // </strong>` (the unclosed opener protects nothing).
+                if (pos < length) {
+                  tokens.push({
+                    kind: 'text',
+                    value: source.slice(pos),
+                    start: pos,
+                    end: length,
+                  })
+                  pos = length
+                }
+              }
+            }
+
             continue
           }
         }
-        // Invalid close tag → treat '[' as text
+
+        // Invalid tag syntax → treat '[' as text
         tokens.push({ kind: 'text', value: '[', start: pos, end: pos + 1 })
         pos++
         continue
       }
 
-      // ── Opening tags: [tag] or [tag=nested[bb]code[/bb]] ─
-      // Bracket depth is tracked so nested BBCode in attributes
-      // (e.g. [box=[b]title[/b]]) resolves to the right `]`.
-      const closeBracket = findMatchingBracket(pos)
-
-      // No matching closing bracket → lone '[' = plain text
-      if (closeBracket === -1) {
-        tokens.push({ kind: 'text', value: '[', start: pos, end: pos + 1 })
-        pos++
-        continue
-      }
-
-      // The name runs from just after the `[`. Scanned over char codes, so no
-      // `inner` slice is needed to find it and no second regex to validate it:
-      // every character the scan accepted is by definition a valid name
-      // character, so the old `isValidTagName(tagName)` could only ever be true.
-      const nameStart = pos + 1
-      const scanned = scanNameChars(source, nameStart, closeBracket)
-      const nameEnd = scanned & NAME_LENGTH_MASK
-
-      // Nested brackets belong to an attribute VALUE (`[box=[b]title[/b]]`),
-      // so they are honoured only after `=`. `[Lekker [color=red]L60[/color]]`
-      // is not a tag with a bracketed attribute: it is a literal `[`, a word,
-      // and a real `[color]` — which is what osu! shows (measured with the
-      // parity harness on `docs/ai/examples/Mimiyu.bbc`). Spanning to the
-      // balanced `]` swallowed the colour into one unknown tag, rendered as
-      // text. Without a nested `[` nothing changes, so bare-word attributes
-      // (`[img round]`) are untouched.
-      //
-      // The `[` goes out TOGETHER with the plain text after it (`[Lekker `),
-      // never as a bare `[` leaf. The incremental parser reads a bare `[` as
-      // "no `]` matched it", a decision that depends on text past its window,
-      // and refuses to splice (`regionIsSelfContained`). This one is local:
-      // the nested `[` and the matching `]` both lie between the `[` and its
-      // `]`, so a window holding the `[` but not the `]` never gets here — the
-      // `[` is unmatched there, and that path still emits it bare.
-      if (nameEnd > 0 && !attributeMayNest(source, nameStart + nameEnd, closeBracket)) {
-        let end = pos + 1
-        while (end < length) {
-          const c = source.charCodeAt(end)
-          if (c === CHAR_BRACKET_OPEN || c === CHAR_LF || c === CHAR_CR) break
-          end++
-        }
-        tokens.push({ kind: 'text', value: source.slice(pos, end), start: pos, end })
-        pos = end
-        continue
-      }
-
-      if (nameEnd > 0) {
-        {
-          const raw = source.slice(nameStart, nameStart + nameEnd)
-          const tagName = (scanned & NAME_HAS_UPPER) !== 0 ? raw.toLowerCase() : raw
-          const rawAttrs = source.slice(nameStart + nameEnd, closeBracket)
-          const attrs = TITLE_TAG_SET.has(tagName) ? rawAttrs.trimStart() : rawAttrs.trim()
-          tokens.push({
-            kind: 'open',
-            tag: tagName,
-            attrs,
-            start: pos,
-            end: closeBracket + 1,
-          })
-          pos = closeBracket + 1
-
-          // ── RAW BLOCK HANDLING (see BBCODE_RAW_TAGS) ──
-          // Contents of raw blocks are strictly literal. No inner tags or newline tokens.
-          if (RAW_TAG_SET.has(tagName)) {
-            const endTag = `[/${tagName}]`
-            const closeIdx = lowerOf().indexOf(endTag, pos)
-
-            // Under `pairing: 'osu'`, only ISOLATE the block — protecting its
-            // content from normal tokenising — when osu! itself would seal
-            // this occurrence: a closer must exist, and for `c` (non-dotall
-            // in osu!, see `Osu/osuPairing.ts`'s `OSU_FAMILY`) reaching it
-            // must not cross a newline. `code` is dotall, so only "no closer
-            // at all" applies to it.
-            const isOsu = options?.pairing === 'osu'
-            const crossesNewline =
-              isOsu && tagName === 'c' && closeIdx !== -1 && /[\r\n]/.test(source.slice(pos, closeIdx))
-            const isolate = closeIdx !== -1 && !crossesNewline
-
-            if (isolate) {
-              if (closeIdx > pos) {
-                tokens.push({
-                  kind: 'text',
-                  value: source.slice(pos, closeIdx),
-                  start: pos,
-                  end: closeIdx,
-                })
-              }
-              tokens.push({
-                kind: 'close',
-                tag: tagName,
-                start: closeIdx,
-                end: closeIdx + endTag.length,
-              })
-              pos = closeIdx + endTag.length
-            } else if (!isOsu) {
-              // Unclosed raw block consumes the rest of the document — only
-              // under the default 'quasar' pairing. Under 'osu' an opener
-              // that would not seal (no closer, or — for `c` — only a closer
-              // reachable across a newline) is left as the ordinary 'open'
-              // token already pushed above, and lexing just continues
-              // normally from here: `applyOsuPairing` demotes it to literal
-              // text once it fails to find a sealed contiguous pair,
-              // exactly like every other lazy-family tag, and everything
-              // after it — including `[/tag]` itself, if one exists — keeps
-              // tokenising normally instead of being swallowed. Real osu!
-              // measured behaviour: `[code]a[b]y[/b]` → `[code]a<strong>y
-              // </strong>` (the unclosed opener protects nothing).
-              if (pos < length) {
-                tokens.push({
-                  kind: 'text',
-                  value: source.slice(pos),
-                  start: pos,
-                  end: length,
-                })
-                pos = length
-              }
-            }
-          }
-
-          continue
-        }
-      }
-
-      // Invalid tag syntax → treat '[' as text
-      tokens.push({ kind: 'text', value: '[', start: pos, end: pos + 1 })
-      pos++
-      continue
+      // ── Plain text (anything that isn't a tag start or newline) ─
+      // Up to the next `[`, `\n` or `\r`, found natively: see `nextStop`.
+      const start = pos
+      pos = nextStop(pos)
+      tokens.push({
+        kind: 'text',
+        value: source.slice(start, pos),
+        start,
+        end: pos,
+      })
     }
-
-    // ── Plain text (anything that isn't a tag start or newline) ─
-    const start = pos
-    while (pos < length) {
-      const c = source.charCodeAt(pos)
-      if (c === CHAR_BRACKET_OPEN || c === CHAR_LF || c === CHAR_CR) break
-      pos++
-    }
-    tokens.push({
-      kind: 'text',
-      value: source.slice(start, pos),
-      start,
-      end: pos,
-    })
   }
 
-  return tokens
+  return {
+    next(): BBCodeToken | null {
+      if (head === tokens.length) {
+        tokens.length = 0
+        head = 0
+        fill()
+        if (tokens.length === 0) return null
+      }
+      return tokens[head++]
+    },
+  }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────

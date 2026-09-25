@@ -17,7 +17,7 @@
 
 import { parseEffectParams } from '../Utils/EffectMath'
 import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
-import { RedNode } from '../Syntax/RedNode'
+import { RedNode, NO_METADATA } from '../Syntax/RedNode'
 import { RedNodeStore } from '../Syntax/RedNodeStore'
 import type { NodeKind } from '../Types/core'
 import { scanBBCode } from '../Lexer/BBCodeLexer'
@@ -381,7 +381,7 @@ function stripBBCode(raw: string): string {
 
 export function extractGreenNodeMetadata(green: GreenNode): Record<string, unknown> {
   const kind = green.kind as NodeKind
-  if (kind === 'text') return {}
+  if (kind === 'text') return NO_METADATA
 
   const rawText = green.text || ''
 
@@ -455,7 +455,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       return parseEffectParams(value) as Record<string, unknown>
     case 'table_th':
     case 'table_col': {
-      if (!value) return {}
+      if (!value) return NO_METADATA
       const parts = value.split(/[:,\s]+/).filter(Boolean)
       const res: Record<string, any> = {}
       for (const p of parts) {
@@ -476,7 +476,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       // Sufijo de color `:#hex` o `:$token`: `[tables=striped:#FF0055]`, `[tables=striped:$accent]`
       // y `[columns=2:#FF0055]`. De ese color se deriva toda la paleta (bordes,
       // filas, encabezado) vía `--table-accent` / `--columns-accent`.
-      if (!value) return {}
+      if (!value) return NO_METADATA
       const colorMatch = /:(?:#[0-9a-fA-F]{3,8}|\$[a-zA-Z0-9_.-]+)$/.exec(value)
       const clean = colorMatch ? value.slice(0, colorMatch.index) : value
       const color = colorMatch ? colorMatch[0].slice(1) : undefined
@@ -491,7 +491,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
     case 'map':      return value ? { id: value } : {}
     case 'align':    return value ? { align: value } : {}
     case 'effect': {
-      if (!value) return {}
+      if (!value) return NO_METADATA
       if (value.includes(':')) {
         const [effectType, ...rest] = value.split(':')
         return { effectType, color: rest.join(':') }
@@ -500,7 +500,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       return { effectType: value }
     }
     case 'anim': {
-      if (!value) return {}
+      if (!value) return NO_METADATA
       if (value.includes(':')) {
         const [animType, ...rest] = value.split(':')
         return { animType, param: rest.join(':') }
@@ -509,8 +509,8 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
     }
     case 'container':return value ? { containerType: value } : {}
     case 'style_tag':return value ? { style: value } : {}
-    case 'list_item':return {}  // No metadata for list items
-    default:         return {}
+    case 'list_item':return NO_METADATA  // No metadata for list items
+    default:         return NO_METADATA
   }
 }
 
@@ -628,14 +628,21 @@ export function greenToRedNode(
   }
 
   // Legacy path without store (backward compat)
+  //
+  // Leaves are most of the tree (22.225 of 38.522 nodes on the 547 KB
+  // fixture) and the three leaf kinds have no metadata and no title, so they
+  // skip both calls. Cheap once optimised, but a cold open runs this code
+  // before V8 has, and there every call is paid in full.
+  const kind = green.kind
+  const plain = kind === 'text' || kind === 'spacing' || kind === 'empty_line'
   const red = new RedNode(green, {
     parent: parent ?? null,
-    kind: green.kind as NodeKind,
-    metadata: extractGreenNodeMetadata(green),
+    kind: kind as NodeKind,
+    metadata: plain ? NO_METADATA : extractGreenNodeMetadata(green),
     start,
   })
 
-  attachTitleNodes(red, green, start, store)
+  if (!plain) attachTitleNodes(red, green, start, store)
 
   const greenChildren = green.children as GreenNode[]
   if (greenChildren.length > 0) {
