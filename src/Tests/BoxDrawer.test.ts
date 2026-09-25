@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { bindBoxDrawer, toggleBoxWithDrawer } from '../Visuals/BoxDrawer'
+import { bindBoxDrawer, toggleBoxWithDrawer, BOX_TOGGLE_EVENT, type BoxToggleDetail } from '../Visuals/BoxDrawer'
 
 /**
  * jsdom has neither layout nor the Web Animations API, so both are stubbed.
@@ -213,5 +213,28 @@ describe('BoxDrawer', () => {
 
     expect(event.defaultPrevented).toBe(false)
     expect(box.anims).toHaveLength(0)
+  })
+
+  it('announces a user click with the state the box is heading to, even mid-animation', () => {
+    const box = makeBox()
+    bindBoxDrawer(box.host)
+    const seen: boolean[] = []
+    box.host.addEventListener(BOX_TOGGLE_EVENT, (e) => seen.push((e as CustomEvent<BoxToggleDetail>).detail.open))
+    const summary = box.details.querySelector('summary')!
+
+    summary.click() // opens
+    summary.click() // reverses mid-open: `open` is still true, the intent is closing
+    box.settle()
+    summary.click() // closed now, so opens again
+    expect(seen).toEqual([true, false, true])
+  })
+
+  it('does not announce programmatic toggles (the cursor revealing a box is not a choice)', () => {
+    const box = makeBox()
+    bindBoxDrawer(box.host)
+    let announced = 0
+    box.host.addEventListener(BOX_TOGGLE_EVENT, () => announced++)
+    expect(toggleBoxWithDrawer(box.details)).toBe(true)
+    expect(announced).toBe(0)
   })
 })

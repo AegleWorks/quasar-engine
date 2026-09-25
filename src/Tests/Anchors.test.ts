@@ -84,6 +84,27 @@ describe('AnchorSet — deletions', () => {
   })
 })
 
+describe('AnchorSet — the diff slides to where an edit really begins', () => {
+  it('deleting a whole box before a twin-prefixed box deletes its anchor, not moves it', () => {
+    const text = 'Intro\n[box=Uno]a[/box]\n[box=Dos]b[/box]\n'
+    const set = new AnchorSet(text)
+    const uno = set.add(6, 15) // [box=Uno]
+    const dos = set.add(23, 32) // [box=Dos]
+    // The greedy scan reports "Uno]a[/box]\n[box=": the same text, shifted.
+    set.updateText(text.replace('[box=Uno]a[/box]\n', ''))
+    expect(set.get(uno.id)!.deleted).toBe(true)
+    expect(set.textOf(set.get(dos.id)!)).toBe('[box=Dos]')
+  })
+
+  it('inserting a copy of a box before it leaves the anchor on the original', () => {
+    const text = 'x\n[box=A]1[/box]\n'
+    const set = new AnchorSet(text)
+    const a = set.add(2, 9)
+    set.updateText(text.replace('x\n', 'x\n[box=A]1[/box]\n'))
+    expect(set.get(a.id)!.start).toBe(2 + '[box=A]1[/box]\n'.length)
+  })
+})
+
 describe('AnchorSet — properties under random edits', () => {
   const ALPHABET = 'ab[]/= \n'
   const randomText = (rand: () => number, n: number) =>

@@ -167,6 +167,17 @@ show 0 differences.
   - it is still open after a save → reload round trip;
   - it stays closed after its opener is deleted.
 - Then a check in the real app, **driven by the user**.
+- ✅ **Done in code** (the check in the real app is pending):
+  - Quasar: `bindBoxDrawer` announces a user click with `BOX_TOGGLE_EVENT`
+    and the state the box is heading to; programmatic toggles do not.
+  - Miliastry: `preview/openBoxes.ts` and the `Preview`/`PreviewWindow`
+    wiring. The state persists by `fileId/storedId`.
+
+  Building it found a real bug in layer 1. The greedy diff reported deleting
+  `[box=Uno]…\n` before `[box=Dos]` as deleting `Uno]…\n[box=`: the same
+  text, shifted. The anchor on Uno moved onto Dos, so **deleting a box opened
+  its neighbour**. `diffText` now slides a pure insertion or deletion to its
+  leftmost equivalent position, and both cases are regression tests.
 
 ### A5 — second client: comments (Miliastry, separate plan)
 The mechanism is ready after A3. What is missing are product decisions:

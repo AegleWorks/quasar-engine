@@ -57,8 +57,18 @@ export function mapOffset(offset: number, edit: TextEdit, assoc: -1 | 1): number
 
 /**
  * The one edit that turns `before` into `after`: the longest common prefix
- * and suffix, and what is between. The same scan `DocumentModel` uses for
- * `applyTextUpdate`. `null` when the texts are equal.
+ * and suffix, and what is between — the same scan `DocumentModel` uses for
+ * `applyTextUpdate` — with a pure insertion or deletion then slid as far LEFT
+ * as it can go. `null` when the texts are equal.
+ *
+ * The slide matters for anchors. The prefix scan is greedy, so deleting
+ * `[box=Uno]a[/box]\n` right before `[box=Dos]` comes out as deleting
+ * `Uno]a[/box]\n[box=`: the same text, shifted by the shared `[box=`. Mapped
+ * through that, the anchor on `[box=Uno]` survives as `[box=` of the NEXT
+ * box, and deleting one box opened its neighbour. A deletion of `d` can slide
+ * left while the character before it equals its own last one (and an
+ * insertion likewise), and the leftmost position is where the edit really
+ * begins in the cases that matter: whole tags and lines.
  */
 export function diffText(before: string, after: string): TextEdit | null {
   if (before === after) return null
@@ -70,6 +80,16 @@ export function diffText(before: string, after: string): TextEdit | null {
   while (oldEnd > start && newEnd > start && before.charCodeAt(oldEnd - 1) === after.charCodeAt(newEnd - 1)) {
     oldEnd--
     newEnd--
+  }
+  if (newEnd === start) {
+    // Pure deletion of before[start, oldEnd).
+    while (start > 0 && before.charCodeAt(start - 1) === before.charCodeAt(oldEnd - 1)) { start--; oldEnd-- }
+    return { start, end: oldEnd, text: '' }
+  }
+  if (oldEnd === start) {
+    // Pure insertion of after[start, newEnd).
+    while (start > 0 && after.charCodeAt(start - 1) === after.charCodeAt(newEnd - 1)) { start--; newEnd-- }
+    return { start, end: start, text: after.slice(start, newEnd) }
   }
   return { start, end: oldEnd, text: after.slice(start, newEnd) }
 }
