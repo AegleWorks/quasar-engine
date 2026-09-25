@@ -71,6 +71,7 @@ describe('architecture — publishing never depends on presentation', () => {
     'Edits/Rules/flattenOsuNesting.ts',
     'Semantic/osu/OsuSemanticModel.ts',
     'Semantic/osu/newlineRules.ts',
+    'Semantic/lines.ts',
   ])('%s does not reach HTMLRenderer', (file) => {
     expect(chain(graph, file, 'Visitors/HTMLRenderer.ts')).toBeNull()
   })

@@ -23,6 +23,7 @@ import { RenderTree } from '../RenderPipeline/RenderTree'
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
 import { SWALLOWED_NEWLINE_ATTR } from './domMarkers'
+import { hasLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
 import { clampFontSizeValue, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
@@ -74,6 +75,18 @@ export interface HTMLRendererOptions {
    * Unset: the process-wide default, `HTMLRenderer.idMode`.
    */
   idMode?: 'blocks' | 'all' | 'none'
+  /**
+   * Wrap each line of a container (`Semantic/lines.ts`) in
+   * `<span class="bb-line" data-node-id="line:…">`, so a caret or a click in
+   * loose text inside a box resolves to that line instead of the whole box.
+   *
+   * Off unless asked for: it is a handle for a surface that highlights and
+   * selects — the editor's preview — and nothing else wants it. An editable
+   * surface (the WYSIWYG canvas, whose DOM is reconciled back into BBCode)
+   * and a published render stay exactly as they were. Ignored under
+   * `idMode: 'none'`, where there are no ids to carry.
+   */
+  lineHandles?: boolean
 }
 
 /** Saltos de línea a convertir en `<br>` al pintar un efecto. */
@@ -90,9 +103,13 @@ const TITLE_NEWLINE_RE = /\r?\n/g
  * YouTube embed), which moved a word to the next line (measured with osu!'s
  * own app.css on `originals/tesla.bbcode`). An empty hidden element carries
  * the newline with no layout at all. See docs/10-Semantic-Model-Plan.md.
+ *
+ * `<span data-bb-nl hidden>` carries its node's id like every other break
+ * (`<br>`, an empty line): the WYSIWYG canvas puts the caret on a line that
+ * has no layout yet — Enter at the end of a box — by finding that line's
+ * node, which it can only do by id. So the pattern allows one.
  */
-const SWALLOWED_NEWLINE = `<span ${SWALLOWED_NEWLINE_ATTR} hidden></span>`
-const SWALLOWED_NEWLINE_RE = new RegExp(SWALLOWED_NEWLINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+const SWALLOWED_NEWLINE_RE = new RegExp(`<span ${SWALLOWED_NEWLINE_ATTR} hidden(?: data-node-id="[^"]*")?></span>`, 'g')
 
 /**
  * The edge newline `trimOsuEdges` removes. It is a swallowed one, so it
@@ -101,14 +118,17 @@ const SWALLOWED_NEWLINE_RE = new RegExp(SWALLOWED_NEWLINE.replace(/[.*+?^${}()|[
 const OSU_EDGE = `(?:\\r?\\n|${SWALLOWED_NEWLINE_RE.source})`
 const OSU_LEADING_EDGE_RE = new RegExp(`^[\\t ]*${OSU_EDGE}`)
 const OSU_TRAILING_EDGE_RE = new RegExp(`${OSU_EDGE}[\\t ]*$`)
+/** A rendered line with nothing to show: empty, or spaces and tabs only. */
+const BLANK_LINE_RE = /^[\t ]*$/
 
 /** Referencia a un token de diseño dentro de un texto: `$nombre`. */
 const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
 
 export class HTMLRenderer extends Visitor<string> {
   private tokenResolver?: TokenResolverFn
-  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode'>> & {
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode' | 'lineHandles'>> & {
     idMode?: 'blocks' | 'all' | 'none'
+    lineHandles?: boolean
     registry?: TagRegistry
     mediaProxy?: (url: string) => string
     entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
@@ -131,6 +151,7 @@ export class HTMLRenderer extends Visitor<string> {
       tokens: options.tokens,
       boxTitleLineBreaks: options.boxTitleLineBreaks ?? true,
       idMode: options.idMode,
+      lineHandles: options.lineHandles,
     }
     this.semantic = new OsuSemanticModel(this.options.dialect)
   }
@@ -279,6 +300,11 @@ export class HTMLRenderer extends Visitor<string> {
     return html.replace(OSU_LEADING_EDGE_RE, '').replace(OSU_TRAILING_EDGE_RE, '')
   }
 
+  /** A swallowed newline's marker, with its node's id (see `SWALLOWED_NEWLINE_RE`). */
+  private swallowedNewline(node: RedNode): string {
+    return `<span ${SWALLOWED_NEWLINE_ATTR} hidden${this.idAttr(node)}></span>`
+  }
+
   private idAttr(node: RedNode): string {
     const mode = this.options.idMode ?? HTMLRenderer.idMode
     if (mode === 'none') return ''
@@ -343,9 +369,47 @@ export class HTMLRenderer extends Visitor<string> {
    */
   renderChildren(node: RedNode): string {
     const children = node.children
+    if (this.options.lineHandles === true && hasLines(node.kind) && (this.options.idMode ?? HTMLRenderer.idMode) !== 'none') {
+      return this.renderLines(node)
+    }
     let out = ''
     for (let i = 0; i < children.length; i++) {
       out += this.renderNode(children[i])
+    }
+    return out
+  }
+
+  /**
+   * The children of a container that has lines (`Semantic/lines.ts`), each
+   * line wrapped in `<span class="bb-line" data-node-id="line:…">`.
+   *
+   * The wrapper is what a caret or a click inside a box resolves to. Text
+   * leaves have no element of their own, so without it the nearest element
+   * with an id was the whole box: selecting a line of text selected the box.
+   * It is a handle for the preview, so it is only emitted when asked for
+   * (`lineHandles`) and where ids are: every other render is unchanged.
+   *
+   * A line whose HTML is only spaces is left bare. There is nothing in it to
+   * highlight, and osu!'s edge trimming (`trimOsuEdges`) matches spaces and a
+   * newline as one run at a box's edge — wrapping the spaces would split it.
+   */
+  private renderLines(node: RedNode): string {
+    const children = node.children
+    let out = ''
+    let i = 0
+    while (i < children.length) {
+      if (breaksLine(children[i].kind)) {
+        out += this.renderNode(children[i])
+        i++
+        continue
+      }
+      const first = children[i]
+      let line = ''
+      while (i < children.length && !breaksLine(children[i].kind)) {
+        line += this.renderNode(children[i])
+        i++
+      }
+      out += BLANK_LINE_RE.test(line) ? line : `<span class="bb-line" data-node-id="${LINE_ID_PREFIX}${first.id}">${line}</span>`
     }
     return out
   }
@@ -511,10 +575,10 @@ export class HTMLRenderer extends Visitor<string> {
       case 'sinewave': return this.renderEffectSegments(node, 'sinewave')
       case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
-        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
+        if (this.semantic.isNewlineSwallowed(node)) return this.swallowedNewline(node)
         return `<br${this.idAttr(node)}>`
       case 'empty_line':
-        if (this.semantic.isNewlineSwallowed(node)) return SWALLOWED_NEWLINE
+        if (this.semantic.isNewlineSwallowed(node)) return this.swallowedNewline(node)
         return `<div class="bb-empty-line"${this.idAttr(node)}><br></div>`
       case 'group': return this.wrapInline('span', node, 'class="group"')
       // Un párrafo no tiene etiqueta propia en BBCode, pero sí necesita un

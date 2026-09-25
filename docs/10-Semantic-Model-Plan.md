@@ -165,6 +165,38 @@ render, export, forum render and effect byte-for-byte equal to before.
 | Kit, real CSS | 128/130 | **130/130** |
 | Output change in phases 1–3 | — | 0 of 52 097 outputs |
 
+## Lines: a derived view, not a node (2026-09-25)
+
+A caret or a click in loose text inside a box used to resolve to the whole
+box. At the root, text lives in a `paragraph` node with an element of its
+own; inside a container it is a bare text leaf, and the nearest element with
+an id was the container.
+
+The fix could have grown `paragraph` nodes inside every container. It was not
+done that way: a paragraph is not BBCode syntax (nobody writes `[p]`), and
+the syntax tree stays the source's shape. The incremental parser's guards,
+the exporters and the osu! newline rules all read that shape, and each of
+them would have had to learn a new layer. Root paragraphs are themselves a
+historical concession, not a model to extend.
+
+So a line is derived, in `Semantic/lines.ts`: a maximal run of inline
+children of a line-bearing container (`box`, `notice`, `center`, `quote`,
+`list_item`…) between two breaks. `lineOf`, `linesOf` and `resolveLineId` are
+the one definition. The renderer asks for it only when told to
+(`lineHandles`, which the editor's preview sets) and wraps each line in
+`<span class="bb-line" data-node-id="line:<first node's id>">`. The editor
+resolves carets, selections and clicks through the same functions. A line is
+named after its first node, whose id survives edits, so typing in a line
+never changes its attribute and the DOM morpher still skips it.
+
+What does not change: the tree, every render that does not ask for handles
+(0 of 52 097 differential outputs), and the WYSIWYG canvas, which reconciles
+its DOM back into BBCode and keeps selecting blocks (a line maps to its
+container, `nodeIdForBlockId` in the app). The cost in the preview is one
+element per line: 1 980 on the 547 KB fixture, +8% elements.
+
+If root paragraphs ever leave the tree, this is the view they move into.
+
 ## What this plan deliberately does not do
 
 - It does not merge `OsuSemanticModel` into the diagnostic `SemanticAnalyzer`.

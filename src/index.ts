@@ -37,6 +37,7 @@ export { TreeBuilder, type BuildResult } from './Syntax/TreeBuilder'
 export { NodeMatcher, type MatchResult } from './Syntax/NodeMatcher'
 
 // ── Semantic ──
+export { lineOf, linesOf, resolveLineId, isLineId, hasLines, breaksLine, LINE_ID_PREFIX, type TextLine } from './Semantic/lines'
 export { SemanticAnalyzer, type AnalyzeResult, type SemanticAnalyzerOptions, type CrossedTags, type UnknownTag } from './Semantic/SemanticAnalyzer'
 /**
  * Whether an analysis walked the document or only the edit — see
@@ -137,6 +138,9 @@ export { InsertText } from './Commands/InsertText'
 export { DeleteNode } from './Commands/DeleteNode'
 export { WrapInTag } from './Commands/WrapInTag'
 export { SplitNode, MergeNode } from './Commands/SplitMerge'
+export { insertLineBreak, joinBackward, joinForward, deleteSelection } from './Commands/StructuralEdits'
+export { insertContent, isBlockContent, type ParseSource } from './Commands/InsertContent'
+export { toggleInlineFormat, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
 // ── Queries ──
 export { QueryEngine } from './Queries/QueryEngine'
@@ -164,7 +168,8 @@ export { PluginRegistry, type PluginManifest, type PluginContribution } from './
 export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpener } from './Repair/NestingRepair'
 
 // ── Reconciler ──
-export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult } from './Reconciler/SurgicalReconciler'
+export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult, type ReconcileRoute, type ReconcileFullReason, type ReconcileCounts } from './Reconciler/SurgicalReconciler'
+export { sourceOffsetOfDomPoint, domPointOfSourceOffset, revealLine, REVEALED_LINE_ATTR } from './Reconciler/CanvasPositions'
 
 // ── Lightbulb Engine (fixes, refactorings, fix-all, host) ──
 //

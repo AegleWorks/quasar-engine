@@ -1,6 +1,7 @@
 import { RedNode } from '../Syntax/RedNode'
 import { HTMLDocumentModel } from '../HTML/HTMLDocumentModel'
 import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers'
+import { REVEALED_LINE_ATTR, REVEALED_AFTER_ATTR } from './CanvasPositions'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 
@@ -14,6 +15,46 @@ export interface ReconcileResult {
   edits: SurgicalEdit[]
   hasChanges: boolean
   resultingSource: string
+  /**
+   * How the DOM was turned into edits — the reconciler's own account, for
+   * measuring how often each gesture stays surgical:
+   *
+   *  - `unchanged`: nothing to do;
+   *  - `surgical`: only text leaves, line breaks, filled blank lines and
+   *    deleted blocks — every byte around them is the author's;
+   *  - `element`: at least one element was rebuilt from its DOM through the
+   *    exporter (`reserializeElement`), normalising the author's spelling
+   *    inside it;
+   *  - `full`: the whole document went through HTML and back.
+   */
+  route: ReconcileRoute
+  /** Why the whole document was re-serialised, when `route` is `full`. */
+  fullReason?: ReconcileFullReason
+  /** What the edits were made of. */
+  counts: ReconcileCounts
+}
+
+export type ReconcileRoute = 'unchanged' | 'surgical' | 'element' | 'full'
+export type ReconcileFullReason = 'no-baseline' | 'duplicate-ids' | 'unpaired-top-level'
+
+export interface ReconcileCounts {
+  /** Text leaves rewritten in place. */
+  textLeaves: number
+  /** Runs of line breaks rewritten as typed. */
+  lineRuns: number
+  /** Blank lines the user typed into. */
+  filledLines: number
+  /** Elements rebuilt from their DOM. */
+  reserialized: number
+  /** Top-level blocks the user removed. */
+  deletions: number
+}
+
+/** The counts of the reconcile in progress (single-threaded, reset per call). */
+let counts: ReconcileCounts = zeroCounts()
+
+function zeroCounts(): ReconcileCounts {
+  return { textLeaves: 0, lineRuns: 0, filledLines: 0, reserialized: 0, deletions: 0 }
 }
 
 const ZWSP = /​/g
@@ -67,6 +108,18 @@ export function computeTextDelta(original: string, updated: string): SurgicalEdi
       text: newText,
     },
   ]
+}
+
+/**
+ * An element's markup as the reconciler compares it with a render: without
+ * zero-width joiners, and without the `open` a user gives a `<details>` by
+ * clicking its heading. Opening a box is how one writes in it — it is the
+ * view's state, not the document's — and while it counted as a change, every
+ * keystroke anywhere rebuilt each open box from its HTML.
+ */
+const OPEN_DETAILS = /(<details\b[^>]*?) open=""/g
+function domHtml(el: Element): string {
+  return el.outerHTML.replace(ZWSP, '').replace(OPEN_DETAILS, '$1')
 }
 
 /** Every text node under `root`, in document order, with zero-width joiners removed. */
@@ -134,6 +187,7 @@ function diffTextLeaves(
   const edits: SurgicalEdit[] = []
   for (let i = 0; i < leaves.length; i++) {
     if (before[i] === after[i]) continue
+    counts.textLeaves++
     edits.push({
       start: leaves[i].range.start,
       end: leaves[i].range.end,
@@ -163,13 +217,40 @@ function fillEmptyLine(
   if (!subtree.redRoot || subtree.redRoot.children.length === 0) return null
 
   const typed = exporter
-    .export(subtree.redRoot.children[0])
+    .export(wholeFragment(subtree.redRoot))
     // A contenteditable keeps a bogus trailing `<br>` in a block it just filled;
     // it is the caret's placeholder, not a line the author asked for.
     .replace(/\n+$/, '')
   if (typed === '') return null
 
+  counts.filledLines++
   return [{ start: originalNode.range.start, end: originalNode.range.end, text: `${typed}\n` }]
+}
+
+/**
+ * The edit for a line `revealLine` made editable on the canvas: the source
+ * already has its newline, so what was typed is inserted on the side of that
+ * break the caret was on, and nothing else changes. Untouched, it is no edit.
+ */
+/** What was typed into a line the canvas opened, as BBCode; empty when nothing was. */
+function typedIn(el: HTMLElement, exporter: BBCodeExporter): string {
+  const subtree = HTMLDocumentModel.fromHTML(domHtml(el))
+  return subtree.redRoot && subtree.redRoot.children.length > 0
+    ? exporter.export(wholeFragment(subtree.redRoot)).replace(/\n+$/, '')
+    : ''
+}
+
+function fillRevealedLine(
+  node: RedNode,
+  side: 'start' | 'end',
+  el: HTMLElement,
+  exporter: BBCodeExporter,
+): SurgicalEdit[] | null {
+  const typed = typedIn(el, exporter)
+  if (typed === '') return []
+  counts.filledLines++
+  const at = side === 'start' ? node.range.start : node.range.end
+  return [{ start: at, end: at, text: typed }]
 }
 
 /** Parses one rendered fragment and returns its single top-level node, or null. */
@@ -245,7 +326,25 @@ function descend(
   const slots = expectedSlots(node, renderer, el.ownerDocument)
   if (!slots || slots.length === 0) return null
 
-  const actual = Array.from(el.childNodes)
+  // Lines the canvas opened after a `<br>` (`revealLine`) have no node: what
+  // is typed in one goes right after that break, and it pairs with nothing.
+  const opened: SurgicalEdit[] = []
+  const actual = Array.from(el.childNodes).filter(n => {
+    const after = n.nodeType === 1 ? (n as Element).getAttribute(REVEALED_AFTER_ATTR) : null
+    if (after === null) return true
+    const br = node.children.find(c => c.id === after)
+    const typed = br ? typedIn(n as HTMLElement, exporter) : ''
+    if (br && typed !== '') {
+      counts.filledLines++
+      opened.push({ start: br.range.end, end: br.range.end, text: typed })
+    }
+    return false
+  })
+  // A dialect may drop a container's edge-newline markers where the children
+  // are rendered in place (osu!'s box body): those slots have nothing to pair.
+  const marks = (n: Node | null | undefined) => n?.nodeType === 1 && (n as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)
+  if (slots.length > actual.length && marks(slots[0].element) && !marks(actual[0])) slots.shift()
+  if (slots.length > actual.length && marks(slots[slots.length - 1].element) && !marks(actual[actual.length - 1])) slots.pop()
   if (actual.length !== slots.length) return null
 
   const edits: SurgicalEdit[] = []
@@ -257,6 +356,13 @@ function descend(
       if (got.nodeType !== 3) return null
       const text = (got.nodeValue ?? '').replace(ZWSP, '')
       if (text === slot.text) continue
+      // One text leaf rendered as bare text — a line in a box's body — is the
+      // same edit `diffTextLeaves` makes: its source range, its new text.
+      if (slot.nodes.length === 1 && slot.nodes[0].kind === 'text' && slot.nodes[0].text === slot.text) {
+        counts.textLeaves++
+        edits.push({ start: slot.nodes[0].range.start, end: slot.nodes[0].range.end, text })
+        continue
+      }
       // A text run is only ever line structure — `spacing` and `empty_line`
       // rendered as bare newlines. Anything else would need the exporter and is
       // not safe to guess at.
@@ -265,6 +371,7 @@ function descend(
       // as written. The one thing it must not do is lose the newline that used
       // to close the run, or the typed text glues onto the block below it.
       const closed = trailingNewlines(slot.text) > 0
+      counts.lineRuns++
       edits.push({
         start: slot.nodes[0].range.start,
         end: slot.nodes[slot.nodes.length - 1].range.end,
@@ -277,14 +384,72 @@ function descend(
     const gotEl = got as HTMLElement
     const wantEl = slot.element as HTMLElement
     if (gotEl.getAttribute('data-node-id') !== wantEl.getAttribute('data-node-id')) return null
-    if (gotEl.outerHTML.replace(ZWSP, '') === wantEl.outerHTML.replace(ZWSP, '')) continue
+    if (domHtml(gotEl) === domHtml(wantEl)) continue
 
     const childEdits = editsForNode(slot.nodes[0], gotEl, exporter, renderer)
     if (!childEdits) return null
     edits.push(...childEdits)
   }
 
-  return edits
+  return [...edits, ...opened]
+}
+
+/**
+ * The element inside `el` that holds `node`'s children, when the render wraps
+ * them in markup of its own — a box's `<summary>` and body `<div>`, a quote's
+ * author line — and nothing outside that holder has changed.
+ *
+ * `descend` pairs a node's children with the DOM's children one to one, which
+ * fails for such a node: the element's own children are the wrapper, not the
+ * content. Without this, typing in a box re-exported the whole box from its
+ * HTML — on osu! losing the author's newlines around its content — and a
+ * blank line typed into inside it could not be filled in place.
+ *
+ * Found by where the children's render appears verbatim in the node's render;
+ * trusted only if the markup around it is exactly as rendered, so an edit to
+ * the heading still goes to the coarser paths that can see it.
+ */
+function contentHost(node: RedNode, el: HTMLElement, renderer: HTMLRenderer): HTMLElement | null {
+  if (node.children.length === 0) return null
+  const doc = el.ownerDocument
+  const probe = doc.createElement('div')
+  probe.innerHTML = renderer.render(node)
+  const want = probe.firstElementChild
+  if (!want) return null
+  // Compared as the DOM spells it (`hidden` → `hidden=""`), and also without
+  // the edge-newline markers a dialect drops inside the holder (osu!'s box).
+  probe.innerHTML = node.children.map(c => renderer.render(c)).join('')
+  const inner = probe.innerHTML
+  const one = `<span ${SWALLOWED_NEWLINE_ATTR}="" hidden=""(?: data-node-id="[^"]*")?></span>`
+  const marker = new RegExp(`^${one}|${one}$`, 'g')
+  const trimmed = inner.replace(marker, '')
+  probe.innerHTML = ''
+  probe.appendChild(want)
+
+  let path: number[] | null = null
+  const search = (at: Element, trail: number[]) => {
+    for (let i = 0; i < at.children.length && !path; i++) {
+      const child = at.children[i]
+      if (child.innerHTML === inner || child.innerHTML === trimmed) path = [...trail, i]
+      else search(child, [...trail, i])
+    }
+  }
+  search(want, [])
+  if (!path) return null
+
+  let host: Element | undefined = el
+  for (const i of path as number[]) host = host?.children[i]
+  if (!host) return null
+
+  // Everything but the holder's content must be exactly as rendered.
+  const outside = (root: Element) => {
+    const copy = root.cloneNode(true) as Element
+    let h: Element | undefined = copy
+    for (const i of path as number[]) h = h?.children[i]
+    if (h) h.innerHTML = ''
+    return domHtml(copy)
+  }
+  return outside(el) === outside(want) ? (host as HTMLElement) : null
 }
 
 /**
@@ -300,17 +465,34 @@ function editsForNode(
   exporter: BBCodeExporter,
   renderer: HTMLRenderer,
 ): SurgicalEdit[] | null {
-  const cleanHtml = el.outerHTML.replace(ZWSP, '')
+  const cleanHtml = domHtml(el)
   const rendered = renderer.render(node).replace(ZWSP, '')
   if (cleanHtml === rendered) return []
 
+  const side = el.getAttribute(REVEALED_LINE_ATTR)
+  if (side === 'start' || side === 'end') return fillRevealedLine(node, side, el, exporter)
   if (node.kind === 'empty_line') return fillEmptyLine(node, cleanHtml, exporter)
 
+  const host = contentHost(node, el, renderer)
   return (
     descend(node, el, exporter, renderer)
+    ?? (host ? descend(node, host, exporter, renderer) : null)
     ?? diffTextLeaves(node, rendered, el)
     ?? reserializeElement(node, cleanHtml, exporter)
   )
+}
+
+/**
+ * What an element's DOM imports to, as one thing to export.
+ *
+ * Usually a single node. But the browser edits inside an element, and an
+ * Enter in the middle of a paragraph leaves `<span>uno<br>dos</span>`, which
+ * imports as a paragraph, a break and another paragraph. Exporting only the
+ * first of them dropped everything after the caret from the document while
+ * the canvas still showed it.
+ */
+function wholeFragment(root: RedNode): RedNode {
+  return root.children.length === 1 ? root.children[0] : root
 }
 
 /** Last resort for one element: rebuild just that block from its DOM. */
@@ -321,11 +503,12 @@ function reserializeElement(
 ): SurgicalEdit[] | null {
   const subtree = HTMLDocumentModel.fromHTML(cleanHtml)
   if (!subtree.redRoot || subtree.redRoot.children.length === 0) return null
+  counts.reserialized++
   return [
     {
       start: originalNode.range.start,
       end: originalNode.range.end,
-      text: exporter.export(subtree.redRoot.children[0]).trim(),
+      text: exporter.export(wholeFragment(subtree.redRoot)).trim(),
     },
   ]
 }
@@ -356,6 +539,7 @@ function deletionsFor(
   for (const child of originalAST.children) {
     if (!child.id || present.has(child.id)) continue
     if (!renderer.render(child).includes('data-node-id')) continue
+    counts.deletions++
     out.push({ start: child.range.start, end: child.range.end, text: '' })
   }
   return out
@@ -402,18 +586,19 @@ export function reconcileVisualDOMToBBCode(
   exporter: BBCodeExporter = new BBCodeExporter(),
   renderer: HTMLRenderer = new HTMLRenderer()
 ): ReconcileResult {
-  const fullFallback = (): ReconcileResult => {
+  counts = zeroCounts()
+  const fullFallback = (fullReason: ReconcileFullReason): ReconcileResult => {
     const rawHtml = editorContainer.innerHTML.replace(ZWSP, '').trim()
     const doc = HTMLDocumentModel.fromHTML(rawHtml)
     const exported = doc.redRoot
       ? exporter.export(doc.redRoot)
       : editorContainer.innerText.replace(ZWSP, '').trim()
     const edits = computeTextDelta(originalSource, exported)
-    return { edits, hasChanges: edits.length > 0, resultingSource: exported }
+    return { edits, hasChanges: edits.length > 0, resultingSource: exported, route: 'full', fullReason, counts: zeroCounts() }
   }
 
-  if (!originalAST || !originalSource) return fullFallback()
-  if (hasDuplicateNodeIds(editorContainer)) return fullFallback()
+  if (!originalAST || !originalSource) return fullFallback('no-baseline')
+  if (hasDuplicateNodeIds(editorContainer)) return fullFallback('duplicate-ids')
 
   const idMap = buildNodeIdMap(originalAST)
 
@@ -465,7 +650,7 @@ export function reconcileVisualDOMToBBCode(
     }
   }
 
-  if (requiresFullFallback) return fullFallback()
+  if (requiresFullFallback) return fullFallback('unpaired-top-level')
 
   return finalise(originalSource, [...edits, ...deletionsFor(originalAST, editorContainer, renderer)])
 }
@@ -477,6 +662,8 @@ function finalise(originalSource: string, edits: SurgicalEdit[]): ReconcileResul
       edits: [],
       hasChanges: false,
       resultingSource: originalSource,
+      route: 'unchanged',
+      counts,
     }
   }
 
@@ -490,5 +677,7 @@ function finalise(originalSource: string, edits: SurgicalEdit[]): ReconcileResul
     edits: sortedEdits,
     hasChanges: true,
     resultingSource: updatedSource,
+    route: counts.reserialized > 0 ? 'element' : 'surgical',
+    counts,
   }
 }
