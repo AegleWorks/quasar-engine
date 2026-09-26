@@ -583,7 +583,22 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox { display: block; margin: 0; padding: 0; }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link {
   display: inline-flex;
-  align-items: center;
+  /* Lo de osu tal cual (su `.bbcode-spoilerbox__link`): sin `gap`, sin
+   * `align-items` —`stretch`, así que el icono se queda ARRIBA, junto a la
+   * primera línea del título— y con `flex-wrap`, `width: max-content` y
+   * `max-width: 100%`. `features/BBCode/styles.css` trae para el look de
+   * Miliastry un `gap: 8px`, un `align-items: center` y, dentro de `[centre]`,
+   * un `justify-content: center`, y se colaban aquí: el título entero salía
+   * corrido 8px, y en un título con un bloque dentro (`[box=Mi Ca[notice]…`)
+   * la flecha quedaba centrada a media altura. Medido contra el `app.css` de
+   * osu en Chromium. */
+  gap: 0;
+  align-items: stretch;
+  justify-content: normal;
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   color: var(--osu-link);
   font-weight: 700;
   text-decoration: none;
