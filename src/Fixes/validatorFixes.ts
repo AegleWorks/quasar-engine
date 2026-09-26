@@ -171,6 +171,68 @@ const BUILTIN_FIXES: BuiltinFix[] = [
     },
   },
   {
+    code: 'url-markdown-link',
+    meta: { title: 'Use the address the Markdown wrapped', isAutomatic: true },
+    fix: (data) => {
+      const range = rangeOf(data.range)
+      return range && typeof data.url === 'string' ? [{ kind: 'replace_text', range, newText: data.url }] : []
+    },
+  },
+  {
+    code: 'unicode-url',
+    meta: { title: 'Write the address in plain letters', isAutomatic: true },
+    fix: (data) => {
+      if (!Array.isArray(data.edits)) return []
+      const ops: FixOperation[] = []
+      for (const e of data.edits) {
+        const range = rangeOf(e)
+        if (!range || typeof e.text !== 'string') return []
+        ops.push({ kind: 'replace_text', range, newText: e.text })
+      }
+      return ops
+    },
+  },
+  {
+    code: 'osu-titled-spoilerbox',
+    meta: { title: 'Write it as [box=…]', isAutomatic: true },
+    fix: (data) => {
+      const open = rangeOf(data.open)
+      const close = rangeOf(data.close)
+      // Both ends or nothing: renaming one leaves the other orphaned.
+      return open && close
+        ? [
+            { kind: 'replace_text', range: open, newText: '[box' },
+            { kind: 'replace_text', range: close, newText: '[/box]' },
+          ]
+        : []
+    },
+  },
+  {
+    code: 'osu-nested-alignment',
+    meta: { title: 'Unwrap the inner alignment tag', isAutomatic: false },
+    fix: (data) => {
+      const open = rangeOf(data.openRange)
+      const close = rangeOf(data.closeRange)
+      return open && close
+        ? [
+            { kind: 'delete_range', range: open },
+            { kind: 'delete_range', range: close },
+          ]
+        : []
+    },
+  },
+  {
+    code: 'gradient-outlier',
+    meta: {
+      isAutomatic: false,
+      title: (d: Diagnostic) => `Use ${(d.data as { color?: string } | undefined)?.color ?? 'the run colour'}`,
+    },
+    fix: (data) => {
+      const range = rangeOf(data.range)
+      return range && typeof data.color === 'string' ? [{ kind: 'replace_text', range, newText: data.color }] : []
+    },
+  },
+  {
     code: 'collapsible-gradient',
     meta: { title: 'Collapse into [gradient]', isAutomatic: false },
     fix: (data) => {
