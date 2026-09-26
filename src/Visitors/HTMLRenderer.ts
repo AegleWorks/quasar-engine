@@ -759,7 +759,19 @@ export class HTMLRenderer extends Visitor<string> {
     if (href && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('mailto:')) {
       href = 'https://' + href
     }
-    const content = this.renderChildren(node) || href
+    // osu! ends `[url=…]`'s address at its first `]` (`BBCodeForDB::parseUrl`,
+    // a lazy `.+?\]`): a Markdown link pasted into it — `[x](y)` — becomes a
+    // dead link with the rest of the address printed before the text. The osu!
+    // preview shows exactly that, instead of a link that only works here. The
+    // leaked text is decoration (no leaf of its own): the reconciler keeps it
+    // out of the source.
+    let leaked = ''
+    const cut = kind === 'url' && this.isOsu() ? href.indexOf(']') : -1
+    if (cut >= 0) {
+      leaked = `<span class="bb-osu-leaked-href">${this.escapeHtml(href.slice(cut + 1))}]</span>`
+      href = href.slice(0, cut)
+    }
+    const content = leaked + (this.renderChildren(node) || href)
     const h = href ? ` href="${this.escapeHtml(href)}"` : ''    
     const hasMediaChild = node.children.some(c => c.kind === 'image' || c.kind === 'svg' || c.kind === 'video')
     const imgCls = hasMediaChild ? ' class="bb-link-img"' : ''

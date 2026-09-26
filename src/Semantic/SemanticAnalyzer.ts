@@ -33,6 +33,7 @@ import {
 } from '../Tokens'
 import { nodeAttrValue } from '../Syntax/nodeAttr'
 import { maxFontSizeFor } from '../Utils/FontSizeLimits'
+import { osuPitfallValidators } from './osuPitfalls'
 
 function findTokenReferences(node: RedNode): string[] {
   const tokens = new Set<string>()
@@ -893,6 +894,9 @@ const MAX_QUOTE_DEPTH = 3
  * limited to the kinds whose effect is idempotent: `[color]` inside `[color]`
  * is meaningful (the inner one wins) and must never be reported.
  */
+/** Formatting kinds whose value (`=90`, `=#fff`) paints nothing without content. */
+const ATTR_ONLY_EMPTY_KINDS = new Set<NodeKind>(['font_size', 'color'])
+
 const SELF_NESTING_REDUNDANT = new Set<NodeKind>([
   'bold', 'italic', 'underline', 'strikethrough',
 ])
@@ -1629,6 +1633,10 @@ export class SemanticAnalyzer {
   // ─── Built-in Validators ─────────────────────────────────
 
   private registerBuiltinValidators(): void {
+    // Markup that looks right and is not (see `osuPitfalls.ts`). Reads
+    // `this.dialect` when it validates, so a dialect set later still counts.
+    for (const validator of osuPitfallValidators(this)) this.register(validator)
+
     // Unknown tag validator
     //
     // This rule could not fire. It waited on `custom`, the kind
@@ -1810,9 +1818,16 @@ export class SemanticAnalyzer {
       code: 'empty-tag',
       severity: 'hint',
       validate: (node) => {
+        // A value is not content: `[size=90][/size]` carries `=90` as its
+        // text and slipped past the `text === ''` test, although it paints
+        // nothing. For the formatting kinds, an empty inner span is empty.
+        const valuedButEmpty =
+          ATTR_ONLY_EMPTY_KINDS.has(node.kind) &&
+          node.innerStart > node.range.start &&
+          node.innerEnd === node.innerStart
         if (
           node.children.length === 0 &&
-          node.text === '' &&
+          (node.text === '' || valuedButEmpty) &&
           node.kind !== 'text' &&
           node.kind !== 'empty_line' &&
           node.kind !== 'spacing' &&
