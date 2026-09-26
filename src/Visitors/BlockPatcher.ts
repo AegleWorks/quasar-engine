@@ -57,9 +57,11 @@ export interface PatchBlocksOptions {
    * ~100ms per keystroke on a 500k-character document. Coordinates are in
    * new-source space with the old end kept separately; see `TextChangeRange`.
    * When omitted, the patcher falls back to the full keyed reconcile — and it
-   * also reads the range attached to the root by `DocumentModel`.
+   * also reads the range attached to the root by `DocumentModel`. `null`
+   * says "no range" outright — the full keyed reconcile, whatever the root
+   * carries (a view that skipped versions cannot trust the last edit's range).
    */
-  change?: TextChangeRange
+  change?: TextChangeRange | null
   /**
    * Minimum top-level blocks for the windowed path to run; below it the full
    * keyed walk is cheaper than the windowed bookkeeping. Defaults to
@@ -1183,9 +1185,9 @@ export function patchBlocksInto(
   // root by `DocumentModel`). Windowed reconcile first — it falls back below
   // when the edit is too big or the tree churned outside the window.
   const change =
-    options.change ??
-    (rootNode as RedNode & { __changeRange?: TextChangeRange | null }).__changeRange ??
-    undefined
+    options.change !== undefined
+      ? options.change ?? undefined
+      : (rootNode as RedNode & { __changeRange?: TextChangeRange | null }).__changeRange ?? undefined
   if (change) {
     const windowed = reconcileWindowed(container, rootNode, change, renderer, cache, options)
     if (windowed) {

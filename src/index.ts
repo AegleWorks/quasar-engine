@@ -170,7 +170,7 @@ export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpen
 // ── Reconciler ──
 export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult, type ReconcileRoute, type ReconcileFullReason, type ReconcileCounts, type ReconcileOptions } from './Reconciler/SurgicalReconciler'
 export { sourceOffsetOfDomPoint, domPointOfSourceOffset, revealLine, REVEALED_LINE_ATTR } from './Reconciler/CanvasPositions'
-export { CanvasDocument, spanOf, changeBetween, type CanvasModel, type CanvasDocumentOptions } from './Reconciler/CanvasDocument'
+export { CanvasDocument, OwnedCanvasHost, spanOf, changeBetween, type CanvasHost, type CanvasSnapshot, type CanvasModel, type CanvasDocumentOptions, type ShowOptions } from './Reconciler/CanvasDocument'
 
 // ── Lightbulb Engine (fixes, refactorings, fix-all, host) ──
 //

@@ -105,23 +105,68 @@ break typing goes on). After a final `<br>`, it opens a line with
 `data-bb-after`. The reconciler inserts whatever is typed at exactly that
 offset. A line left empty is no edit.
 
-## Incremental: `CanvasDocument`
+## One document, many views: `CanvasDocument` and `CanvasHost`
 
-The canvas is a `CanvasDocument`. It owns its own `DocumentModel`, and is kept
-as the exact render of that model's tree:
+The canvas is a `CanvasDocument`: a **view** of a document it does not own. It
+used to parse its own copy of the text, kept in step with the text editor's by
+string comparisons and an echo guard (a text the canvas emitted could come back
+late and undo a keystroke). That was two copies of the truth. Roslyn has one: a
+workspace holds the document, and every view reads the same snapshot and sends
+its edits back through the workspace (`TryApplyChanges`).
 
-- **Edits** (a command's, or a keystroke's once reconciled): `applyChanges`.
-  That is the incremental parser (ids kept) plus `patchBlocksInto`, windowed on
-  the edit's range. Only the blocks the edit touched are re-rendered and
-  morphed, and an open box stays open.
-- **Edits made elsewhere** (the text editor, a collaborator, an undo): `sync`.
-  The difference is one change, applied the same way.
-- **Keystrokes:** `reconcile` compares only the top-level blocks a
-  `MutationObserver` saw the user change (`ReconcileOptions.dirty`). A
+Here the workspace is the `CanvasHost`, which has two methods:
+
+- `current()` returns the snapshot: the text, and the tree parsed from exactly
+  that text.
+- `apply(changes)` sends edits to the document. It is synchronous: when it
+  returns, `current()` has them, or has whatever the document made of them.
+
+In Miliastry the host is the workspace's `DocumentInstance`. That is the same
+snapshot Monaco and the preview read, so the canvas paints the preview's own
+tree, node ids included. `apply` goes through Monaco, which owns undo, and the
+document changes in the same call (`executeEdits` → `onChange` →
+`instance.replace`).
+
+A canvas nobody else edits, like a comment box, uses `OwnedCanvasHost`: a
+private model behind the same door.
+
+What the canvas does:
+
+- **`show()`** brings the canvas to the host's snapshot, whoever made the edit:
+  the canvas, the text editor, a collaborator, an undo. Only the blocks that
+  changed between the painted snapshot and the new one are re-rendered and
+  morphed (`patchBlocksInto`, windowed), and an open box stays open. When the
+  same text comes back as another tree (a reparse), every block is compared.
+  With `repaint`, the canvas paints from scratch, for another document or
+  another dialect.
+- **`edit(changes)`** handles a command's changes, or a keystroke's once it has
+  been reconciled. It sends them to the host, then `show()`s the result. If
+  the document refused them (a read-only session), the canvas is painted again
+  from the document, because the DOM still holds a keystroke the document does
+  not have.
+- **`reconcile()`** handles keystrokes. It compares only the top-level blocks
+  a `MutationObserver` saw the user change (`ReconcileOptions.dirty`). A
   structural change (blocks added, removed or moved at the top level) takes
-  the full path. So does anything the fast path cannot vouch for.
+  the full path, and so does anything the fast path cannot vouch for.
 
-Measured in Chromium on the 547 KB fixture, before → after:
+What the host owes the canvas:
+
+- **A tree for its text, when asked.** Miliastry's pipeline parses a large
+  document once per frame, so its text can briefly run ahead of its tree.
+  `DocumentModel.settle()` parses what is queued, right away. This is Roslyn's
+  synchronous `GetSyntaxRoot`: whoever needs the tree now asks for it, and
+  everyone else keeps the deferred parse. The preview's frame then finds
+  nothing to do: one parse per edit, not two.
+- **The painted tree stays valid until the next `show`.** Quasar's model reuses
+  red nodes across edits, which is where its speed comes from, so applying a
+  change invalidates the previous root. The canvas therefore shows every change
+  as it happens (subscribe → `show()`). The caret has to be carried through an
+  edit made elsewhere, so it is read in the old coordinates just before the
+  change: `DocumentModel.subscribeWillChange`, the equivalent of Visual
+  Studio's `Changing`.
+
+Measured in Chromium on the 547 KB fixture, first with the old full repaint as
+the baseline:
 
 | | miliastry | osu! |
 |---|---|---|
@@ -130,6 +175,23 @@ Measured in Chromium on the 547 KB fixture, before → after:
 | Bold | 154 → **2.9** ms | 142 → **2.3** ms |
 | paste a block | 157 → **2.4** ms | 155 → **1.9** ms |
 | an edit from the text editor | 233 → **5.7** ms | 145 → **4.4** ms |
+
+Those numbers cover the canvas alone. The application also parsed every edit a
+second time, in the workspace document behind Monaco and the preview. Measured
+with the whole stack (the workspace `DocumentModel` and `BBCodePipeline`, plus
+the canvas), two copies against one shared snapshot:
+
+| miliastry, ms p50 | two copies | **one snapshot** |
+|---|---|---|
+| one keystroke (reconcile + edit + parse) | 11.1 | **10.0** |
+| Enter | 6.2 | **5.3** |
+| Bold | 7.6 | **6.5** |
+| paste a block | 6.7 | **5.6** |
+| an edit from the text editor | 7.9 | **4.5** |
+
+osu! gives the same picture (11.0 → 10.4, 7.7 → 5.0). There is one tree in
+memory instead of two, and there is no echo to guard against: the canvas never
+has to decide which of two texts is newer.
 
 It also found a renderer bug. In miliastry, an `[imagemap]` gave each hotspot
 its map's `data-node-id`. The reconciler, seeing duplicated ids, took the full
@@ -140,9 +202,9 @@ all three dialects finds no other duplicate.
 ## Positions
 
 `sourceOffsetOfDomPoint` and `domPointOfSourceOffset` require the canvas to be
-exactly the render of the tree they are given. The component repaints first if
-the user has typed since the last paint, carrying the selection across by
-visible character offset.
+exactly the render of the tree they are given. `CanvasDocument` keeps that
+invariant, apart from the moment between a keystroke and its `edit`, which is
+what `reconcile` reads.
 
 Inside an element that carries `data-node-id`, DOM text nodes are paired with
 the node's text leaves in order, by equal text. Text the renderer made up has
