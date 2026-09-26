@@ -106,7 +106,7 @@ describe('U2 LightbulbHost: ranked LSP-kinded resolution', () => {
     const { root } = parseRoot(source)
     registerCodeFix(
       'u2-rank-auto',
-      () => [{ kind: 'insert_text', position: 0, text: '!' }],
+      (d) => [{ kind: 'insert_text', position: d.range?.start ?? 0, text: '!' }],
       { title: 'Auto fix', isAutomatic: true },
     )
     registerCodeFix(
@@ -122,6 +122,12 @@ describe('U2 LightbulbHost: ranked LSP-kinded resolution', () => {
       }),
       createDiagnostic('u2-rank-manual', 'manual', 'warning', {
         range: { start: 0, end: 3 },
+      }),
+      // A second finding of the same key, away from the caret: Fix All is
+      // only offered when it fixes more than the quick fix already does.
+      createDiagnostic('u2-rank-auto', 'auto', 'warning', {
+        range: { start: 8, end: 11 },
+        equivalenceKey: 'u2-rank-key',
       }),
     ]
     return { source, root, diags }

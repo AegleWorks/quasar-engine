@@ -2,28 +2,27 @@ import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
-import { CanvasDocument, spanOf, changeBetween } from '../Reconciler/CanvasDocument'
+import { CanvasDocument, OwnedCanvasHost, spanOf, changeBetween, type CanvasHost } from '../Reconciler/CanvasDocument'
 import type { TextChange } from '../Incremental/ChangeTracker'
 import { REFERENCE_DOCUMENT } from './referenceDocument'
 
 /**
- * The incremental canvas (`Reconciler/CanvasDocument.ts`): every edit is an
- * incremental reparse and a windowed patch, and the canvas stays exactly the
- * render of its tree — checked byte for byte after every step.
+ * The incremental canvas (`Reconciler/CanvasDocument.ts`): a view of a
+ * document it does not own. Every edit goes to the host and comes back as a
+ * windowed patch, and the canvas stays exactly the render of the host's tree —
+ * checked byte for byte after every step.
  */
 
 type Dialect = 'miliastry' | 'osu'
 
-function canvas(source: string, dialect: Dialect) {
+const model = (dialect: Dialect) => (s: string) => new BBCodeDocumentModel({ source: s, dialect, autoAnalyze: false })
+
+function view(host: CanvasHost, dialect: Dialect) {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const renderer = new HTMLRenderer({ dialect })
-  const doc = new CanvasDocument(container, {
-    createModel: (s) => new BBCodeDocumentModel({ source: s, dialect, autoAnalyze: false }),
-    renderer,
-    exporter: new BBCodeExporter(undefined, dialect),
-  })
-  doc.load(source)
+  const doc = new CanvasDocument(container, { host, renderer, exporter: new BBCodeExporter(undefined, dialect) })
+  doc.show()
   // Both sides as the DOM spells them (`hidden` → `hidden=""`).
   const probe = document.createElement('div')
   const matchesRender = () => {
@@ -31,6 +30,12 @@ function canvas(source: string, dialect: Dialect) {
     return container.innerHTML === probe.innerHTML
   }
   return { container, doc, renderer, matchesRender }
+}
+
+function canvas(source: string, dialect: Dialect) {
+  const host = new OwnedCanvasHost(model(dialect))
+  host.load(source)
+  return { host, ...view(host, dialect) }
 }
 
 function apply(source: string, changes: readonly TextChange[]): string {
@@ -76,16 +81,17 @@ describe.each(['miliastry', 'osu'] as Dialect[])('CanvasDocument (%s)', (dialect
       const end = Math.min(source.length, start + (rand() < 0.5 ? 0 : Math.floor(rand() * 40)))
       const change = { start, end, text: TOKENS[Math.floor(rand() * TOKENS.length)] }
       source = apply(source, [change])
-      doc.applyChanges([change])
+      doc.edit([change])
       expect(doc.source).toBe(source)
       expect(matchesRender(), `step ${i}`).toBe(true)
     }
   })
 
   it('an edit made elsewhere is synced the same way', () => {
-    const { doc, matchesRender } = canvas(REFERENCE_DOCUMENT, dialect)
+    const { host, doc, matchesRender } = canvas(REFERENCE_DOCUMENT, dialect)
     const edited = REFERENCE_DOCUMENT.replace('sigo fallando', 'ya no fallo')
-    doc.sync(edited)
+    host.sync(edited)
+    doc.show()
     expect(doc.source).toBe(edited)
     expect(matchesRender()).toBe(true)
   })
@@ -100,7 +106,7 @@ describe.each(['miliastry', 'osu'] as Dialect[])('CanvasDocument (%s)', (dialect
     expect(doc.lastDirtyBlocks).toBe(1)
     expect(r.route).toBe('surgical')
     expect(r.resultingSource).toBe(REFERENCE_DOCUMENT.replace('Skins minimalistas', 'SkinsX minimalistas'))
-    doc.applyChanges(r.edits)
+    doc.edit(r.edits)
     expect(matchesRender()).toBe(true)
     // Its own patch is not the user's: nothing left to reconcile.
     expect(doc.reconcile().route).toBe('unchanged')
@@ -129,8 +135,63 @@ describe('CanvasDocument keeps view state', () => {
     const { container, doc } = canvas('[box=T]\nuno\n[/box]\n\nfin', 'miliastry')
     const details = container.querySelector('details')!
     details.open = true
-    doc.applyChanges([{ start: 8, end: 8, text: 'X' }])
+    doc.edit([{ start: 8, end: 8, text: 'X' }])
     expect(container.querySelector('details')!.open).toBe(true)
     expect(doc.source).toBe('[box=T]\nXuno\n[/box]\n\nfin')
+  })
+})
+
+describe('one document, many views', () => {
+  it('an edit made on one canvas is what the other shows — no copy of the text in between', () => {
+    const host = new OwnedCanvasHost(model('miliastry'))
+    host.load(REFERENCE_DOCUMENT)
+    const a = view(host, 'miliastry')
+    const b = view(host, 'miliastry')
+    a.doc.edit([{ start: 0, end: 0, text: '[b]Hola[/b] ' }])
+    // B reads the same snapshot: the same text AND the same tree.
+    expect(b.doc.show()).not.toBeNull()
+    expect(b.doc.root).toBe(a.doc.root)
+    expect(b.doc.source).toBe(host.current().source)
+    expect(b.matchesRender()).toBe(true)
+    // Nothing new: nothing to paint.
+    expect(b.doc.show()).toBeNull()
+  })
+
+  it('a view that missed several versions catches up in one show', () => {
+    const { host, doc, matchesRender } = canvas(REFERENCE_DOCUMENT, 'osu')
+    const rand = mulberry32(11)
+    let source = REFERENCE_DOCUMENT
+    for (let i = 0; i < 25; i++) {
+      const start = Math.floor(rand() * source.length)
+      const change = { start, end: Math.min(source.length, start + 3), text: ['[i]x[/i]', '\n\n', 'ab'][i % 3] }
+      source = apply(source, [change])
+      host.apply([change])
+    }
+    doc.show()
+    expect(doc.source).toBe(source)
+    expect(matchesRender()).toBe(true)
+  })
+
+  it('the same text parsed again (another tree) is compared block by block', () => {
+    const source = 'uno\n\n[notice]aviso[/notice]\n\ndos'
+    const { host, doc, matchesRender } = canvas(source, 'miliastry')
+    host.load(source)
+    expect(doc.show()).not.toBeNull()
+    expect(matchesRender()).toBe(true)
+  })
+
+  it('a document that refuses the edit takes the keystroke back out of the canvas', () => {
+    const inner = new OwnedCanvasHost(model('miliastry'))
+    inner.load('Hola mundo')
+    const readOnly: CanvasHost = { current: () => inner.current(), apply: () => {} }
+    const { container, doc, matchesRender } = view(readOnly, 'miliastry')
+    const text = container.querySelector('p')?.firstChild ?? container.firstChild!.firstChild!
+    ;(text as Text).nodeValue = 'Hola mundoX'
+    const r = doc.reconcile()
+    expect(r.edits.length).toBeGreaterThan(0)
+    doc.edit(r.edits)
+    expect(doc.source).toBe('Hola mundo')
+    expect(container.textContent).not.toContain('mundoX')
+    expect(matchesRender()).toBe(true)
   })
 })

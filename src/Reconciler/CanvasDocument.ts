@@ -1,26 +1,48 @@
 /**
- * CanvasDocument — a WYSIWYG canvas kept as the render of its document, and
- * everything it does done incrementally.
+ * CanvasDocument — a WYSIWYG canvas as a VIEW of a document it does not own,
+ * and everything it does done incrementally.
  *
- * The canvas used to repaint by parsing the whole source and replacing its
- * whole `innerHTML`, and to reconcile a keystroke by re-rendering every
- * top-level block to pair them with the DOM. Measured in Chromium on the
- * 547 KB fixture: ~150 ms per command (Enter, Bold, paste), of which the
- * command itself was under 1 ms, and 200–290 ms per keystroke. The pieces to
- * do better already existed for the preview; this puts them together for the
- * canvas:
+ * ─── One document, many views ─────────────────────────────────────────────
  *
- *   - a `DocumentModel` of its own, so an edit is `applyChange`: the
- *     incremental parser, with node ids kept across it;
- *   - `patchBlocksInto`, windowed on the edit's range, so only the blocks it
- *     touched are re-rendered and morphed (an open box stays open);
+ * The canvas used to parse its own copy of the text: its own model, kept in
+ * step with the editor's by string comparisons and an echo guard (a text the
+ * canvas emitted could come back late and undo a keystroke). Two copies of the
+ * truth. Roslyn has one: a workspace holds the document, and every view — the
+ * editor, the analyzers, a refactoring preview — reads the same snapshot and
+ * sends its edits back through the workspace (`TryApplyChanges`).
+ *
+ * Here the workspace is the `CanvasHost`: `current()` is the snapshot (the
+ * text and the tree parsed from exactly that text), `apply()` sends edits to
+ * the document — to the text editor that owns undo, to the collaboration
+ * transport — and returns once the document has them. The canvas reads the
+ * host's tree, never parses, and never decides which of two texts is newer:
+ * there is only the host's.
+ *
+ * A caller without a document of its own (a comment box) uses
+ * `OwnedCanvasHost`, a private model — the old behaviour, behind the same door.
+ *
+ * ─── Incremental ──────────────────────────────────────────────────────────
+ *
+ *   - `patchBlocksInto`, windowed on what changed between the snapshot the
+ *     canvas painted and the one it shows, so only those blocks are
+ *     re-rendered and morphed (an open box stays open);
  *   - a `MutationObserver` that notes which top-level blocks the USER changed,
  *     so a keystroke reconciles those blocks and nothing else.
  *
- * The invariant it keeps: after `load`, `applyChanges` and `sync`, the canvas
- * is exactly the render of `root`. Between a keystroke and the `applyChanges`
- * of its reconciled edits, the DOM is ahead of the model by that keystroke,
- * which is what `reconcile` reads.
+ * Measured in Chromium on the 547 KB fixture, with the old full repaint as the
+ * baseline: ~150 ms → ~2 ms per command, 200–290 ms → ~7 ms per keystroke.
+ *
+ * The invariant it keeps: after `show` (and `edit`, which ends in one), the
+ * canvas is exactly the render of the snapshot it painted, `root`. Between a
+ * keystroke and the `edit` of its reconciled changes, the DOM is ahead of that
+ * snapshot by the keystroke, which is what `reconcile` reads.
+ *
+ * What the host must guarantee: the painted `root` stays valid until the next
+ * `show`. A model that recycles red nodes across edits (Quasar's does, for
+ * speed) invalidates the previous root when it applies the next change — so
+ * the host shows every change as it happens (subscribe → `show()`), and
+ * anything the canvas must read in the OLD coordinates (the caret, before an
+ * edit from elsewhere) is read before the document changes.
  */
 
 import type { RedNode } from '../Syntax/RedNode'
@@ -30,21 +52,24 @@ import type { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { patchBlocksInto, type PatchBlocksStats } from '../Visitors/BlockPatcher'
 import { reconcileVisualDOMToBBCode, type ReconcileResult } from './SurgicalReconciler'
 
-/** The part of a document model the canvas uses. */
-export interface CanvasModel {
+/** A document as the canvas sees it: a text and the tree parsed from exactly it. */
+export interface CanvasSnapshot {
   readonly source: string
-  readonly redRoot: RedNode | null
-  readonly lastChangeRange: TextChangeRange | null
-  applyChange(change: TextChange, origin?: string, resultingSource?: string): void
+  readonly root: RedNode | null
 }
 
-export interface CanvasDocumentOptions {
-  /** A model for `source`, parsed as the document is (its dialect, its pairing). */
-  createModel: (source: string) => CanvasModel
-  /** The renderer that paints the canvas — and that the reconciler compares with. */
-  renderer: HTMLRenderer
-  /** The exporter for the canvas' dialect. */
-  exporter: BBCodeExporter
+/**
+ * The document a canvas is a view of — the workspace, in Roslyn's terms.
+ */
+export interface CanvasHost {
+  /** The document now. `root` must be the parse of `source`, not an older one. */
+  current(): CanvasSnapshot
+  /**
+   * Sends changes (non-overlapping, against `current().source`) to the
+   * document. Synchronous: when it returns, `current()` has them — or has
+   * whatever the document made of them (a read-only session refuses them).
+   */
+  apply(changes: readonly TextChange[]): void
 }
 
 /**
@@ -81,8 +106,81 @@ export function changeBetween(a: string, b: string): TextChange | null {
   return { start: s, end: ea, text: b.slice(s, eb) }
 }
 
-export class CanvasDocument {
+/** The part of a document model `OwnedCanvasHost` uses. */
+export interface CanvasModel {
+  readonly source: string
+  readonly redRoot: RedNode | null
+  applyChange(change: TextChange, origin?: string, resultingSource?: string): void
+}
+
+/**
+ * A document of the canvas' own: for a canvas nobody else edits (a comment
+ * box), or a test. `load` starts a new one; `sync` brings it to a text
+ * written elsewhere, as one incremental change.
+ */
+export class OwnedCanvasHost implements CanvasHost {
   private model: CanvasModel | null = null
+
+  constructor(private readonly createModel: (source: string) => CanvasModel) {}
+
+  current(): CanvasSnapshot {
+    return { source: this.model?.source ?? '', root: this.model?.redRoot ?? null }
+  }
+
+  apply(changes: readonly TextChange[]): void {
+    if (!this.model) {
+      this.load(applyChanges('', changes))
+      return
+    }
+    const change = spanOf(this.model.source, changes)
+    if (change) this.model.applyChange(change, 'canvas')
+  }
+
+  /** A new document: its tree shares nothing with the last one (show it with `repaint`). */
+  load(source: string): void {
+    this.model = this.createModel(source)
+  }
+
+  /** The text written elsewhere, as one change. False when there was nothing to do. */
+  sync(source: string): boolean {
+    if (!this.model) {
+      this.load(source)
+      return true
+    }
+    const change = changeBetween(this.model.source, source)
+    if (change) this.model.applyChange(change, 'sync')
+    return change !== null
+  }
+}
+
+function applyChanges(source: string, changes: readonly TextChange[]): string {
+  let out = source
+  for (const c of [...changes].sort((a, b) => b.start - a.start)) out = out.slice(0, c.start) + c.text + out.slice(c.end)
+  return out
+}
+
+export interface CanvasDocumentOptions {
+  /** The document the canvas shows and edits. */
+  host: CanvasHost
+  /** The renderer that paints the canvas — and that the reconciler compares with. */
+  renderer: HTMLRenderer
+  /** The exporter for the canvas' dialect. */
+  exporter: BBCodeExporter
+}
+
+export interface ShowOptions {
+  /**
+   * Paint from scratch: the snapshot is not a continuation of the painted one
+   * (another document, another dialect — node ids that share nothing).
+   */
+  repaint?: boolean
+}
+
+export class CanvasDocument {
+  /** The snapshot the canvas is the render of; null before the first `show`. */
+  private painted: CanvasSnapshot | null = null
+  /** The renderer or exporter changed: the next `show` repaints. */
+  private stale = false
   private readonly observer: MutationObserver | null
   /** Top-level children the user changed since the canvas last matched its render. */
   private readonly dirty = new Set<Node>()
@@ -97,46 +195,61 @@ export class CanvasDocument {
 
   /** The source the canvas shows. */
   get source(): string {
-    return this.model?.source ?? ''
+    return this.painted?.source ?? ''
   }
 
   /** The tree the canvas is the render of. */
   get root(): RedNode | null {
-    return this.model?.redRoot ?? null
+    return this.painted?.root ?? null
   }
 
-  /** A renderer or exporter change (the dialect): the next `load` uses them. */
+  get host(): CanvasHost {
+    return this.options.host
+  }
+
+  /**
+   * Another host, renderer or exporter. Another host or renderer paints
+   * differently: the next `show` repaints. The exporter only reads the DOM.
+   */
   configure(options: CanvasDocumentOptions): void {
+    if (options.renderer !== this.options.renderer || options.host !== this.options.host) this.stale = true
     this.options = options
   }
 
-  /** Paints `source` from scratch: a new model, the whole canvas. Once per document. */
-  load(source: string): PatchBlocksStats {
-    this.model = this.options.createModel(source)
-    return this.patch({ forceRebuild: true })
+  /**
+   * Brings the canvas to the host's snapshot — an edit made anywhere: here,
+   * in the text editor, by a collaborator, an undo. Only the blocks that
+   * changed between the two snapshots are repainted. Null when the canvas
+   * already showed it.
+   */
+  show(options: ShowOptions = {}): PatchBlocksStats | null {
+    const next = this.options.host.current()
+    const prev = this.painted
+    const repaint = options.repaint || this.stale || !prev
+    if (!repaint && next.source === prev!.source && next.root === prev!.root) return null
+    this.painted = next
+    this.stale = false
+    if (repaint) return this.patch({ forceRebuild: true })
+    const change = changeBetween(prev!.source, next.source)
+    // The same text as another tree (reparsed): compare every block.
+    if (!change) return this.patch({ change: null })
+    return this.patch({ change: { start: change.start, end: change.start + change.text.length, endOld: change.end } })
   }
 
   /**
-   * Applies changes made to the source — a command's, a keystroke's once
-   * reconciled — to the model, and repaints only the blocks they touched.
-   * Null when there was nothing to apply.
+   * Sends changes made on the canvas — a command's, a keystroke's once
+   * reconciled — to the document, and shows what it made of them. When the
+   * document refused them (a read-only session), the canvas is painted again
+   * from it: the DOM holds a keystroke the document does not, and only a
+   * repaint is sure to take it out (the patcher compares renders, not DOM).
    */
-  applyChanges(changes: readonly TextChange[]): PatchBlocksStats | null {
-    if (!this.model) return null
-    const change = spanOf(this.model.source, changes)
-    if (!change) return null
-    this.model.applyChange(change, 'canvas')
-    return this.patch({ change: this.model.lastChangeRange ?? undefined })
-  }
-
-  /**
-   * Brings the canvas to `source`, an edit made elsewhere (the text editor, a
-   * collaborator, an undo): the difference is one change, applied like any other.
-   */
-  sync(source: string): PatchBlocksStats | null {
-    if (!this.model) return this.load(source)
-    const change = changeBetween(this.model.source, source)
-    return change ? this.applyChanges([change]) : null
+  edit(changes: readonly TextChange[]): PatchBlocksStats | null {
+    if (changes.length === 0 || !this.painted) return null
+    const expected = applyChanges(this.painted.source, changes)
+    this.options.host.apply(changes)
+    const stats = this.show()
+    if (this.painted.source !== expected) return this.patch({ forceRebuild: true })
+    return stats
   }
 
   /**
@@ -168,7 +281,7 @@ export class CanvasDocument {
     this.observer?.disconnect()
   }
 
-  private patch(extra: { forceRebuild?: boolean; change?: TextChangeRange }): PatchBlocksStats {
+  private patch(extra: { forceRebuild?: boolean; change?: TextChangeRange | null }): PatchBlocksStats {
     this.collect()
     const stats = patchBlocksInto(this.container, this.root, { renderer: this.options.renderer, ...extra })
     // The patch's own mutations are not the user's; and after it the canvas
