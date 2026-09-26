@@ -595,6 +595,8 @@
   gap: 0;
   align-items: stretch;
   justify-content: normal;
+  /* osu no le fija alineación: la hereda, y dentro de `[centre]` centra. */
+  text-align: inherit;
   flex-wrap: wrap;
   width: max-content;
   max-width: 100%;
@@ -615,6 +617,23 @@
    * hueco: el enlace es el único contenido de su línea, así que `top` no
    * cambia nada más. Medido: 26px -> 21px, que es lo que mide en osu. */
   vertical-align: top;
+}
+/* Un BLOQUE dentro del título —`[box=Mi Ca[notice]aviso[/notice]ja]`, que osu
+ * acepta: su regex del título cuenta corchetes— se estira a todo el ancho,
+ * con el texto antes y después en líneas propias, que es como se ve en osu.
+ * Con el `inline-flex` de `width: max-content` el bloque se encogía al ancho
+ * de su texto. Sólo cuando el título lleva un bloque: los demás títulos
+ * siguen siendo la caja flexible de arriba. */
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link:has(> .bbcode-spoilerbox__link-text > div) {
+  display: block;
+  width: auto;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link:has(> .bbcode-spoilerbox__link-text > div) > .bbcode-spoilerbox__link-icon {
+  display: inline-block;
+  vertical-align: top;
+}
+.bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link:has(> .bbcode-spoilerbox__link-text > div) > .bbcode-spoilerbox__link-text {
+  display: inline;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) .bbcode-spoilerbox__link:hover { color: var(--osu-link-hi); border-bottom: none; }
 
