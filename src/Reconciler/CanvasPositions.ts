@@ -172,16 +172,17 @@ function structuralOffset(root: RedNode, container: HTMLElement, el: Element, of
   return el.closest(`[${REVEALED_LINE_ATTR}]`)?.getAttribute(REVEALED_LINE_ATTR) === 'end' ? scope.range.end : scope.range.start
 }
 
-/** The text leaf whose span holds `offset`, edges included. */
+/**
+ * The text leaf whose span holds `offset`, edges included — preferring the one
+ * that starts there. Down the tree (`findNodeAtOffset`), not across every
+ * leaf: on the 547 KB fixture the walk was most of placing a caret.
+ */
 function leafHolding(root: RedNode, offset: number): RedNode | null {
-  let endingHere: RedNode | null = null
-  for (const leaf of textLeaves(root)) {
-    const { start, end } = leaf.range
-    if (start <= offset && offset < end) return leaf
-    if (end === offset) endingHere = leaf
-    else if (start > offset) break
-  }
-  return endingHere
+  const here = root.findNodeAtOffset(offset)
+  if (here && here.kind === 'text' && here.range.start <= offset && offset < here.range.end) return here
+  const before = offset > 0 ? root.findNodeAtOffset(offset - 1) : null
+  if (before && before.kind === 'text' && before.range.end === offset) return before
+  return null
 }
 
 /** Where a caret goes in a break's element: inside an empty line, before a `<br>`, on a marker. */

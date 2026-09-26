@@ -81,6 +81,16 @@ a `<details>` is view state, not an edit, and the comparison ignores it. The
 component also keeps open boxes open across repaints
 (`repaintKeepingOpenBoxes`).
 
+## Decoration between children
+
+A render can also put markup of its own *between* a node's children: a
+quote's "X wrote:" line, or the newlines between list items. `descend` aligns
+the node's render with its children's, and treats whatever matches no child as
+decoration. The decoration must be in the DOM exactly as rendered: an edit to
+the author line is not typing, and the coarser paths see it. It is then left
+out of the pairing. A single text node that pairs with no child (typed into an
+empty list item) is inserted at the offset between its neighbours.
+
 ## Lines with no layout
 
 Some newlines render as nothing visible:
@@ -94,6 +104,38 @@ marker into an empty line with the same id and `data-bb-at` (which side of the
 break typing goes on). After a final `<br>`, it opens a line with
 `data-bb-after`. The reconciler inserts whatever is typed at exactly that
 offset. A line left empty is no edit.
+
+## Incremental: `CanvasDocument`
+
+The canvas is a `CanvasDocument`. It owns its own `DocumentModel`, and is kept
+as the exact render of that model's tree:
+
+- **Edits** (a command's, or a keystroke's once reconciled): `applyChanges`.
+  That is the incremental parser (ids kept) plus `patchBlocksInto`, windowed on
+  the edit's range. Only the blocks the edit touched are re-rendered and
+  morphed, and an open box stays open.
+- **Edits made elsewhere** (the text editor, a collaborator, an undo): `sync`.
+  The difference is one change, applied the same way.
+- **Keystrokes:** `reconcile` compares only the top-level blocks a
+  `MutationObserver` saw the user change (`ReconcileOptions.dirty`). A
+  structural change (blocks added, removed or moved at the top level) takes
+  the full path. So does anything the fast path cannot vouch for.
+
+Measured in Chromium on the 547 KB fixture, before → after:
+
+| | miliastry | osu! |
+|---|---|---|
+| one keystroke | 291 → **6.6** ms p50 (9.6 p95) | 200 → **6.7** ms p50 (8.3 p95) |
+| Enter | 159 → **2.0** ms | 162 → **1.7** ms |
+| Bold | 154 → **2.9** ms | 142 → **2.3** ms |
+| paste a block | 157 → **2.4** ms | 155 → **1.9** ms |
+| an edit from the text editor | 233 → **5.7** ms | 145 → **4.4** ms |
+
+It also found a renderer bug. In miliastry, an `[imagemap]` gave each hotspot
+its map's `data-node-id`. The reconciler, seeing duplicated ids, took the full
+path, so every keystroke in any document with an imagemap rewrote the whole
+document. Hotspots now carry no id, as in osu!, and a scan of the corpus in
+all three dialects finds no other duplicate.
 
 ## Positions
 
@@ -151,6 +193,6 @@ Phase 0 was measurement. It found two bugs, both fixed:
 
 ## Next
 
-- **Quote and list item content.** Typing there goes `element`: the author
-  line of a quote and the `<li>` pairing still need a content host of their
-  own.
+- Nothing on the bench goes `element` or `full` any more. Every gesture is a
+  `command` or `surgical`, in both dialects. The next gestures worth adding
+  are tables, columns and image maps.
