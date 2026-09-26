@@ -1511,7 +1511,12 @@ export class HTMLRenderer extends Visitor<string> {
           : `<a class="imagemap__link" href="${this.escapeHtml(areaUrl)}" style="${pos}"${title}></a>`
         continue
       }
-      areas += `<a${this.idAttr(node)} href="${this.escapeHtml(areaUrl)}" target="_blank" rel="noopener" class="imagemap-area bbcode-imap-area" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;" title="${this.escapeHtml(label || 'Link')}"></a>`
+      // Sin id: el del mapa ya está en el contenedor, y una zona que lo
+      // repitiera daba dos elementos con el mismo `data-node-id`. El lienzo
+      // WYSIWYG, al ver ids duplicados, deja de fiarse del DOM y reescribe el
+      // documento ENTERO en cada tecla. Un clic en la zona sigue llegando al
+      // mapa por `closest('[data-node-id]')`, como en osu!.
+      areas += `<a href="${this.escapeHtml(areaUrl)}" target="_blank" rel="noopener" class="imagemap-area bbcode-imap-area" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;" title="${this.escapeHtml(label || 'Link')}"></a>`
     }
 
     if (this.isOsu()) {

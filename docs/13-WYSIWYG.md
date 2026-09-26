@@ -105,6 +105,38 @@ break typing goes on). After a final `<br>`, it opens a line with
 `data-bb-after`. The reconciler inserts whatever is typed at exactly that
 offset. A line left empty is no edit.
 
+## Incremental: `CanvasDocument`
+
+The canvas is a `CanvasDocument`. It owns its own `DocumentModel`, and is kept
+as the exact render of that model's tree:
+
+- **Edits** (a command's, or a keystroke's once reconciled): `applyChanges`.
+  That is the incremental parser (ids kept) plus `patchBlocksInto`, windowed on
+  the edit's range. Only the blocks the edit touched are re-rendered and
+  morphed, and an open box stays open.
+- **Edits made elsewhere** (the text editor, a collaborator, an undo): `sync`.
+  The difference is one change, applied the same way.
+- **Keystrokes:** `reconcile` compares only the top-level blocks a
+  `MutationObserver` saw the user change (`ReconcileOptions.dirty`). A
+  structural change (blocks added, removed or moved at the top level) takes
+  the full path. So does anything the fast path cannot vouch for.
+
+Measured in Chromium on the 547 KB fixture, before → after:
+
+| | miliastry | osu! |
+|---|---|---|
+| one keystroke | 291 → **6.6** ms p50 (9.6 p95) | 200 → **6.7** ms p50 (8.3 p95) |
+| Enter | 159 → **2.0** ms | 162 → **1.7** ms |
+| Bold | 154 → **2.9** ms | 142 → **2.3** ms |
+| paste a block | 157 → **2.4** ms | 155 → **1.9** ms |
+| an edit from the text editor | 233 → **5.7** ms | 145 → **4.4** ms |
+
+It also found a renderer bug. In miliastry, an `[imagemap]` gave each hotspot
+its map's `data-node-id`. The reconciler, seeing duplicated ids, took the full
+path, so every keystroke in any document with an imagemap rewrote the whole
+document. Hotspots now carry no id, as in osu!, and a scan of the corpus in
+all three dialects finds no other duplicate.
+
 ## Positions
 
 `sourceOffsetOfDomPoint` and `domPointOfSourceOffset` require the canvas to be

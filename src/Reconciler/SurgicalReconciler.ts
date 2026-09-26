@@ -650,14 +650,64 @@ function hasDuplicateNodeIds(container: HTMLElement): boolean {
   return false
 }
 
+/** What the caller knows about which part of the DOM changed. */
+export interface ReconcileOptions {
+  /**
+   * The top-level children of the container that changed since the canvas
+   * last matched its render — collected by a `MutationObserver`, see
+   * `CanvasDocument`. With it, only those blocks are compared: O(edit)
+   * instead of re-rendering every top-level block, which on a 547 KB
+   * document took 200–290 ms per keystroke. Anything it cannot vouch for
+   * (a block without an id, bare text at the top level, a duplicated id)
+   * sends the reconcile down the full path. Leave it out when unsure.
+   */
+  dirty?: readonly Node[]
+}
+
+/**
+ * The edits for the dirty top-level blocks only, or null when the full
+ * path must decide (see `ReconcileOptions.dirty`).
+ */
+function reconcileDirty(
+  originalSource: string,
+  originalAST: RedNode,
+  container: HTMLElement,
+  dirty: readonly Node[],
+  exporter: BBCodeExporter,
+  renderer: HTMLRenderer,
+): ReconcileResult | null {
+  if (dirty.length === 0) return finalise(originalSource, [])
+  const blocks = new Map<string, RedNode>()
+  for (const child of originalAST.children) blocks.set(child.id, child)
+  const edits: SurgicalEdit[] = []
+  for (const d of dirty) {
+    if (d.nodeType !== 1 || d.parentNode !== container) return null
+    const el = d as HTMLElement
+    const id = el.getAttribute('data-node-id')
+    const node = id ? blocks.get(id) : undefined
+    // A split inside the block copies ids into both halves: not a typing edit.
+    if (!node || hasDuplicateNodeIds(el)) return null
+    const blockEdits = editsForNode(node, el, exporter, renderer)
+    if (!blockEdits) return null
+    edits.push(...blockEdits)
+  }
+  return finalise(originalSource, edits)
+}
+
 export function reconcileVisualDOMToBBCode(
   originalSource: string,
   originalAST: RedNode | null,
   editorContainer: HTMLElement,
   exporter: BBCodeExporter = new BBCodeExporter(),
-  renderer: HTMLRenderer = new HTMLRenderer()
+  renderer: HTMLRenderer = new HTMLRenderer(),
+  options: ReconcileOptions = {},
 ): ReconcileResult {
   counts = zeroCounts()
+  if (options.dirty && originalAST && originalSource) {
+    const fast = reconcileDirty(originalSource, originalAST, editorContainer, options.dirty, exporter, renderer)
+    if (fast) return fast
+    counts = zeroCounts()
+  }
   const fullFallback = (fullReason: ReconcileFullReason): ReconcileResult => {
     const rawHtml = editorContainer.innerHTML.replace(ZWSP, '').trim()
     const doc = HTMLDocumentModel.fromHTML(rawHtml)
@@ -671,8 +721,6 @@ export function reconcileVisualDOMToBBCode(
   if (!originalAST || !originalSource) return fullFallback('no-baseline')
   if (hasDuplicateNodeIds(editorContainer)) return fullFallback('duplicate-ids')
 
-  const idMap = buildNodeIdMap(originalAST)
-
   // The container renders the document node's children, so the same pairing
   // used inside a block works here — including for a blank line that the
   // renderer emitted as a bare newline instead of an element. Typing into one
@@ -683,6 +731,7 @@ export function reconcileVisualDOMToBBCode(
     return finalise(originalSource, [...topLevel, ...deletionsFor(originalAST, editorContainer, renderer)])
   }
 
+  const idMap = buildNodeIdMap(originalAST)
   const edits: SurgicalEdit[] = []
   const childNodes = Array.from(editorContainer.childNodes)
   let requiresFullFallback = false
