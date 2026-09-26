@@ -1486,6 +1486,29 @@ export class HTMLRenderer extends Visitor<string> {
       return this.mediaError('imagemap', '[imagemap] missing image URL')
     }
 
+    // The node each line comes from, for the preview's area handles (below).
+    // Every line of an imagemap is its own text leaf; when that does not hold
+    // (a leaf spanning lines), no handle rather than the wrong one.
+    const lineNodes: (RedNode | null)[] = []
+    for (const child of node.children) {
+      if (child.kind !== 'text') continue
+      const parts = (child.text || '').split(/\r?\n/).map(t => t.trim()).filter(Boolean)
+      for (let k = 0; k < parts.length; k++) lineNodes.push(parts.length === 1 ? child : null)
+    }
+    const handles = lineNodes.length === textLines.length && this.options.lineHandles === true &&
+      (this.options.idMode ?? HTMLRenderer.idMode) !== 'none'
+    /**
+     * An area's handle: the id of the line that defines it. Like a line's
+     * `bb-line` wrapper, it is what the preview highlights when the caret is
+     * on that line, and what a click on the area selects — and only emitted
+     * where handles are asked for. The id is the line's own leaf, never the
+     * map's: a repeated id is what made the canvas rewrite the whole document.
+     */
+    const handleOf = (i: number): string => {
+      const leaf = handles ? lineNodes[i] : null
+      return leaf ? ` data-node-id="${this.escapeHtml(leaf.id)}"` : ''
+    }
+
     const imageUrl = textLines[0]
     if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
       return this.mediaError('imagemap', `[imagemap] invalid image URL: ${this.escapeHtml(imageUrl)}`)
@@ -1519,16 +1542,15 @@ export class HTMLRenderer extends Visitor<string> {
         const pos = `left:${x}%;top:${y}%;width:${w}%;height:${h}%;`
         const title = ` title="${this.escapeHtml(label)}"`
         areas += url === '#'
-          ? `<span class="imagemap__link" style="${pos}"${title}></span>`
-          : `<a class="imagemap__link" href="${this.escapeHtml(areaUrl)}" style="${pos}"${title}></a>`
+          ? `<span${handleOf(i)} class="imagemap__link" style="${pos}"${title}></span>`
+          : `<a${handleOf(i)} class="imagemap__link" href="${this.escapeHtml(areaUrl)}" style="${pos}"${title}></a>`
         continue
       }
-      // Sin id: el del mapa ya está en el contenedor, y una zona que lo
-      // repitiera daba dos elementos con el mismo `data-node-id`. El lienzo
-      // WYSIWYG, al ver ids duplicados, deja de fiarse del DOM y reescribe el
-      // documento ENTERO en cada tecla. Un clic en la zona sigue llegando al
-      // mapa por `closest('[data-node-id]')`, como en osu!.
-      areas += `<a href="${this.escapeHtml(areaUrl)}" target="_blank" rel="noopener" class="imagemap-area bbcode-imap-area" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;" title="${this.escapeHtml(label || 'Link')}"></a>`
+      // Nunca el id del mapa: una zona que lo repitiera daba dos elementos con
+      // el mismo `data-node-id`, y el lienzo WYSIWYG, al ver ids duplicados,
+      // reescribía el documento ENTERO en cada tecla. Solo el preview lleva
+      // el de su propia línea (`handleOf`).
+      areas += `<a${handleOf(i)} href="${this.escapeHtml(areaUrl)}" target="_blank" rel="noopener" class="imagemap-area bbcode-imap-area" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;" title="${this.escapeHtml(label || 'Link')}"></a>`
     }
 
     if (this.isOsu()) {
