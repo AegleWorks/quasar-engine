@@ -23,7 +23,7 @@ import { RenderTree } from '../RenderPipeline/RenderTree'
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
 import { SWALLOWED_NEWLINE_ATTR } from './domMarkers'
-import { hasLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
+import { bearsLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
 import { clampFontSizeValue, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
@@ -369,7 +369,7 @@ export class HTMLRenderer extends Visitor<string> {
    */
   renderChildren(node: RedNode): string {
     const children = node.children
-    if (this.options.lineHandles === true && hasLines(node.kind) && (this.options.idMode ?? HTMLRenderer.idMode) !== 'none') {
+    if (this.options.lineHandles === true && bearsLines(node) && (this.options.idMode ?? HTMLRenderer.idMode) !== 'none') {
       return this.renderLines(node)
     }
     let out = ''

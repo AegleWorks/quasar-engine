@@ -67,6 +67,27 @@ export function hasLines(kind: string): boolean {
   return LINE_CONTAINERS.has(kind)
 }
 
+/**
+ * Whether `node`'s content is split into lines: a container kind, or an inline
+ * wrapper that holds a block.
+ *
+ * `[color=#fff]nota\n[box=A]…[/box]\nasasa[/color]` is a colour around a
+ * whole section — the renderer's `<span>` holds the boxes, and the browser
+ * lays it out as a run of pieces. Treated as inline, a caret on `asasa`
+ * resolved to the colour itself, and its highlight outlined every piece: the
+ * note, the box, the text, the next boxes. Holding a block, it is laid out as
+ * a container, and a caret in it belongs to a line like in any box.
+ */
+export function bearsLines(node: RedNode): boolean {
+  if (LINE_CONTAINERS.has(node.kind)) return true
+  if (isBlockKind(node.kind as NodeKind) || node.kind === 'document' || node.kind === 'paragraph') return false
+  const children = node.children
+  for (let i = 0; i < children.length; i++) {
+    if (isBlockKind(children[i].kind as NodeKind)) return true
+  }
+  return false
+}
+
 export function isLineId(id: string): boolean {
   return id.startsWith(LINE_ID_PREFIX)
 }
@@ -88,7 +109,7 @@ function lineAt(container: RedNode, from: number): TextLine {
 
 /** Every line of `container`, in order. Empty when it has no lines. */
 export function linesOf(container: RedNode): TextLine[] {
-  if (!hasLines(container.kind)) return []
+  if (!bearsLines(container)) return []
   const lines: TextLine[] = []
   const children = container.children
   let i = 0
@@ -115,7 +136,7 @@ export function linesOf(container: RedNode): TextLine[] {
 export function lineOf(node: RedNode): TextLine | null {
   let child: RedNode = node
   let parent = node.parent
-  while (parent !== null && !hasLines(parent.kind)) {
+  while (parent !== null && !bearsLines(parent)) {
     if (breaksLine(parent.kind)) return null
     child = parent
     parent = parent.parent
@@ -135,7 +156,7 @@ export function resolveLineId(root: RedNode, id: string): TextLine | null {
   if (!isLineId(id)) return null
   const first = root.findById(id.slice(LINE_ID_PREFIX.length) as NodeId)
   const container = first?.parent
-  if (!first || !container || !hasLines(container.kind) || breaksLine(first.kind)) return null
+  if (!first || !container || !bearsLines(container) || breaksLine(first.kind)) return null
   const index = first.index
   if (index > 0 && !breaksLine(container.children[index - 1].kind)) return null
   return lineAt(container, index)
