@@ -1663,7 +1663,10 @@ export class HTMLRenderer extends Visitor<string> {
         out += escaped
       }
     }
-    return `<span${this.idAttr(node)} class="bb-effect bb-${kind}">${out}</span>`
+    // `bb-effect-${kind}`, not `bb-${kind}`: Lyne's text effects own the bare
+    // names, and lyne.css styles `.bb-rainbow` globally with a clipped CSS
+    // rainbow — every [rainbow] preview showed it fringing its own colours.
+    return `<span${this.idAttr(node)} class="bb-effect bb-effect-${kind}">${out}</span>`
   }
 
   /**
