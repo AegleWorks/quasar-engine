@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { domToSVGResult } from './dom-to-svg'
 
 /**
@@ -82,5 +82,89 @@ describe('dom-to-svg · imagemap overlays', () => {
     })
     expect(result.svg).toContain('map.png')
     expect(result.svg).toContain('<image')
+  })
+})
+
+
+/**
+ * The cut (`maxHeight`). A thumbnail of a very large preview draws only its top
+ * band, so the work around it must stay in that band too: no style resolved for
+ * what is below, and no `<details>` below it forced open (which re-lays out the
+ * whole document twice).
+ */
+describe('domToSVGResult — maxHeight cut', () => {
+  let root: HTMLElement
+
+  /** jsdom has no layout: `data-top` is where each box starts, relative to the root. */
+  function layoutFromDataTop(el: HTMLElement) {
+    for (const node of [el, ...Array.from(el.querySelectorAll<HTMLElement>('*'))]) {
+      node.getBoundingClientRect = () => {
+        const hidden = node.closest('details:not([open])') && node.tagName !== 'DETAILS' && node.tagName !== 'SUMMARY'
+        if (hidden) return new DOMRect(0, 0, 0, 0)
+        const top = Number(node.dataset.top ?? 0)
+        return new DOMRect(0, top, 100, 40)
+      }
+    }
+  }
+
+  beforeEach(() => {
+    root = document.createElement('div')
+    root.dataset.top = '0'
+    root.innerHTML = `
+      <div class="near" data-top="10"></div>
+      <details class="d-near" data-top="60"><summary data-top="60"></summary><div class="inner" data-top="100"></div></details>
+      <div class="far" data-top="5000"></div>
+      <details class="d-far" data-top="6000"><summary data-top="6000"></summary><div class="inner" data-top="6040"></div></details>
+    `
+    document.body.appendChild(root)
+    layoutFromDataTop(root)
+  })
+
+  afterEach(() => {
+    root.remove()
+    vi.restoreAllMocks()
+  })
+
+  it('opens only the <details> that start inside the cut, and restores them', () => {
+    const opened: string[] = []
+    const original = Element.prototype.setAttribute
+    vi.spyOn(Element.prototype, 'setAttribute').mockImplementation(function (this: Element, name: string, value: string) {
+      if (name === 'open' && this.tagName === 'DETAILS') opened.push(this.className)
+      return original.call(this, name, value)
+    })
+
+    domToSVGResult(root, { maxHeight: 600 })
+
+    expect(opened).toEqual(['d-near'])
+    expect(root.querySelector('.d-near')!.hasAttribute('open')).toBe(false)
+    expect(root.querySelector('.d-far')!.hasAttribute('open')).toBe(false)
+  })
+
+  it('without maxHeight it still opens every closed <details>', () => {
+    const opened: string[] = []
+    const original = Element.prototype.setAttribute
+    vi.spyOn(Element.prototype, 'setAttribute').mockImplementation(function (this: Element, name: string, value: string) {
+      if (name === 'open' && this.tagName === 'DETAILS') opened.push(this.className)
+      return original.call(this, name, value)
+    })
+
+    domToSVGResult(root, {})
+
+    expect(opened.sort()).toEqual(['d-far', 'd-near'])
+  })
+
+  it('resolves no computed style for elements below the cut', () => {
+    const styled: string[] = []
+    const original = window.getComputedStyle.bind(window)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
+      styled.push((el as HTMLElement).className)
+      return original(el, pseudo)
+    })
+
+    domToSVGResult(root, { maxHeight: 600 })
+
+    expect(styled).toContain('near')
+    expect(styled).not.toContain('far')
+    expect(styled).not.toContain('d-far')
   })
 })

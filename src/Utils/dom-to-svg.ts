@@ -63,7 +63,24 @@ export function domToSVGResult(
   // FIX: Force all spoilerboxes and boxes to be OPEN before taking rootRect so their content is measured.
   // Otherwise, closed <details> elements will return garbage coordinates for their hidden children,
   // causing overlapping text in the SVG output, AND the rootRect height will be too small.
-  const closedDetails = Array.from(root.querySelectorAll('details:not([open])'))
+  //
+  // Only the ones that START inside the cut: with `maxHeight` everything below it
+  // is discarded anyway, and opening a `<details>` invalidates layout, so opening
+  // every box of a very large document re-laid it out twice (here and on restore)
+  // to draw its first 600px. A `<details>` can only grow DOWNWARD, so one that
+  // starts below the cut cannot move into it. Hidden children measure as zero,
+  // which counts as "inside" and keeps nested boxes of an opened parent working.
+  // All rects are read BEFORE the first write, so this is one layout, not N.
+  const allClosedDetails = Array.from(root.querySelectorAll('details:not([open])'))
+  let closedDetails = allClosedDetails
+  if (maxHeight) {
+    const top = root.getBoundingClientRect().top
+    closedDetails = allClosedDetails.filter((el) => {
+      const r = el.getBoundingClientRect()
+      // An empty rect is a box inside a closed parent, not one below the cut.
+      return (r.width === 0 && r.height === 0) || r.top - top <= maxHeight
+    })
+  }
   closedDetails.forEach(el => el.setAttribute('open', ''))
 
   const rootRect = root.getBoundingClientRect()
@@ -83,7 +100,7 @@ export function domToSVGResult(
   try {
     const state: WalkState = { rootRect, scale, parts: [], layerCount: 0, layersList: [], maxHeight }
 
-    const fontFamilies = collectFontFamilies(root)
+    const fontFamilies = collectFontFamilies(root, maxHeight, rootRect.top)
 
   const svgOpen = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
   state.parts.push(svgOpen)
@@ -186,25 +203,28 @@ function extractAlpha(color: string): number {
   return 1
 }
 
-function collectFontFamilies(root: HTMLElement): Set<string> {
+function collectFontFamilies(root: HTMLElement, maxHeight?: number, rootTop = 0): Set<string> {
   const fonts = new Set<string>()
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
-  let node: Node | null = walker.currentNode
-  while (node) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      // Mismo guard que walkElement: los overlays de edición del imagemap no
-      // deben colar su fuente en el @import del SVG (p. ej. un tooltip con
-      // font-family propia).
-      if (!isImagemapOverlay(node as Element)) {
-        const cs = window.getComputedStyle(node as Element)
-        const family = cs.fontFamily?.split(",")[0]?.replace(/['"]/g, "").trim()
-        if (family && family !== "sans-serif" && family !== "monospace" && family !== "serif") {
-          fonts.add(family)
-        }
+  const visit = (el: Element): void => {
+    // Same cut as `walkElement`: below `maxHeight` nothing is drawn, so its fonts
+    // are not needed either, and the subtree is not entered. This used to resolve
+    // `getComputedStyle` for EVERY element of the document.
+    if (maxHeight !== undefined && el !== root && el.getBoundingClientRect().top - rootTop > maxHeight) {
+      return
+    }
+    // Mismo guard que walkElement: los overlays de edición del imagemap no
+    // deben colar su fuente en el @import del SVG (p. ej. un tooltip con
+    // font-family propia).
+    if (!isImagemapOverlay(el)) {
+      const cs = window.getComputedStyle(el)
+      const family = cs.fontFamily?.split(",")[0]?.replace(/['"]/g, "").trim()
+      if (family && family !== "sans-serif" && family !== "monospace" && family !== "serif") {
+        fonts.add(family)
       }
     }
-    node = walker.nextNode()
+    for (const child of Array.from(el.children)) visit(child)
   }
+  visit(root)
   return fonts
 }
 
@@ -341,11 +361,9 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
   // Skip interactive overlays that shouldn't be part of the vector export
   if (isImagemapOverlay(el)) return
 
-  const cs = window.getComputedStyle(el)
-  if (cs.display === "none" || cs.visibility === "hidden") return
-  const opacityVal = parseFloat(cs.opacity)
-  if (opacityVal === 0) return
-
+  // Position first, style second: an element below the cut is dropped without
+  // resolving its computed style. A `display: none` element has a zero rect, so
+  // it is never dropped HERE and still reaches the check below, as before.
   const rect = el.getBoundingClientRect()
   const { rootRect, scale, maxHeight } = state
 
@@ -353,6 +371,11 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
   if (maxHeight !== undefined && unscaledTop > maxHeight) {
     return
   }
+
+  const cs = window.getComputedStyle(el)
+  if (cs.display === "none" || cs.visibility === "hidden") return
+  const opacityVal = parseFloat(cs.opacity)
+  if (opacityVal === 0) return
 
   const x = (rect.left - rootRect.left) * scale
   const y = (rect.top - rootRect.top) * scale
