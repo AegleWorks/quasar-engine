@@ -59,7 +59,26 @@ const CLOSING_TAG = /^\[\/([a-zA-Z][a-zA-Z0-9]*)\]$/
  * document — re-spelling attributes, collapsing spacing — and none of that is
  * a change the author asked for. Edits keep the blast radius at the damage.
  */
+/**
+ * The last result per tree. Monaco asks for code actions on every cursor move
+ * and every edit, but the tree only changes on an edit: repeating the walk over
+ * an unchanged tree was ~1 s per 30 s of typing on a 1 M character document.
+ * Keyed by the root node, so a new tree is a miss by construction, and checked
+ * against `source` so a caller passing different text for the same tree is too.
+ */
+const lastResult = new WeakMap<RedNode, { source: string; result: NestingRepair }>()
+
 export function repairNesting(source: string, root: RedNode | null): NestingRepair {
+  if (root) {
+    const cached = lastResult.get(root)
+    if (cached && cached.source === source) return cached.result
+  }
+  const result = computeNestingRepair(source, root)
+  if (root) lastResult.set(root, { source, result })
+  return result
+}
+
+function computeNestingRepair(source: string, root: RedNode | null): NestingRepair {
   const orphans: OrphanCloser[] = []
   const unclosed: UnclosedOpener[] = []
 
@@ -101,16 +120,24 @@ export function repairNesting(source: string, root: RedNode | null): NestingRepa
 
   // Bottom-to-top, so an earlier range is still valid once a later one applied.
   const ordered = [...edits].sort((a, b) => b.start - a.start || b.end - a.end)
-  let repaired = source
-  for (const edit of ordered) {
-    repaired = repaired.slice(0, edit.start) + edit.text + repaired.slice(edit.end)
-  }
 
+  // `source` is a getter: rebuilding the whole document costs one `slice` per
+  // edit, and the editor's code-action path only reads the edits. Whoever does
+  // want the repaired text pays for it once.
+  let repaired: string | undefined
   return {
     edits: ordered,
     orphans,
     unclosed,
-    source: repaired,
+    get source() {
+      if (repaired === undefined) {
+        repaired = source
+        for (const edit of ordered) {
+          repaired = repaired.slice(0, edit.start) + edit.text + repaired.slice(edit.end)
+        }
+      }
+      return repaired
+    },
     hasChanges: ordered.length > 0,
   }
 }
