@@ -49,11 +49,43 @@ export function domToSVG(root: HTMLElement, options: DomToSVGOptions = {}): stri
   return domToSVGResult(root, options).svg
 }
 
+/**
+ * Very large documents mark their preview `data-bb-contain`: each top-level
+ * block then skips style and layout while it is off screen, and a skipped block
+ * reports an ESTIMATED size and no geometry for its descendants. This reads
+ * geometry, so it lifts that containment on the blocks it needs and returns a
+ * function that puts it back.
+ *
+ * With `maxHeight` only the blocks that make up that band are lifted (their
+ * positions follow from the ones before them, all lifted in order); without it
+ * the whole document is, which is what a full export needs.
+ */
+function liftBlockContainment(root: HTMLElement, maxHeight?: number): () => void {
+  if (!root.hasAttribute('data-bb-contain')) return () => {}
+  const lifted: HTMLElement[] = []
+  let total = 0
+  for (const child of Array.from(root.children)) {
+    if (!(child instanceof HTMLElement)) continue
+    child.style.contentVisibility = 'visible'
+    lifted.push(child)
+    if (maxHeight !== undefined) {
+      total += child.getBoundingClientRect().height
+      if (total >= maxHeight) break
+    }
+  }
+  return () => {
+    for (const child of lifted) child.style.contentVisibility = ''
+  }
+}
+
 export function domToSVGResult(
   root: HTMLElement,
   options: DomToSVGOptions = {},
 ): DomToSVGResult {
   const { backgroundColor = "#0d0d0d", includeBackground = true, scale = 1, maxHeight } = options
+
+  // Geometry of blocks that skip layout is an estimate: lift that first.
+  const restoreContainment = liftBlockContainment(root, maxHeight)
 
   // OPTIMIZATION & FIX: Remove visual interaction artifacts before measuring.
   // We strip the cursor-highlight class synchronously so getComputedStyle reads the pure colors.
@@ -92,6 +124,7 @@ export function domToSVGResult(
     // RESTORE on error
     highlightedElements.forEach(el => el.classList.add('cursor-highlight'))
     closedDetails.forEach(el => el.removeAttribute('open'))
+    restoreContainment()
     throw new Error(
       "Preview element has no visible dimensions. Make sure it is rendered and visible.",
     )
@@ -148,6 +181,7 @@ export function domToSVGResult(
     // RESTORE: Put the highlight and closed states back so the user doesn't see it blink
     highlightedElements.forEach(el => el.classList.add('cursor-highlight'))
     closedDetails.forEach(el => el.removeAttribute('open'))
+    restoreContainment()
   }
 }
 

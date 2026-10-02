@@ -168,3 +168,63 @@ describe('domToSVGResult — maxHeight cut', () => {
     expect(styled).not.toContain('d-far')
   })
 })
+
+
+/**
+ * Block containment (`data-bb-contain`, very large documents). A block that
+ * skips layout reports an estimated size, so the export must lift it before it
+ * reads geometry, and put it back afterwards.
+ */
+describe('domToSVGResult — block containment', () => {
+  let root: HTMLElement
+
+  beforeEach(() => {
+    root = document.createElement('div')
+    root.setAttribute('data-bb-contain', 'on')
+    root.dataset.top = '0'
+    root.innerHTML = Array.from({ length: 6 }, (_, i) => `<div class="blk" data-top="${i * 300}"></div>`).join('')
+    document.body.appendChild(root)
+    for (const node of [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))]) {
+      node.getBoundingClientRect = () => new DOMRect(0, Number(node.dataset.top ?? 0), 100, 300)
+    }
+  })
+
+  afterEach(() => {
+    root.remove()
+  })
+
+  /** What `contentVisibility` each block has WHILE the export reads geometry. */
+  function liftedDuringExport(options: { maxHeight?: number }): boolean[] {
+    const seen: boolean[] = []
+    const blocks = Array.from(root.querySelectorAll<HTMLElement>('.blk'))
+    const original = window.getComputedStyle.bind(window)
+    const spy = (el: Element, pseudo?: string | null) => {
+      if (el === root) blocks.forEach((b, i) => { seen[i] = b.style.contentVisibility === 'visible' })
+      return original(el, pseudo)
+    }
+    window.getComputedStyle = spy as typeof window.getComputedStyle
+    try {
+      domToSVGResult(root, options)
+    } finally {
+      window.getComputedStyle = original
+    }
+    return seen
+  }
+
+  it('lifts every block for a full export, and puts the containment back', () => {
+    expect(liftedDuringExport({})).toEqual([true, true, true, true, true, true])
+    expect(Array.from(root.querySelectorAll<HTMLElement>('.blk')).every((b) => b.style.contentVisibility === '')).toBe(true)
+  })
+
+  it('lifts only the blocks that make up the band when maxHeight is given', () => {
+    const lifted = liftedDuringExport({ maxHeight: 500 })
+    // 300px per block: two blocks reach 500px, the rest stay skipped.
+    expect(lifted.slice(0, 2)).toEqual([true, true])
+    expect(lifted.slice(2).every((x) => x === false)).toBe(true)
+  })
+
+  it('does nothing for a document that is not marked', () => {
+    root.removeAttribute('data-bb-contain')
+    expect(liftedDuringExport({})).toEqual([false, false, false, false, false, false])
+  })
+})
