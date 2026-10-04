@@ -647,7 +647,7 @@ export class BBCodeExporter extends Visitor<string> {
       return tagDef.toBBCode({
         node,
         source: this.context.source,
-        visitChildren: (n) => this.exportNode(n),
+        visitChildren: (n) => this.exportChildren(n),
         renderChild: () => ({ kind: 'text', text: '', children: [], props: {} }),
       })
     }

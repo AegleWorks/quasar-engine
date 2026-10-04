@@ -1626,6 +1626,26 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   /**
+   * The node behind each `\n` of `effectText`, in the same order (null for a
+   * newline inside a text leaf, which has no node of its own).
+   *
+   * A painted break carries its node's id like every other `<br>`: after
+   * Enter at the end of an effect, the WYSIWYG canvas opens the line that a
+   * final `<br>` does not show (`revealLine`) by finding that break by id.
+   * Without it the caret stayed on the line above.
+   */
+  private effectBreaks(node: RedNode, out: (RedNode | null)[] = []): (RedNode | null)[] {
+    for (const c of node.children) {
+      if (c.kind === 'spacing' || c.kind === 'empty_line') out.push(c)
+      else if (c.kind === 'text' || c.children.length === 0) {
+        const text = c.kind === 'text' ? c.text ?? '' : this.collectNodeText(c)
+        for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) out.push(null)
+      } else this.effectBreaks(c, out)
+    }
+    return out
+  }
+
+  /**
    * Paint an effect's computed segments as spans.
    *
    * Shared by rainbow, grow and any modulated gradient, so the preview
@@ -1642,6 +1662,13 @@ export class HTMLRenderer extends Visitor<string> {
       documentLength: meta.documentLength as number | undefined,
     })
 
+    const breaks = text.indexOf('\n') === -1 ? [] : this.effectBreaks(node)
+    let nextBreak = 0
+    const br = () => {
+      const owner = breaks[nextBreak++]
+      return owner ? `<br${this.idAttr(owner)}>` : '<br>'
+    }
+
     let out = ''
     for (const seg of segments) {
       // The break is markup, not text: escaping it would print a newline
@@ -1652,7 +1679,7 @@ export class HTMLRenderer extends Visitor<string> {
       // nuevo cada vez que se evalúa— para recorrer una cadena de un carácter
       // que casi nunca es un salto de línea.
       const html = this.escapeHtml(seg.text)
-      const escaped = html.indexOf('\n') === -1 ? html : html.replace(NEWLINE_RE, '<br>')
+      const escaped = html.indexOf('\n') === -1 ? html : html.replace(NEWLINE_RE, br)
       if (seg.color) {
         const safe = sanitizeColor(seg.color, this.tokenResolver)
         out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped
@@ -1673,16 +1700,19 @@ export class HTMLRenderer extends Visitor<string> {
    * A gradient previews as a real CSS gradient when it is a plain
    * left-to-right ramp, and as computed per-character spans otherwise.
    *
-   * The CSS path is genuinely smoother — it interpolates per pixel rather
-   * than per glyph — but it can only express a linear sweep. A gradient
-   * with a waveform, a non-index axis or quantisation steps looked
-   * nothing like its own export while this was the only path.
+   * The CSS path is one span whatever the text: typing changes a text node
+   * and the browser recolours it. Per-letter spans match osu!'s export
+   * glyph for glyph, but every keystroke recoloured every letter, and the
+   * Text Studio lagged while typing; speed won over that fidelity. A
+   * gradient with a waveform, a non-index axis or quantisation steps cannot
+   * be expressed in CSS, and is still per-character.
+   *
+   * Line breaks render like everywhere else, as `<br>` with their node id:
+   * filtering them out showed a multi-line gradient as one line, and Enter
+   * at its end never opened a new one.
    */
   private renderGradient(node: RedNode): string {
     const params = this.effectParams(node)
-    const content = node.children
-      .filter(c => c.kind !== 'spacing' && c.kind !== 'empty_line')
-      .map(c => this.renderNode(c)).join('')
 
     if (isPlainGradient(params)) {
       const stops = params.stops && params.stops.length > 0
@@ -1690,7 +1720,7 @@ export class HTMLRenderer extends Visitor<string> {
         : (params.colors ?? ['#FF0000', '#00FF00'])
       const list = stops.length === 1 ? [stops[0], stops[0]] : stops
       const gradientCss = `linear-gradient(to right, ${list.join(', ')})`
-      return `<span${this.idAttr(node)} style="background: ${gradientCss}; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${content}</span>`
+      return `<span${this.idAttr(node)} style="background: ${gradientCss}; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${this.renderChildren(node)}</span>`
     }
 
     return this.renderEffectSegments(node, 'gradient')
