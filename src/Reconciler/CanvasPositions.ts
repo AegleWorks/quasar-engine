@@ -13,10 +13,12 @@
  * Elements carry their node's id (`data-node-id`), text does not: a text leaf
  * renders as a bare DOM text node. So a point is first scoped to the nearest
  * element with an id and its node, and inside that scope DOM text nodes are
- * paired with the node's text leaves in document order, by equal text. DOM
- * text that pairs with nothing is text the renderer made up — a `[quote]`
- * author line, a box heading, a newline — and a point in it resolves to the
- * nearest paired neighbour, which is where a caret there belongs anyway.
+ * paired with the node's text leaves in document order, by equal text — or,
+ * for a leaf an effect paints a letter at a time, by a run of text nodes that
+ * add up to it. DOM text that pairs with nothing is text the renderer made
+ * up — a `[quote]` author line, a box heading, a newline — and a point in it
+ * resolves to the nearest paired neighbour, which is where a caret there
+ * belongs anyway.
  */
 
 import type { RedNode } from '../Syntax/RedNode'
@@ -48,17 +50,54 @@ function domTexts(scope: Node): Text[] {
 /** How far ahead a DOM text may look for its leaf past leaves it could not match. */
 const LOOKAHEAD = 4
 
-/** DOM text node → the text leaf it renders, for every text that pairs. */
-function pair(scope: Node, node: RedNode): Map<Text, RedNode> {
+/** The leaf a DOM text renders, and how many of the leaf's characters come before it. */
+interface Piece {
+  leaf: RedNode
+  from: number
+}
+
+const visible = (t: Text) => (t.nodeValue ?? '').replace(ZWSP, '')
+
+/**
+ * The texts from `i` on that add up to exactly `want`, each with where it
+ * starts in it; null when they do not. An effect that paints each letter its
+ * own colour renders ONE leaf as one text node per letter.
+ */
+function splitRun(texts: Text[], i: number, want: string): Text[] | null {
+  const run: Text[] = []
+  let have = 0
+  for (let m = i; m < texts.length && have < want.length; m++) {
+    const v = visible(texts[m])
+    if (!want.startsWith(v, have)) return null
+    run.push(texts[m])
+    have += v.length
+  }
+  return have === want.length && run.length > 1 ? run : null
+}
+
+/** DOM text node → the piece of the text leaf it renders, for every text that pairs. */
+function pair(scope: Node, node: RedNode): Map<Text, Piece> {
   const leaves = textLeaves(node)
-  const pairs = new Map<Text, RedNode>()
+  const texts = domTexts(scope)
+  const pairs = new Map<Text, Piece>()
   let j = 0
-  for (const t of domTexts(scope)) {
-    const text = (t.nodeValue ?? '').replace(ZWSP, '')
+  for (let i = 0; i < texts.length; i++) {
+    const text = visible(texts[i])
     if (text === '') continue
     for (let k = j; k < leaves.length && k <= j + LOOKAHEAD; k++) {
       if (leaves[k].text === text) {
-        pairs.set(t, leaves[k])
+        pairs.set(texts[i], { leaf: leaves[k], from: 0 })
+        j = k + 1
+        break
+      }
+      const run = splitRun(texts, i, leaves[k].text)
+      if (run) {
+        let from = 0
+        for (const t of run) {
+          pairs.set(t, { leaf: leaves[k], from })
+          from += visible(t).length
+        }
+        i += run.length - 1
         j = k + 1
         break
       }
@@ -118,10 +157,11 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
 
   const { el, node: scope } = scopeOf(root, container, text)
   const pairs = pair(el, scope)
-  const leaf = pairs.get(text)
-  if (leaf) {
+  const piece = pairs.get(text)
+  if (piece) {
+    const { leaf, from } = piece
     const width = leaf.range.end - leaf.range.start
-    return leaf.range.start + Math.min(width, visibleBefore(text.nodeValue ?? '', at))
+    return leaf.range.start + Math.min(width, from + visibleBefore(text.nodeValue ?? '', at))
   }
 
   // A heading painted from the opener's attribute — `[box=Mi Caja]` — is text
@@ -136,11 +176,11 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
   const texts = domTexts(el)
   const i = texts.indexOf(text)
   for (let k = i - 1; k >= 0; k--) {
-    const l = pairs.get(texts[k])
+    const l = pairs.get(texts[k])?.leaf
     if (l) return l.range.end
   }
   for (let k = i + 1; k < texts.length; k++) {
-    const l = pairs.get(texts[k])
+    const l = pairs.get(texts[k])?.leaf
     if (l) return l.range.start
   }
   return scope.parent ? scope.innerStart : scope.range.start
@@ -318,9 +358,12 @@ export function domPointOfSourceOffset(root: RedNode, container: HTMLElement, of
       break
     }
   }
-  for (const [text, l] of pair(el, scope)) {
+  for (const [text, { leaf: l, from }] of pair(el, scope)) {
     if (l !== leaf) continue
-    const within = Math.max(0, Math.min(offset, leaf.range.end) - leaf.range.start)
+    // A leaf painted a letter at a time: the piece that holds the offset, the
+    // earlier one on a seam, so typing goes on in the letter just typed.
+    const within = Math.max(0, Math.min(offset, leaf.range.end) - leaf.range.start) - from
+    if (within > visible(text).length) continue
     // Back from visible characters to a DOM offset, stepping over zero-width spaces.
     const value = text.nodeValue ?? ''
     let seen = 0

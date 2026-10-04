@@ -1,4 +1,5 @@
 import { RedNode } from '../Syntax/RedNode'
+import type { NodeId } from '../Types/core'
 import { HTMLDocumentModel } from '../HTML/HTMLDocumentModel'
 import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers'
 import { REVEALED_LINE_ATTR, REVEALED_AFTER_ATTR } from './CanvasPositions'
@@ -175,11 +176,11 @@ function diffTextLeaves(
 
   const before = domTextNodes(probe)
   const after = domTextNodes(el)
-  if (before.length !== after.length) return null
-
   const leaves = textLeaves(originalNode)
+  if (before.length !== after.length) return splitLeafEdit(leaves, before, probe, el)
+
   // Strict one-to-one: any render-injected text makes the positions ambiguous.
-  if (leaves.length !== before.length) return null
+  if (leaves.length !== before.length) return splitLeafEdit(leaves, before, probe, el)
   for (let i = 0; i < leaves.length; i++) {
     if (leaves[i].text !== before[i]) return null
   }
@@ -195,6 +196,54 @@ function diffTextLeaves(
     })
   }
   return edits
+}
+
+/**
+ * The edit for a node whose ONE text leaf the render split across several text
+ * nodes: an effect painting each letter, word or block its own colour.
+ *
+ * `diffTextLeaves` pairs leaves with text nodes one to one, so a keystroke in
+ * such a node fell through to `reserializeElement`, which exported the
+ * painted spans as one `[color]` per letter: the effect tag was gone from the
+ * source after the first key.
+ *
+ * Trusted only when the render's text nodes add up to exactly the leaf (no
+ * text of the render's own) and the DOM still holds nothing but the kinds of
+ * element the render made, none of them another node: then the node's whole
+ * text IS the leaf's new text, however the browser split or merged the spans.
+ */
+function splitLeafEdit(
+  leaves: RedNode[],
+  before: string[],
+  probe: HTMLElement,
+  el: HTMLElement,
+): SurgicalEdit[] | null {
+  if (leaves.length !== 1 || before.length < 2) return null
+  const leaf = leaves[0]
+  if (before.join('') !== leaf.text) return null
+
+  // The leaf must be the node's own: a paragraph holding a painted effect has
+  // one leaf too, but it belongs to the effect, whose element is in between.
+  const rendered = probe.firstElementChild
+  if (!rendered || rendered.querySelector('[data-node-id]')) return null
+  const tags = new Set(Array.from(rendered.querySelectorAll('*'), e => e.tagName))
+  for (const e of Array.from(el.querySelectorAll('*'))) {
+    if (!tags.has(e.tagName) || e.hasAttribute('data-node-id')) return null
+  }
+
+  const text = domTextNodes(el).join('')
+  if (text === leaf.text) return []
+  counts.textLeaves++
+  // Only the characters that changed: the canvas puts the caret after the
+  // edit, so a whole-leaf replacement sent it to the end of the effect.
+  if (leaf.range.end - leaf.range.start !== leaf.text.length) {
+    return [{ start: leaf.range.start, end: leaf.range.end, text }]
+  }
+  return computeTextDelta(leaf.text, text).map(e => ({
+    start: leaf.range.start + e.start,
+    end: leaf.range.start + e.end,
+    text: e.text,
+  }))
 }
 
 /**
@@ -521,6 +570,39 @@ function contentHost(node: RedNode, el: HTMLElement, renderer: HTMLRenderer): HT
 }
 
 /**
+ * Lines `revealLine` opened anywhere inside `el`, when they are its only change.
+ *
+ * `descend` finds one among the children it pairs, but an effect painted per
+ * letter has no children to pair: Enter at its end opened a line inside the
+ * effect, and typing there rebuilt the whole effect from its DOM (a gradient
+ * came back as one `[color]` per letter). Each line is an insertion right
+ * after its break. Null when anything else changed too.
+ */
+function fillLinesOpenedInside(
+  node: RedNode,
+  el: HTMLElement,
+  exporter: BBCodeExporter,
+  rendered: string,
+): SurgicalEdit[] | null {
+  const lines = Array.from(el.querySelectorAll<HTMLElement>(`[${REVEALED_AFTER_ATTR}]`))
+  if (lines.length === 0) return null
+  const copy = el.cloneNode(true) as HTMLElement
+  for (const line of Array.from(copy.querySelectorAll(`[${REVEALED_AFTER_ATTR}]`))) line.remove()
+  if (domHtml(copy) !== rendered) return null
+
+  const edits: SurgicalEdit[] = []
+  for (const line of lines) {
+    const br = node.findById(line.getAttribute(REVEALED_AFTER_ATTR) as NodeId)
+    if (!br) return null
+    const typed = typedIn(line, exporter)
+    if (typed === '') continue
+    counts.filledLines++
+    edits.push({ start: br.range.end, end: br.range.end, text: typed })
+  }
+  return edits
+}
+
+/**
  * The edits for one AST node whose DOM no longer matches its render.
  *
  * Ordered cheapest-and-most-precise first: fill a blank line, descend into the
@@ -540,6 +622,8 @@ function editsForNode(
   const side = el.getAttribute(REVEALED_LINE_ATTR)
   if (side === 'start' || side === 'end') return fillRevealedLine(node, side, el, exporter)
   if (node.kind === 'empty_line') return fillEmptyLine(node, cleanHtml, exporter)
+  const opened = fillLinesOpenedInside(node, el, exporter, rendered)
+  if (opened) return opened
 
   const host = contentHost(node, el, renderer)
   const probe = el.ownerDocument.createElement('div')
