@@ -1,7 +1,7 @@
 /**
  * Quasar Analysis Framework — Palette Remap
  *
- * Covers `ColorUsageAnalyzer` and `PaletteRemapDecision` together, because
+ * Covers `ColorUsageAnalyzer`, `GradientTagAnalyzer` and `PaletteRemapDecision` together, because
  * neither is useful alone: the analyzer supplies per-tag offsets, the gradient
  * analyzer supplies the ramp those tags belong to, and the decision joins them.
  *
@@ -18,6 +18,7 @@ import { PipelineBuilder } from '../Pipeline/PipelineBuilder'
 import { GradientAnalyzer } from '../Passes/Analysis/GradientAnalyzer'
 import { ColorUsageAnalyzer } from '../Passes/Analysis/ColorUsageAnalyzer'
 import { SymbolAnalyzer } from '../Passes/Analysis/SymbolAnalyzer'
+import { GradientTagAnalyzer } from '../Passes/Analysis/GradientTagAnalyzer'
 import { PaletteRemapDecision } from '../Passes/Decision/PaletteRemapDecision'
 import type { Palette, RemapAction } from '../Passes/Decision/PaletteRemapDecision'
 import { PipelineMode, ExportTarget } from '../Contracts/PipelineContext'
@@ -47,7 +48,7 @@ function planFor(source: string, palette: Palette = SAKURA, minConfidence?: numb
   model.rebuild(source)
 
   const result = new PipelineBuilder()
-    .analysis(new GradientAnalyzer(), new ColorUsageAnalyzer(), new SymbolAnalyzer())
+    .analysis(new GradientAnalyzer(), new ColorUsageAnalyzer(), new GradientTagAnalyzer(source), new SymbolAnalyzer())
     .decision(new PaletteRemapDecision(palette, minConfidence === undefined ? {} : { minConfidence }))
     .build()
     .run(model.greenRoot!, context)
@@ -395,6 +396,100 @@ describe('the plan itself', () => {
     expect(restyled).toContain('[color=#FF69B4]')
     expect(restyled).toContain('✿ airi ✿')
     expect(restyled).not.toContain('#D194B3')
+  })
+})
+
+// ── Native gradient tags ──────────────────────────────────────────
+
+/**
+ * A `[gradient]` states its own stops, so it never needed the ramp inference
+ * `[color]` runs go through — and before `GradientTagAnalyzer` it was simply
+ * invisible: restyling a document left every native gradient as it was.
+ */
+describe('native gradient tags', () => {
+  it('recolours the stops and leaves every parameter byte for byte', () => {
+    const source = '[gradient=#111111,#222222;easing=easeInOut;at=2;of=5]hola[/gradient]'
+
+    expect(remap(source)).toBe(
+      '[gradient=#FFB7C5,#FFE4E1;easing=easeInOut;at=2;of=5]hola[/gradient]',
+    )
+  })
+
+  it('samples each stop at its own position, keeping positions and spacing', () => {
+    const restyled = remap('[gradient=#111111, #222222 40%, #333333]x[/gradient]')
+
+    expect(restyled).toMatch(/^\[gradient=#FFB7C5, #[0-9A-F]{6} 40%, #FFE4E1\]x\[\/gradient\]$/)
+    // 40% lands between the palette's second and third entries, not on either.
+    expect(restyled).not.toContain('#FF69B4 40%')
+    expect(restyled).not.toContain('#FFC0CB 40%')
+  })
+
+  it('preserves the stop count rather than the palette length', () => {
+    const [action] = planFor('[gradient=#111111,#222222]x[/gradient]')
+
+    expect(action.payload.stops?.to).toHaveLength(2)
+  })
+
+  it('keeps the author\'s tag spelling and spacing', () => {
+    expect(remap('[GRADIENT = #abc,#def]y[/GRADIENT]')).toBe('[GRADIENT = #FFB7C5,#FFE4E1]y[/GRADIENT]')
+  })
+
+  it('leaves a named colour in the stop list alone', () => {
+    expect(remap('[gradient=red,#000000]z[/gradient]')).toBe('[gradient=red,#FFE4E1]z[/gradient]')
+  })
+
+  it('gives every fragment of a split gradient the same colours', () => {
+    const source =
+      '[gradient=#111111,#222222;at=0;of=6]abc[/gradient]\n[gradient=#111111,#222222;at=3;of=6]def[/gradient]'
+
+    expect(remap(source)).toBe(
+      '[gradient=#FFB7C5,#FFE4E1;at=0;of=6]abc[/gradient]\n[gradient=#FFB7C5,#FFE4E1;at=3;of=6]def[/gradient]',
+    )
+  })
+
+  it('reports itself as a regradient with both ramps, and recommends it', () => {
+    const [action] = planFor('[gradient=#111111,#222222]x[/gradient]')
+
+    expect(action.kind).toBe('regradient')
+    expect(action.payload.recommended).toBe(true)
+    expect(action.payload.stops).toEqual({
+      from: ['#111111', '#222222'],
+      to: ['#FFB7C5', '#FFE4E1'],
+      positions: [0, 1],
+    })
+  })
+
+  it('is idempotent, and silent once the palette is applied', () => {
+    const source = '[gradient=#111111, #222222 30%, #333333;wave=sine]x[/gradient]'
+    const once = remap(source)
+
+    expect(planFor(once)).toEqual([])
+    expect(remap(once)).toBe(once)
+  })
+
+  it('ignores a gradient tag with no colours to change', () => {
+    expect(planFor('[gradient]x[/gradient]')).toEqual([])
+    expect(planFor('[gradient=easing=easeIn]x[/gradient]')).toEqual([])
+  })
+
+  /**
+   * The parser trims the attribute it stores, so offsets derived from it were
+   * one character off here and spliced `[gradient==…`. The delimiter is now
+   * read from the source.
+   */
+  it('locates the stops even with spaces the parser trims away', () => {
+    expect(remap('[gradient=#111111,#222222 ]x[/gradient]')).toBe('[gradient=#FFB7C5,#FFE4E1 ]x[/gradient]')
+    expect(remap('[gradient =  #111111 , #222222  ;easing=easeIn ]x[/gradient]')).toBe(
+      '[gradient =  #FFB7C5 , #FFE4E1  ;easing=easeIn ]x[/gradient]',
+    )
+  })
+
+  it('sits beside colour tags in one source-ordered plan', () => {
+    const source = '[color=#D194B3]a[/color] [gradient=#111111,#222222]b[/gradient]'
+    const kinds = planFor(source).map(a => a.kind)
+
+    expect(kinds).toEqual(['recolor', 'regradient'])
+    expect(remap(source)).toBe('[color=#FF69B4]a[/color] [gradient=#FFB7C5,#FFE4E1]b[/gradient]')
   })
 })
 

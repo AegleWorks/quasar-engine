@@ -32,6 +32,11 @@
  * The result reads as the same gradient wearing a different palette, rather
  * than as a new gradient.
  *
+ * **Native `[gradient]` tags** are resampled the same way, by each stop's
+ * own position along the ramp. Only the colour tokens change: the stop count,
+ * any `40%` positions, the easing and every other parameter keep their exact
+ * bytes, so a configured gradient stays configured.
+ *
  * **Standalone colours** map to their nearest palette entry by perceptual
  * distance in OKLab, so a pink stays the palette's pink rather than becoming
  * whichever colour happens to be first.
@@ -43,6 +48,7 @@
  *
  * @see ColorUsageAnalyzer — supplies the per-tag offsets this pass edits
  * @see GradientAnalyzer — supplies the ramp shape those tags belong to
+ * @see GradientTagAnalyzer — supplies native `[gradient]` stops
  * @see SymbolAnalyzer — supplies the glyph runs
  */
 
@@ -54,6 +60,7 @@ import { ContributionKind } from '../../Contracts/Contribution'
 import { ease, mixHexOklab, perceptualDistance } from '../../../Utils/ColorMath'
 import type { ColorUsageModel } from '../Analysis/ColorUsageAnalyzer'
 import type { GradientModel } from '../Analysis/GradientAnalyzer'
+import type { GradientTagModel } from '../Analysis/GradientTagAnalyzer'
 import type { SymbolRunModel } from '../Analysis/SymbolAnalyzer'
 
 // ── Configuration ─────────────────────────────────────────────────
@@ -106,7 +113,7 @@ function canonicalHex(hex: string): string {
 
 /** Every action this pass emits shares one shape. */
 export interface RemapAction extends TransformAction {
-  readonly kind: 'recolor' | 'resymbol' | 'reseparator'
+  readonly kind: 'recolor' | 'regradient' | 'resymbol' | 'reseparator'
   readonly payload: {
     /** Source span to overwrite. */
     readonly range: { readonly start: number; readonly end: number }
@@ -118,8 +125,17 @@ export interface RemapAction extends TransformAction {
     readonly to: string
     readonly confidence: number
     readonly recommended: boolean
-    /** Only on `recolor`: whether the tag belonged to a detected gradient. */
+    /** On `recolor`: whether the tag belonged to a detected gradient. Always true on `regradient`. */
     readonly gradient?: boolean
+    /**
+     * Only on `regradient`: the stops before and after, aligned by index, with
+     * the position each sits at — enough to draw both ramps side by side.
+     */
+    readonly stops?: {
+      readonly from: readonly string[]
+      readonly to: readonly string[]
+      readonly positions: readonly number[]
+    }
   }
 }
 
@@ -158,6 +174,7 @@ export class PaletteRemapDecision implements DecisionPass {
 
     const actions: RemapAction[] = [
       ...this.planColors(byLabel('Color'), byLabel('Gradient')),
+      ...this.planGradientTags(byLabel('GradientTag')),
       ...this.planSymbols(byLabel('Symbol')),
       ...this.planSeparators(byLabel('Separator')),
     ]
@@ -252,6 +269,55 @@ export class PaletteRemapDecision implements DecisionPass {
     const t = members.length > 1 ? index / (members.length - 1) : 0
 
     return this.samplePalette(ease(t, model.easing))
+  }
+
+  /**
+   * Recolour native `[gradient]` tags, stop by stop.
+   *
+   * Each stop is sampled at its own position, which is what keeps the shape:
+   * a stop pinned at 40% takes the palette's colour at 40%, and the easing the
+   * tag declares still bends the ramp between them exactly as before. The
+   * replacement is the attribute with only its colour tokens spliced, so the
+   * action can never touch a parameter.
+   */
+  private planGradientTags(tags: readonly SemanticContribution[]): RemapAction[] {
+    if (this.palette.colors.length === 0) return []
+
+    const actions: RemapAction[] = []
+
+    for (const tag of tags) {
+      const model = tag.metadata.model as GradientTagModel
+      const from = model.stops.map(stop => stop.hex)
+      const to = model.stops.map(stop => this.samplePalette(stop.position))
+
+      // Already wearing this palette — `hex` and `to` are both canonical.
+      if (to.every((hex, i) => hex === from[i])) continue
+
+      let replacement = ''
+      let cursor = 0
+      model.stops.forEach((stop, i) => {
+        const start = stop.start - model.attributeStart
+        replacement += model.attribute.slice(cursor, start) + to[i]
+        cursor = stop.end - model.attributeStart
+      })
+      replacement += model.attribute.slice(cursor)
+
+      actions.push({
+        kind: 'regradient',
+        payload: {
+          range: { start: model.attributeStart, end: model.attributeEnd },
+          replacement,
+          from: from.join(', '),
+          to: to.join(', '),
+          confidence: tag.confidence,
+          recommended: tag.confidence >= this.minConfidence,
+          gradient: true,
+          stops: { from, to, positions: model.stops.map(stop => stop.position) },
+        },
+      })
+    }
+
+    return actions
   }
 
   /**

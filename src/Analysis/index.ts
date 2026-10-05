@@ -45,6 +45,8 @@ export { SymbolAnalyzer } from './Passes/Analysis/SymbolAnalyzer'
 export type { SymbolGlyph, SymbolRunModel } from './Passes/Analysis/SymbolAnalyzer'
 export { ColorUsageAnalyzer } from './Passes/Analysis/ColorUsageAnalyzer'
 export type { ColorUsageModel } from './Passes/Analysis/ColorUsageAnalyzer'
+export { GradientTagAnalyzer, locateGradientStops } from './Passes/Analysis/GradientTagAnalyzer'
+export type { GradientTagModel, GradientTagStop } from './Passes/Analysis/GradientTagAnalyzer'
 
 // ── Decision Passes ───────────────────────────────────────────────
 export { DefaultDecision } from './Passes/Decision/DefaultDecision'
