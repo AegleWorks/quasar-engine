@@ -114,7 +114,7 @@ import '@miliastry/quasar/Visuals/osu.css'
 import '@miliastry/quasar/Visuals/lyne.css'
 ```
 
-For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](./INTEGRATION-LYNE.md) (Spanish).
+For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](./INTEGRATION-LYNE.md).
 
 ## Development
 
@@ -136,7 +136,7 @@ For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](
 | Find out where a keystroke's time goes | [12. Incremental performance](./docs/12-Incremental-Performance.md) |
 | Attach data to parts of a document | [11. Anchors](./docs/11-Anchors-Plan.md) |
 | See how osu! semantics are modeled | [10. Semantic model](./docs/10-Semantic-Model-Plan.md) |
-| Add real-time collaboration | [QuasarCollab.MD](./QuasarCollab.MD) (Spanish) |
+| Add real-time collaboration | [QuasarCollab.MD](./QuasarCollab.MD) |
 | See what is planned | [QuasarRoadmap.MD](./QuasarRoadmap.MD) |
 
 The [docs index](./docs/_Sidebar.md) lists every page.

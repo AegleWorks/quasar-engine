@@ -1,46 +1,46 @@
-# Integrar Quasar en Lyne (`line/web`)
+# Integrating Quasar into Lyne (`line/web`)
 
-Guía para que el foro de Lyne use el motor Quasar en vez del renderer propio
+A guide for the Lyne forum to use the Quasar engine instead of its own renderer
 (`components/bbcode.tsx` + `bbcode.module.css`).
 
-## 1. Publicar el paquete (una vez, desde MiliastryNova)
+## 1. Publish the package (once, from MiliastryNova)
 
-Quasar se publica a GitHub Packages del owner `hxovc`:
+Quasar is published to GitHub Packages under the owner `hxovc`:
 
 ```bash
 cd packages/quasar
-# requiere un token con scope write:packages en NODE_AUTH_TOKEN
+# requires a token with the write:packages scope in NODE_AUTH_TOKEN
 npm publish
 ```
 
-Antes de publicar hay que resolver el **revert en progreso** y commitear el
-estado actual (podas de tags, `left`, shadow/font, fix wnotice, optimización
-CSS, idMode `none`, build con tsup).
+Before publishing, you must resolve the **revert in progress** and commit the
+current state (tag prunes, `left`, shadow/font, wnotice fix, CSS
+optimization, idMode `none`, tsup build).
 
-## 2. Instalar en `line/web`
+## 2. Install in `line/web`
 
-Crea/edita `.npmrc` en la raíz de `line/web`:
+Create/edit `.npmrc` at the root of `line/web`:
 
 ```
 @miliastry:registry=https://npm.pkg.github.com/
 ```
 
-y añade el paquete:
+and add the package:
 
 ```bash
 npm install @miliastry/quasar
 ```
 
-## 3. Renderizar BBCode (modo foro — sin ids, sin editor)
+## 3. Render BBCode (forum mode: no ids, no editor)
 
 ```tsx
 import { useMemo } from "react";
 import { BBCodeDocumentModel, HTMLRenderer } from "@miliastry/quasar";
 import "@miliastry/quasar/Visuals/lyne.css";
 
-// Una vez al arrancar (o por request): el foro es solo lectura, no necesita
-// data-node-id. 'none' quita el atributo de TODO el HTML (más pequeño y
-// ligero); 'blocks' lo deja solo en contenedores si algún día lo necesitas.
+// Once at startup (or per request): the forum is read-only, it does not need
+// data-node-id. 'none' removes the attribute from ALL the HTML (smaller and
+// lighter); 'blocks' keeps it only on containers if you ever need it.
 HTMLRenderer.idMode = "none";
 
 export function BBCode({ source }: { source: string }) {
@@ -49,58 +49,58 @@ export function BBCode({ source }: { source: string }) {
     return model.toHTML();
   }, [source]);
 
-  // El renderer de Quasar escapa todo el texto (escapeHtml) y sanea
-  // atributos (color/fontSize/fontFamily + whitelist de [style] que bloquea
-  // url()/javascript:). Es el mismo contrato de seguridad que el renderer
-  // React de Lyne, solo que emitido como string.
+  // The Quasar renderer escapes all text (escapeHtml) and sanitizes
+  // attributes (color/fontSize/fontFamily + a [style] whitelist that blocks
+  // url()/javascript:). It is the same security contract as Lyne's React
+  // renderer, only emitted as a string.
   return <div className="bbcode-preview bbcode-preview-lyne" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 ```
 
-### Alternativa sin `dangerouslySetInnerHTML` (más estricta)
+### Alternative without `dangerouslySetInnerHTML` (stricter)
 
-Si prefieres mantener la postura actual de Lyne (React nodes, cero innerHTML),
-parsea el HTML de Quasar a React con `react-dom/server` o usa el `DOMMorpher`
-en el cliente. El primer paso recomendado es el `dangerouslySetInnerHTML`:
-es el camino corto y el renderer ya sanea.
+If you prefer to keep Lyne's current stance (React nodes, zero innerHTML),
+parse Quasar's HTML into React with `react-dom/server` or use the `DOMMorpher`
+on the client. The recommended first step is `dangerouslySetInnerHTML`:
+it is the short path and the renderer already sanitizes.
 
-## 4. Dialecto y tema
+## 4. Dialect and theme
 
-- `dialect: "lyne"` → el parser acepta los tags de Lyne (canónicos + aliases
-  legacy) y el renderer emite la estructura Lyne (`bb-notice`, `bb-glass`, …).
-- `import "@miliastry/quasar/Visuals/lyne.css"` → los estilos del tema Lyne
-  (glass, neon, cut-panels a 45°, tablas, notices…). El preview del editor de
-  Miliastry usa las clases `bbcode-preview` / `bbcode-preview-lyne`.
+- `dialect: "lyne"` → the parser accepts Lyne's tags (canonical + legacy
+  aliases) and the renderer emits the Lyne structure (`bb-notice`, `bb-glass`, …).
+- `import "@miliastry/quasar/Visuals/lyne.css"` → the Lyne theme styles
+  (glass, neon, 45° cut-panels, tables, notices…). The Miliastry editor
+  preview uses the `bbcode-preview` / `bbcode-preview-lyne` classes.
 
-## 5. Reemplazo progresivo
+## 5. Progressive replacement
 
-Los puntos de uso actuales de `components/bbcode.tsx`:
+The current places that use `components/bbcode.tsx`:
 
-| Archivo | Contenido |
+| File | Content |
 |---|---|
-| `app/forum/t/[id]/page.tsx` | hilos del foro |
-| `app/forum/c/[id]/page.tsx` | categorías |
-| `app/u/[username]/page.tsx` | sección "about" del perfil |
-| `app/maps/[id]/DetailClient.tsx`, `ModdingTab.tsx`, `CommentsSection.tsx` | descripciones/zonas de modding |
-| `app/guilds/[tag]/page.tsx`, `GuildManage.tsx` | descripciones de gremio |
-| `app/settings/profile/page.tsx` | editor del "about" |
+| `app/forum/t/[id]/page.tsx` | forum threads |
+| `app/forum/c/[id]/page.tsx` | categories |
+| `app/u/[username]/page.tsx` | the "about" section of the profile |
+| `app/maps/[id]/DetailClient.tsx`, `ModdingTab.tsx`, `CommentsSection.tsx` | modding descriptions/zones |
+| `app/guilds/[tag]/page.tsx`, `GuildManage.tsx` | guild descriptions |
+| `app/settings/profile/page.tsx` | the "about" editor |
 
-Estrategia sugerida:
+Suggested strategy:
 
-1. Crea `components/bbcode-quasar.tsx` con el componente del paso 3.
-2. Switchea un lugar (p. ej. `forum/t`) y compara el HTML renderizado contra
-   `components/bbcode.tsx` en los casos del foro real.
-3. Cuando el look coincida, elimina `bbcode.tsx` + `bbcode.module.css` y
-   sustituye el uso en el resto de páginas.
+1. Create `components/bbcode-quasar.tsx` with the component from step 3.
+2. Switch one place (e.g. `forum/t`) and compare the rendered HTML against
+   `components/bbcode.tsx` on real forum cases.
+3. When the look matches, delete `bbcode.tsx` + `bbcode.module.css` and
+   replace the usage in the remaining pages.
 
-## Notas
+## Notes
 
-- **Sin dependencias**: `@miliastry/quasar` tiene `dependencies: {}` — el
-  bundle es autocontenido (esbuild/tsup). Cero peso añadido al foro.
-- **IDs**: `HTMLRenderer.idMode` es estático a nivel de clase; en SSR hay que
-  asegurarse de que el valor se fije antes de renderizar (módulo compartido o
-  en el `_app`/layout).
-- **Posiciones**: el renderer no emite posiciones en el HTML; los
-  `sourceRange` solo existen en el modelo, que el foro no retiene.
-- **Versiones**: sube `version` en `packages/quasar/package.json` en cada
-  publicación para que Lyne pueda fijar la suya.
+- **No dependencies**: `@miliastry/quasar` has `dependencies: {}`. The
+  bundle is self-contained (esbuild/tsup). Zero added weight for the forum.
+- **IDs**: `HTMLRenderer.idMode` is static at class level. In SSR, make
+  sure the value is set before rendering (shared module or in the
+  `_app`/layout).
+- **Positions**: the renderer does not emit positions in the HTML; the
+  `sourceRange`s only exist in the model, which the forum does not retain.
+- **Versions**: bump `version` in `packages/quasar/package.json` on every
+  publish so that Lyne can pin its own.

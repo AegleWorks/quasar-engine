@@ -1,135 +1,135 @@
-# 🌌 Quasar Document Engine — Arquitectura Desnuda
+# 🌌 Quasar Document Engine — The Bare Architecture
 
-> *Versión 1.0.0 — Análisis Forense de Código Fuente*
-> *Inspirado en Microsoft Roslyn, Apple SwiftSyntax, Tree-sitter y ProseMirror*
-> *Por el equipo de Miliastry Nova — Documento generado por Buffy (Análisis Estructural)*
-
----
-
-## 📋 Índice
-
-1. [¿Qué es Quasar?](#1-qué-es-quasar)
-2. [Filosofía Central](#2-filosofía-central)
-3. [El Problema Que Resuelve](#3-el-problema-que-resuelve)
-4. [Arquitectura General: Mapa de 30.000 pies](#4-arquitectura-general-mapa-de-30000-pies)
-5. [Pipeline Completo (Fase por Fase)](#5-pipeline-completo-fase-por-fase)
-6. [Sistema de Tipos (Types/)](#6-sistema-de-tipos-types)
-7. [Lexer — Análisis Léxico (Lexer/)](#7-lexer--análisis-léxico-lexer)
-8. [GreenNode — El Árbol Inmutable (Syntax/GreenNode)](#8-greennode--el-árbol-inmutable-syntaxgreennode)
-9. [RedNode — La Fachada de Estado (Syntax/RedNode)](#9-rednode--la-fachada-de-estado-syntaxrednode)
-10. [GreenNodePool — Flyweight & Deduplicación (Syntax/GreenNodePool)](#10-greennodepool--flyweight--deduplicación-syntaxgreennodepool)
-11. [TreeBuilder — De Tokens a Árbol (Syntax/TreeBuilder)](#11-treebuilder--de-tokens-a-árbol-syntaxtreebuilder)
-12. [NodeMatcher — Correspondencia Entre Versiones (Syntax/NodeMatcher)](#12-nodematcher--correspondencia-entre-versiones-syntaxnodematcher)
-13. [BBCode Parser — El Corazón BBCode (BBCode/Parser)](#13-bbcode-parser--el-corazón-bbcode-bbcodeparser)
-14. [BBCodeDocumentModel — Puente BBCode (BBCode/BBCodeDocumentModel)](#14-bbcodeDocumentmodel--puente-bbcode-bbcodedocumentmodel)
-15. [BBCodeToGreenNode — Convertidores (BBCode/BBCodeToGreenNode)](#15-bbcodetogreennode--convertidores-bbcodetogreennode)
-16. [DocumentModel — El Orquestador Central (Model/DocumentModel)](#16-documentmodel--el-orquestador-central-modeldocumentmodel)
-17. [TagRegistry — Registro de Etiquetas (Model/TagRegistry)](#17-tagregistry--registro-de-etiquetas-modeltagregistry)
-18. [NodeFactory — Fábrica de Nodos (Model/NodeFactory)](#18-nodefactory--fábrica-de-nodos-modelnodefactory)
-19. [IncrementalParser — Parseo Incremental (Incremental/)](#19-incrementalparser--parseo-incremental-incremental)
-20. [ChangeTracker — Rastreo de Cambios (Incremental/ChangeTracker)](#20-changetracker--rastreo-de-cambios-incrementalchangetracker)
-21. [TreeDiffer — Diferenciación de Árboles (Diff/TreeDiffer)](#21-treediffer--diferenciación-de-árboles-difftreediffer)
-22. [SemanticAnalyzer — Análisis Semántico (Semantic/)](#22-semanticanalyzer--análisis-semántico-semantic)
-23. [EventBus — Sistema de Eventos (Events/EventBus)](#23-eventbus--sistema-de-eventos-eventseventbus)
-24. [Transaction & UndoManager — Transacciones (Transactions/)](#24-transaction--undomanager--transacciones-transactions)
-25. [Command System — Sistema de Comandos (Commands/)](#25-command-system--sistema-de-comandos-commands)
-26. [QueryEngine — Motor de Consultas (Queries/QueryEngine)](#26-queryengine--motor-de-consultas-queriesqueryengine)
-27. [SymbolTable — Tabla de Símbolos (Symbols/SymbolTable)](#27-symboltable--tabla-de-símbolos-symbolssymboltable)
-28. [Formatter — Formateador (Formatter/)](#28-formatter--formateador-formatter)
-29. [Linter — Inspección de Calidad (Linter/)](#29-linter--inspección-de-calidad-linter)
-30. [Visitor Pattern — Patrón Visitante (Visitors/Visitor)](#30-visitor-pattern--patrón-visitante-visitorsvisitor)
-31. [HTMLRenderer — Renderizador HTML (Visitors/HTMLRenderer)](#31-htmlrenderer--renderizador-html-visitorshtmlrenderer)
-32. [BBCodeExporter — Exportador BBCode (Visitors/BBCodeExporter)](#32-bbcodeexporter--exportador-bbcode-visitorsbbcodeexporter)
-33. [DOMMorpher — Morphing DOM (Visitors/DOMMorpher)](#33-dommorpher--morphing-dom-visitorsdommorpher)
-34. [Otros Exportadores (MarkdownExporter, JSONExporter, SVGRenderer, TiptapExporter)](#34-otros-exportadores-markdownexporter-jsonexporter-svgrenderer-tiptapexporter)
-35. [RenderPipeline — Pipeline de Renderizado (RenderPipeline/)](#35-renderpipeline--pipeline-de-renderizado-renderpipeline)
-36. [RenderTree — Árbol Intermedio (RenderPipeline/RenderTree)](#36-rentree--árbol-intermedio-renderpipelinerendertree)
-37. [Plugin System — Sistema de Plugins (Plugins/)](#37-plugin-system--sistema-de-plugins-plugins)
-38. [Transformers — Transformadores (Transformers/)](#38-transformers--transformadores-transformers)
-39. [treeTransformers — Transformadores Funcionales (Utils/treeTransformers)](#39-treetransformers--transformadores-funcionales-utilstreetransformers)
-40. [Studio Integration — Integración con TextStudio (Studio/)](#40-studio-integration--integración-con-textstudio-studio)
-41. [Color Utils — Matemática de Color (Utils/color)](#41-color-utils--matemática-de-color-utilscolor)
-42. [HTML Bridge — De HTML a AST (HTML/)](#42-html-bridge--de-html-a-ast-html)
-43. [Markdown Bridge — De Markdown a AST (Markdown/)](#43-markdown-bridge--de-markdown-a-ast-markdown)
-44. [Bridges — Arquitectura Multi-Formato](#44-bridges--arquitectura-multi-formato)
-45. [API Pública (index.ts)](#45-api-pública-indexts)
-46. [Pruebas y Cobertura](#46-pruebas-y-cobertura)
-47. [Diagrama Completo de Dependencias](#47-diagrama-completo-de-dependencias)
-48. [Análisis Crítico: Fortalezas y Debilidades](#48-análisis-crítico-fortalezas-y-debilidades)
-49. [Guía de Contribución](#49-guía-de-contribución)
-50. [Glosario](#50-glosario)
+> *Version 1.0.0 — Forensic Source Code Analysis*
+> *Inspired by Microsoft Roslyn, Apple SwiftSyntax, Tree-sitter and ProseMirror*
+> *By the Miliastry Nova team — Document generated by Buffy (Structural Analysis)*
 
 ---
 
-## 1. ¿Qué es Quasar?
+## 📋 Index
 
-**Quasar Document Engine** (`@miliastry/quasar`) es un **motor industrial de análisis, transformación y renderizado de documentos sintácticos** escrito en TypeScript puro. No es "un parser de BBCode". BBCode es solo **una** de las múltiples representaciones que Quasar puede procesar.
-
-Quasar implementa la arquitectura **Red-Green Tree** (Árbol Rojo-Verde) —el mismo patrón usado por el compilador de C# (Roslyn) y el compilador de Swift (SwiftSyntax)— para ofrecer:
-
-- **Inmutabilidad estructural** con `GreenNode`
-- **Fachada de estado mutable** con `RedNode`
-- **Parseo incremental** en microsegundos
-- **Round-tripping** perfecto (preservación total de trivia)
-- **Multi-formato**: BBCode, HTML, Markdown, JSON, SVG, Tiptap/ProseMirror
-- **Cero dependencias** externas en runtime
+1. [What Is Quasar?](#1-what-is-quasar)
+2. [Core Philosophy](#2-core-philosophy)
+3. [The Problem It Solves](#3-the-problem-it-solves)
+4. [General Architecture: 30,000-Foot Map](#4-general-architecture-30000-foot-map)
+5. [Full Pipeline (Phase by Phase)](#5-full-pipeline-phase-by-phase)
+6. [Type System (Types/)](#6-type-system-types)
+7. [Lexer — Lexical Analysis (Lexer/)](#7-lexer--lexical-analysis-lexer)
+8. [GreenNode — The Immutable Tree (Syntax/GreenNode)](#8-greennode--the-immutable-tree-syntaxgreennode)
+9. [RedNode — The State Facade (Syntax/RedNode)](#9-rednode--the-state-facade-syntaxrednode)
+10. [GreenNodePool — Flyweight & Deduplication (Syntax/GreenNodePool)](#10-greennodepool--flyweight--deduplication-syntaxgreennodepool)
+11. [TreeBuilder — From Tokens to Tree (Syntax/TreeBuilder)](#11-treebuilder--from-tokens-to-tree-syntaxtreebuilder)
+12. [NodeMatcher — Matching Between Versions (Syntax/NodeMatcher)](#12-nodematcher--matching-between-versions-syntaxnodematcher)
+13. [BBCode Parser — The BBCode Core (BBCode/Parser)](#13-bbcode-parser--the-bbcode-core-bbcodeparser)
+14. [BBCodeDocumentModel — BBCode Bridge (BBCode/BBCodeDocumentModel)](#14-bbcodedocumentmodel--bbcode-bridge-bbcodebbcodedocumentmodel)
+15. [BBCodeToGreenNode — Converters (BBCode/BBCodeToGreenNode)](#15-bbcodetogreennode--converters-bbcodebbcodetogreennode)
+16. [DocumentModel — The Central Orchestrator (Model/DocumentModel)](#16-documentmodel--the-central-orchestrator-modeldocumentmodel)
+17. [TagRegistry — Tag Registry (Model/TagRegistry)](#17-tagregistry--tag-registry-modeltagregistry)
+18. [NodeFactory — Node Factory (Model/NodeFactory)](#18-nodefactory--node-factory-modelnodefactory)
+19. [IncrementalParser — Incremental Parsing (Incremental/)](#19-incrementalparser--incremental-parsing-incremental)
+20. [ChangeTracker — Change Tracking (Incremental/ChangeTracker)](#20-changetracker--change-tracking-incrementalchangetracker)
+21. [TreeDiffer — Tree Diffing (Diff/TreeDiffer)](#21-treediffer--tree-diffing-difftreediffer)
+22. [SemanticAnalyzer — Semantic Analysis (Semantic/)](#22-semanticanalyzer--semantic-analysis-semantic)
+23. [EventBus — Event System (Events/EventBus)](#23-eventbus--event-system-eventseventbus)
+24. [Transaction & UndoManager — Transactions (Transactions/)](#24-transaction--undomanager--transactions-transactions)
+25. [Command System (Commands/)](#25-command-system-commands)
+26. [QueryEngine — Query Engine (Queries/QueryEngine)](#26-queryengine--query-engine-queriesqueryengine)
+27. [SymbolTable — Symbol Table (Symbols/SymbolTable)](#27-symboltable--symbol-table-symbolssymboltable)
+28. [Formatter (Formatter/)](#28-formatter-formatter)
+29. [Linter — Quality Inspection (Linter/)](#29-linter--quality-inspection-linter)
+30. [Visitor Pattern (Visitors/Visitor)](#30-visitor-pattern-visitorsvisitor)
+31. [HTMLRenderer — HTML Renderer (Visitors/HTMLRenderer)](#31-htmlrenderer--html-renderer-visitorshtmlrenderer)
+32. [BBCodeExporter — BBCode Exporter (Visitors/BBCodeExporter)](#32-bbcodeexporter--bbcode-exporter-visitorsbbcodeexporter)
+33. [DOMMorpher — DOM Morphing (Visitors/DOMMorpher)](#33-dommorpher--dom-morphing-visitorsdommorpher)
+34. [Other Exporters (MarkdownExporter, JSONExporter, SVGRenderer, TiptapExporter)](#34-other-exporters)
+35. [RenderPipeline — Rendering Pipeline (RenderPipeline/)](#35-renderpipeline--rendering-pipeline-renderpipeline)
+36. [RenderTree — Intermediate Tree (RenderPipeline/RenderTree)](#36-rendertree--intermediate-tree-renderpipelinerendertree)
+37. [Plugin System (Plugins/)](#37-plugin-system-plugins)
+38. [Transformers (Transformers/)](#38-transformers-transformers)
+39. [treeTransformers — Functional Transformers (Utils/treeTransformers)](#39-treetransformers--functional-transformers-utilstreetransformers)
+40. [Studio Integration — TextStudio Integration (Studio/)](#40-studio-integration--textstudio-integration-studio)
+41. [Color Utils — Color Math (Utils/color)](#41-color-utils--color-math-utilscolor)
+42. [HTML Bridge — From HTML to AST (HTML/)](#42-html-bridge--from-html-to-ast-html)
+43. [Markdown Bridge — From Markdown to AST (Markdown/)](#43-markdown-bridge--from-markdown-to-ast-markdown)
+44. [Bridges — Multi-Format Architecture](#44-bridges--multi-format-architecture)
+45. [Public API (index.ts)](#45-public-api-indexts)
+46. [Tests and Coverage](#46-tests-and-coverage)
+47. [Full Dependency Diagram](#47-full-dependency-diagram)
+48. [Critical Analysis: Strengths and Weaknesses](#48-critical-analysis-strengths-and-weaknesses)
+49. [Contribution Guide](#49-contribution-guide)
+50. [Glossary](#50-glossary)
 
 ---
 
-## 2. Filosofía Central
+## 1. What Is Quasar?
 
-Quasar se construye sobre **cinco principios** derivados de la teoría de compiladores:
+**Quasar Document Engine** (`@miliastry/quasar`) is an **industrial engine for analyzing, transforming and rendering syntactic documents**, written in pure TypeScript. It is not "a BBCode parser". BBCode is just **one** of the many representations Quasar can process.
 
-### 2.1 Representación Sintáctica Única
-Los documentos NO se almacenan como strings. La representación oficial es un **AST (Abstract Syntax Tree)**. El texto es solo una serialización del árbol.
+Quasar implements the **Red-Green Tree** architecture —the same pattern used by the C# compiler (Roslyn) and the Swift compiler (SwiftSyntax)— to offer:
 
-### 2.2 Inmutabilidad de Datos Sintácticos
-`GreenNode` nunca muta. Cualquier modificación del documento genera un nuevo árbol que reutiliza subárboles no afectados por referencia (`===`). Esto permite:
-- **Structural Sharing**: Dos nodos idénticos en distintas partes del árbol comparten la misma referencia en RAM.
-- **Comparación O(1)**: `greenA === greenB` → los subárboles son idénticos, no hace falta recorrerlos.
-- **Thread-safety**: Múltiples componentes pueden leer el árbol simultáneamente sin locks.
-
-### 2.3 Error-Tolerant Parsing (Resiliencia)
-El parser **jamás colapsa**. Ante sintaxis inválida (etiquetas mal anidadas, cierres huérfanos, atributos corruptos), el parser:
-1. Produce un árbol válido de todas formas
-2. Emite nodos `error` con diagnósticos
-3. Continúa parseando sin lanzar excepciones
-
-### 2.4 Round-Tripping (Fidelidad Total)
-Quasar preserva el **100% de los caracteres originales**: espacios, saltos de línea, comillas de atributos, todo. BBCode → AST → BBCode debe producir exactamente el texto original (excepto por normalizaciones explícitas).
-
-### 2.5 Separación Sintaxis/Semántica
-La estructura del árbol (`GreenNode`/`RedNode`) es independiente del **significado** de los nodos. La semántica (validación de colores, enlaces rotos, reglas de negocio) vive en `SemanticAnalyzer` y `Linter`.
+- **Structural immutability** with `GreenNode`
+- **A mutable state facade** with `RedNode`
+- **Incremental parsing** in microseconds
+- Perfect **round-tripping** (full trivia preservation)
+- **Multi-format**: BBCode, HTML, Markdown, JSON, SVG, Tiptap/ProseMirror
+- **Zero external dependencies** at runtime
 
 ---
 
-## 3. El Problema Que Resuelve
+## 2. Core Philosophy
 
-### Antes de Quasar
+Quasar is built on **five principles** derived from compiler theory:
 
-Miliastry Nova tenía un parser de BBCode legacy que:
-- Producía un array plano `BBBlock[]` sin jerarquía real
-- No preservaba trivia (espacios, newlines exactos)
-- No soportaba parseo incremental → re-parseaba todo el documento en cada tipeo
-- Estaba acoplado a un solo formato (BBCode)
-- No tenía sistema de plugins
+### 2.1 Single Syntactic Representation
+Documents are NOT stored as strings. The official representation is an **AST (Abstract Syntax Tree)**. The text is just a serialization of the tree.
 
-### Lo que Quasar aporta
+### 2.2 Immutability of Syntactic Data
+`GreenNode` never mutates. Any change to the document produces a new tree that reuses subtrees not affected by the change, by reference (`===`). This allows:
+- **Structural Sharing**: Two identical nodes in different parts of the tree share the same reference in RAM.
+- **O(1) comparison**: `greenA === greenB` → the subtrees are identical, no need to walk them.
+- **Thread-safety**: Multiple components can read the tree at the same time without locks.
 
-| Problema | Solución Quasar |
+### 2.3 Error-Tolerant Parsing (Resilience)
+The parser **never collapses**. Faced with invalid syntax (badly nested tags, orphan closers, corrupt attributes), the parser:
+1. Produces a valid tree anyway
+2. Emits `error` nodes with diagnostics
+3. Keeps parsing without throwing exceptions
+
+### 2.4 Round-Tripping (Total Fidelity)
+Quasar preserves **100% of the original characters**: spaces, line breaks, attribute quotes, everything. BBCode → AST → BBCode must produce exactly the original text (except for explicit normalizations).
+
+### 2.5 Syntax/Semantics Separation
+The structure of the tree (`GreenNode`/`RedNode`) is independent of the **meaning** of the nodes. Semantics (color validation, broken links, business rules) lives in `SemanticAnalyzer` and `Linter`.
+
+---
+
+## 3. The Problem It Solves
+
+### Before Quasar
+
+Miliastry Nova had a legacy BBCode parser that:
+- Produced a flat `BBBlock[]` array with no real hierarchy
+- Did not preserve trivia (exact spaces, newlines)
+- Did not support incremental parsing → it reparsed the whole document on every keystroke
+- Was coupled to a single format (BBCode)
+- Had no plugin system
+
+### What Quasar brings
+
+| Problem | Quasar Solution |
 |----------|-----------------|
-| Latencia en edición > 5ms | Parseo incremental < 0.15ms |
-| Sin round-trip (BBCode perdía formato) | Trivia preservation via `fullWidth` |
-| Solo BBCode | Bridges: BBCode + HTML + Markdown + JSON |
-| Sin undo/redo | `Transaction` + `UndoManager` |
-| Sin validación en vivo | `SemanticAnalyzer` + `Linter` |
-| Sin inspectabilidad | `QueryEngine` estilo CSS |
-| Sin extensibilidad | `PluginRegistry` + `PluginAPI` |
-| Sin efectos visuales | `Transformers` + `treeTransformers` + `Studio` |
+| Editing latency > 5ms | Incremental parsing < 0.15ms |
+| No round-trip (BBCode lost formatting) | Trivia preservation via `fullWidth` |
+| BBCode only | Bridges: BBCode + HTML + Markdown + JSON |
+| No undo/redo | `Transaction` + `UndoManager` |
+| No live validation | `SemanticAnalyzer` + `Linter` |
+| No inspectability | CSS-style `QueryEngine` |
+| No extensibility | `PluginRegistry` + `PluginAPI` |
+| No visual effects | `Transformers` + `treeTransformers` + `Studio` |
 
 ---
 
-## 4. Arquitectura General: Mapa de 30.000 pies
+## 4. General Architecture: 30,000-Foot Map
 
 ```
                         ┌──────────────────────┐
@@ -146,23 +146,23 @@ Miliastry Nova tenía un parser de BBCode legacy que:
                             └──────┬──────┘
                                    │
                       ┌────────────▼────────────┐
-                      │     GreenNode Tree      │ ← INMUTABLE, compartible
+                      │     GreenNode Tree      │ ← IMMUTABLE, shareable
                       └────────────┬────────────┘
                                    │ .green
                       ┌────────────▼────────────┐
-                      │      RedNode Tree       │ ← Fachada mutable con IDs
+                      │      RedNode Tree       │ ← Mutable facade with IDs
                       └────────────┬────────────┘
                                    │
                       ┌────────────▼────────────┐
-                      │   DocumentModel          │ ← Orquestador central
-                      │   (eventos, undo, query) │
+                      │   DocumentModel          │ ← Central orchestrator
+                      │   (events, undo, query)  │
                       └────────────┬────────────┘
                                    │
                 ┌──────────────────┼──────────────────┐
                 ▼                  ▼                  ▼
          ┌─────────────┐   ┌─────────────┐   ┌──────────────┐
-         │  Semántica   │   │  Comandos   │   │   Visitors   │
-         │+ Diagnósticos│   │+ Transacción│   │+ Exportadores│
+         │  Semantics   │   │  Commands   │   │   Visitors   │
+         │+ Diagnostics │   │+ Transaction│   │+ Exporters   │
          └──────────────┘   └─────────────┘   └──────┬───────┘
                                                       ▼
                                             ┌────────────────┐
@@ -171,108 +171,108 @@ Miliastry Nova tenía un parser de BBCode legacy que:
                                             └────────────────┘
 ```
 
-### Mapa Físico de Archivos
+### Physical File Map
 
 ```
 packages/quasar/src/
-├── BBCode/          # Parser y bridge de BBCode
-│   ├── Parser.ts    ← parseTokensToGreen() — el parser central
-│   ├── BBCodeDocumentModel.ts ← DocumentModel especializado para BBCode
-│   └── BBCodeToGreenNode.ts   ← Convertidores BBBlock ↔ GreenNode
-├── Commands/        # Comandos de edición (InsertText, DeleteNode, WrapInTag)
-├── Diff/            # TreeDiffer — diff estructural entre dos árboles
-├── Events/          # EventBus — pub/sub de eventos del documento
-├── Formatter/       # Formateador sintáctico
-├── HTML/            # Bridge HTML → GreenNode
+├── BBCode/          # BBCode parser and bridge
+│   ├── Parser.ts    ← parseTokensToGreen() — the central parser
+│   ├── BBCodeDocumentModel.ts ← DocumentModel specialized for BBCode
+│   └── BBCodeToGreenNode.ts   ← BBBlock ↔ GreenNode converters
+├── Commands/        # Editing commands (InsertText, DeleteNode, WrapInTag)
+├── Diff/            # TreeDiffer — structural diff between two trees
+├── Events/          # EventBus — pub/sub of document events
+├── Formatter/       # Syntactic formatter
+├── HTML/            # HTML → GreenNode bridge
 ├── Incremental/     # IncrementalParser + ChangeTracker
-├── Lexer/           # Lexer genérico + BBCodeLexer especializado
-├── Linter/          # Reglas de linting (BBCode)
-├── Markdown/        # Bridge Markdown → AST → GreenNode
+├── Lexer/           # Generic lexer + specialized BBCodeLexer
+├── Linter/          # Linting rules (BBCode)
+├── Markdown/        # Markdown → AST → GreenNode bridge
 ├── Model/           # Core: DocumentModel, TagRegistry, NodeFactory
 ├── Plugins/         # PluginRegistry + PluginAPI
-├── Queries/         # QueryEngine (selectores CSS-like)
-├── RenderPipeline/  # Pipeline de renderizado intermedio
-├── Semantic/        # SemanticAnalyzer + validadores
-├── Studio/          # Motor de efectos visuales (TextStudio)
-├── Symbols/         # SymbolTable (definiciones/referencias)
+├── Queries/         # QueryEngine (CSS-like selectors)
+├── RenderPipeline/  # Intermediate rendering pipeline
+├── Semantic/        # SemanticAnalyzer + validators
+├── Studio/          # Visual effects engine (TextStudio)
+├── Symbols/         # SymbolTable (definitions/references)
 ├── Syntax/          # GreenNode, RedNode, TreeBuilder, NodeMatcher, GreenNodePool
-├── Transformers/    # Transformadores OOP (Gradient, Rainbow, Grow, SineWave)
+├── Transformers/    # OOP transformers (Gradient, Rainbow, Grow, SineWave)
 ├── Transactions/    # Transaction + UndoManager
-├── Types/           # Tipos fundamentales del sistema
+├── Types/           # Fundamental types of the system
 ├── Utils/           # treeTransformers, color, BBCodeGenerator, dom-to-svg
 ├── Visitors/        # Visitor, HTMLRenderer, BBCodeExporter, MarkdownExporter, etc.
-└── Visuals/         # Catálogo de temas visuales (osu.css)
+└── Visuals/         # Catalog of visual themes (osu.css)
 ```
 
 ---
 
-## 5. Pipeline Completo (Fase por Fase)
+## 5. Full Pipeline (Phase by Phase)
 
-El pipeline de Quasar procesa datos en **6 fases deterministas**:
+The Quasar pipeline processes data in **6 deterministic phases**:
 
 ```
-        Fase 1           Fase 2          Fase 3            Fase 4
+        Phase 1          Phase 2         Phase 3           Phase 4
   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-  │    Lexing    │→ │   Parsing    │→ │ Red Hydration│→ │   Semántica  │
-  │ Text → Tokens│  │Tokens→Green  │  │Green → Red   │  │Validación y  │
-  │              │  │              │  │              │  │Diagnósticos  │
+  │    Lexing    │→ │   Parsing    │→ │ Red Hydration│→ │  Semantics   │
+  │ Text → Tokens│  │Tokens→Green  │  │Green → Red   │  │Validation and│
+  │              │  │              │  │              │  │ Diagnostics  │
   └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘
                                                               │
                                                               ▼
                                                      ┌──────────────┐
-        Fase 5           Fase 6                     │  Transform   │
-  ┌──────────────┐  ┌──────────────┐                │(Si aplica)   │
-  │  Visitors/   │  │    Salida    │                └──────────────┘
+        Phase 5          Phase 6                     │  Transform   │
+  ┌──────────────┐  ┌──────────────┐                │(If needed)   │
+  │  Visitors/   │  │    Output    │                └──────────────┘
   │  Exporters   │→ │ HTML/JSON/MD │
   └──────────────┘  └──────────────┘
 ```
 
-### Fase 1: Lexing
-- **Entrada**: Texto fuente (string)
-- **Proceso**: `scanBBCode()` o `scanMarkdown()` escanea char por char
-- **Salida**: Array de tokens con kind, texto, rango [start, end]
-- **Trivia**: Los espacios y newlines nunca se pierden
+### Phase 1: Lexing
+- **Input**: Source text (string)
+- **Process**: `scanBBCode()` or `scanMarkdown()` scans char by char
+- **Output**: Array of tokens with kind, text, range [start, end]
+- **Trivia**: Spaces and newlines are never lost
 
-### Fase 2: Parsing Sintáctico
-- **Entrada**: Tokens + texto fuente
-- **Proceso**: `parseTokensToGreen()` consume tokens con un stack
-- **Salida**: `GreenNode` (árbol inmutable)
-- **Resiliencia**: Stack recovery para tags mal anidadas
+### Phase 2: Syntactic Parsing
+- **Input**: Tokens + source text
+- **Process**: `parseTokensToGreen()` consumes tokens with a stack
+- **Output**: `GreenNode` (immutable tree)
+- **Resilience**: Stack recovery for badly nested tags
 
-### Fase 3: Red Hydration
-- **Entrada**: `GreenNode`
-- **Proceso**: `greenToRedNode()` envuelve cada GreenNode en un RedNode
-- **Salida**: `RedNode` con IDs, padres, versión, metadatos
-- **Metadata**: Extrae atributos BBCode → metadatos estructurados
+### Phase 3: Red Hydration
+- **Input**: `GreenNode`
+- **Process**: `greenToRedNode()` wraps each GreenNode in a RedNode
+- **Output**: `RedNode` with IDs, parents, version, metadata
+- **Metadata**: Extracts BBCode attributes → structured metadata
 
-### Fase 4: Semántica
-- **Entrada**: `RedNode`
-- **Proceso**: `SemanticAnalyzer.analyze()` corre validadores
-- **Salida**: `DiagnosticCollection` con errores, warnings, hints
+### Phase 4: Semantics
+- **Input**: `RedNode`
+- **Process**: `SemanticAnalyzer.analyze()` runs validators
+- **Output**: `DiagnosticCollection` with errors, warnings, hints
 
-### Fase 5: Visitors/Exporters
-- **Entrada**: `RedNode`
-- **Proceso**: Visitor recorre el árbol y produce output
-- **Salida**: HTML, BBCode, Markdown, JSON, SVG, Tiptap
+### Phase 5: Visitors/Exporters
+- **Input**: `RedNode`
+- **Process**: A Visitor walks the tree and produces output
+- **Output**: HTML, BBCode, Markdown, JSON, SVG, Tiptap
 
-### Fase 6: Transformación (Opcional)
-- **Entrada**: `DocumentModel` + parámetros de efecto
-- **Proceso**: `applyGradient()`, `RainbowTransformer.transform()`, etc.
-- **Salida**: DocumentModel transformado con efectos visuales
+### Phase 6: Transformation (Optional)
+- **Input**: `DocumentModel` + effect parameters
+- **Process**: `applyGradient()`, `RainbowTransformer.transform()`, etc.
+- **Output**: DocumentModel transformed with visual effects
 
 ---
 
-## 6. Sistema de Tipos (Types/)
+## 6. Type System (Types/)
 
-El directorio `Types/` contiene los tipos fundamentales que definen el **contrato** de todo el sistema. Ningún otro módulo importa de aquí —es la base.
+The `Types/` directory contains the fundamental types that define the **contract** of the whole system. No other module is imported from here —it is the base.
 
-### 6.1 `core.ts` — Tipos Centrales
+### 6.1 `core.ts` — Core Types
 
 ```typescript
-// La identidad de un nodo (UUID estable que sobrevive re-parses)
+// The identity of a node (stable UUID that survives re-parses)
 type NodeId = string & { readonly __brand: 'NodeId' }
 
-// 46 kinds semánticos — desde 'document' hasta 'unknown'
+// 46 semantic kinds — from 'document' to 'unknown'
 type NodeKind = 
   | 'document' | 'paragraph' | 'text'
   | 'bold' | 'italic' | 'underline' | 'strikethrough'
@@ -287,10 +287,10 @@ type NodeKind =
   | 'gradient' | 'grow' | 'sinewave' | 'rainbow'
   | 'spacing' | 'empty_line' | 'group' | 'custom' | 'error' | 'unknown'
 
-// Atributos de un nodo (ej: color=#FF0000, size=150)
+// Attributes of a node (e.g. color=#FF0000, size=150)
 type NodeAttributes = Record<string, string | number | boolean | null | undefined>
 
-// Interfaz pública del DocumentNode (usada por consumidores externos)
+// Public interface of DocumentNode (used by external consumers)
 interface DocumentNode {
   id: NodeId
   version: number
@@ -306,9 +306,9 @@ interface DocumentNode {
 }
 ```
 
-**Funciones helper**: `createNodeId()`, `createDocumentNode()`, `cloneNode()`, `getNodeText()`, `walkPreOrder()`, `findById()`.
+**Helper functions**: `createNodeId()`, `createDocumentNode()`, `cloneNode()`, `getNodeText()`, `walkPreOrder()`, `findById()`.
 
-### 6.2 `tokens.ts` — Tokens y Trivia
+### 6.2 `tokens.ts` — Tokens and Trivia
 
 ```typescript
 type TriviaKind = 'whitespace' | 'newline' | 'carriage_return' | 'comment' | 'line_continuation'
@@ -327,59 +327,59 @@ interface Token {
   kind: TokenKind
   text: string
   range: Range
-  name?: string       // Tag name si aplica
-  tagText?: string    // Texto completo del tag [b], [/color]
-  attrs?: string      // Atributos raw (lo que va entre tag name y ])
+  name?: string       // Tag name, if applicable
+  tagText?: string    // Full text of the tag [b], [/color]
+  attrs?: string      // Raw attributes (what goes between tag name and ])
   leadingTrivia: Trivia[]
   trailingTrivia: Trivia[]
 }
 ```
 
-**`ArrayTokenStream`**: Implementación concreta de `TokenStream` que permite `peek()`, `advance()`, `lookAhead()`, `seek()`, etc.
+**`ArrayTokenStream`**: Concrete implementation of `TokenStream` that allows `peek()`, `advance()`, `lookAhead()`, `seek()`, etc.
 
-### 6.3 `diagnostics.ts` — Diagnósticos
+### 6.3 `diagnostics.ts` — Diagnostics
 
 ```typescript
 type DiagnosticSeverity = 'hint' | 'info' | 'warning' | 'error'
 
 interface Diagnostic {
   id: string
-  code: string           // Ej: 'invalid-color', 'missing-close-tag'
+  code: string           // E.g.: 'invalid-color', 'missing-close-tag'
   message: string
   severity: DiagnosticSeverity
   tags: DiagnosticTag[]
   range: Range | null
   nodeId: NodeId | null
   nodeKind: NodeKind | null
-  source: string         // 'document-engine' o nombre del plugin
+  source: string         // 'document-engine' or the plugin name
   related?: DiagnosticRelatedInfo[]
-  fixes?: DiagnosticFix[]  // Fixes sugeridos (auto-aplicables o no)
+  fixes?: DiagnosticFix[]  // Suggested fixes (auto-applicable or not)
 }
 ```
 
-### 6.4 `operations.ts` — Operaciones de Transacción
+### 6.4 `operations.ts` — Transaction Operations
 
-Define **13 tipos de operación** que son las unidades atómicas de cambio:
+Defines **13 operation types**, which are the atomic units of change:
 
-| Operación | Descripción |
+| Operation | Description |
 |-----------|-------------|
-| `insert_node` | Insertar un nodo hijo en una posición |
-| `delete_node` | Eliminar un nodo |
-| `replace_node` | Reemplazar un nodo por otro |
-| `move_node` | Mover un nodo de padre/índice |
-| `update_attributes` | Cambiar atributos |
-| `set_text` | Cambiar el texto |
-| `insert_text` | Insertar texto en un nodo |
-| `delete_text` | Eliminar texto de un nodo |
-| `replace_text` | Reemplazar texto |
-| `wrap_in_tag` | Envolver en un tag |
-| `unwrap_node` | Desenvolver (remover tag, preservar hijos) |
-| `split_node` | Partir un nodo en dos |
-| `merge_nodes` | Fusionar dos nodos adyacentes |
+| `insert_node` | Insert a child node at a position |
+| `delete_node` | Delete a node |
+| `replace_node` | Replace a node with another |
+| `move_node` | Move a node to another parent/index |
+| `update_attributes` | Change attributes |
+| `set_text` | Change the text |
+| `insert_text` | Insert text into a node |
+| `delete_text` | Delete text from a node |
+| `replace_text` | Replace text |
+| `wrap_in_tag` | Wrap in a tag |
+| `unwrap_node` | Unwrap (remove the tag, preserve the children) |
+| `split_node` | Split a node in two |
+| `merge_nodes` | Merge two adjacent nodes |
 
-### 6.5 `queries.ts` — Sistema de Queries
+### 6.5 `queries.ts` — Query System
 
-Define selectores CSS-like para el `QueryEngine`:
+Defines CSS-like selectors for the `QueryEngine`:
 
 ```typescript
 type QuerySelector =
@@ -397,20 +397,20 @@ type QuerySelector =
   | { type: 'depth'; min?: number; max?: number }
 ```
 
-Incluye **combinadores**: `child` (>), `descendant` (espacio), `adjacent` (+), `sibling` (~).
+Includes **combinators**: `child` (>), `descendant` (space), `adjacent` (+), `sibling` (~).
 
-### 6.6 `symbols.ts` — Símbolos
+### 6.6 `symbols.ts` — Symbols
 
-Define el sistema de símbolos para características IDE-like:
+Defines the symbol system for IDE-like features:
 - `SymbolKind`: tag, id_definition, id_reference, class, property, variable, function, module, snippet, template
-- `SymbolInfo`: nombre, kind, definitionNodeId, references[]
+- `SymbolInfo`: name, kind, definitionNodeId, references[]
 - `SymbolSearchResult`: symbol + score
 
 ---
 
-## 7. Lexer — Análisis Léxico (Lexer/)
+## 7. Lexer — Lexical Analysis (Lexer/)
 
-### 7.1 Lexer Genérico (`Lexer.ts`)
+### 7.1 Generic Lexer (`Lexer.ts`)
 
 ```typescript
 class Lexer {
@@ -420,23 +420,23 @@ class Lexer {
 }
 ```
 
-Es un framework de lexer **agnóstico al lenguaje**. Recibe reglas `LexerRule[]` que definen:
-- `pattern`: RegExp para hacer match
-- `kind`: TokenKind a producir
-- `name?`: Función para extraer nombre del match
-- `attrs?`: Función para extraer atributos
+It is a **language-agnostic** lexer framework. It takes `LexerRule[]` rules that define:
+- `pattern`: RegExp to match
+- `kind`: TokenKind to produce
+- `name?`: Function to extract the name from the match
+- `attrs?`: Function to extract attributes
 
-El Lexer genérico NO se usa directamente para BBCode. El BBCode tiene su propio lexer optimizado.
+The generic Lexer is NOT used directly for BBCode. BBCode has its own optimized lexer.
 
 ### 7.2 BBCodeLexer (`BBCodeLexer.ts`)
 
-**El lexer verdadero de BBCode.** Es una **función pura** (sin estado, sin clase):
+**The real BBCode lexer.** It is a **pure function** (no state, no class):
 
 ```typescript
 function scanBBCode(source: string): BBCodeToken[]
 ```
 
-Produce 4 tipos de token:
+It produces 4 token types:
 
 ```typescript
 interface BBCodeOpenToken { kind: 'open'; tag: string; attrs: string; start: number; end: number }
@@ -445,117 +445,117 @@ interface BBCodeTextToken { kind: 'text'; value: string; start: number; end: num
 interface BBCodeNewlineToken { kind: 'newline'; value: string; start: number; end: number }
 ```
 
-**Características críticas:**
+**Critical features:**
 
-1. **Newlines como tokens explícitos**: `\n` y `\r\n` son tokens separados, no se mezclan con text.
-2. **Bracket depth tracking**: Para tags como `[box=[b]title[/b]]`, rastrea la profundidad de `[` para encontrar el `]` correcto.
-3. **Manejo de raw blocks**: `[code]` y `[c]` tratan todo su contenido como texto literal — sin parsear tags internos ni newlines.
-4. **Validación de tag names**: Solo `[a-zA-Z0-9_*]+` son tags válidos. `[Gateron]` o `[90 misses]` se tratan como texto plano.
-5. **Resiliencia**: Si encuentra `[` inválido (sin `]` correspondiente), emite `[` como texto y continúa.
+1. **Newlines as explicit tokens**: `\n` and `\r\n` are separate tokens, they are not mixed with text.
+2. **Bracket depth tracking**: For tags like `[box=[b]title[/b]]`, it tracks the depth of `[` to find the right `]`.
+3. **Raw block handling**: `[code]` and `[c]` treat all their content as literal text — no parsing of inner tags or newlines.
+4. **Tag name validation**: Only `[a-zA-Z0-9_*]+` are valid tags. `[Gateron]` or `[90 misses]` are treated as plain text.
+5. **Resilience**: If it finds an invalid `[` (with no matching `]`), it emits `[` as text and continues.
 
 ---
 
-## 8. GreenNode — El Árbol Inmutable (Syntax/GreenNode)
+## 8. GreenNode — The Immutable Tree (Syntax/GreenNode)
 
-**GreenNode es el corazón del motor.** Es la representación "compilada" del texto fuente.
+**GreenNode is the heart of the engine.** It is the "compiled" representation of the source text.
 
 ```typescript
 class GreenNode {
-  readonly kind: string           // Kind sintáctico
-  readonly text: string           // Texto raw (vacío para nodos internos)
-  readonly children: readonly GreenNode[]  // Hijos (congelados)
-  readonly range: Range           // [start, end] en el texto original
-  readonly width: number          // Ancho en caracteres (end - start)
-  readonly fullWidth: number      // Ancho total incluyendo trivia
-  readonly isLeaf: boolean        // true si no tiene hijos
+  readonly kind: string           // Syntactic kind
+  readonly text: string           // Raw text (empty for inner nodes)
+  readonly children: readonly GreenNode[]  // Children (frozen)
+  readonly range: Range           // [start, end] in the original text
+  readonly width: number          // Width in characters (end - start)
+  readonly fullWidth: number      // Total width including trivia
+  readonly isLeaf: boolean        // true if it has no children
 }
 ```
 
-### Propiedades Clave
+### Key Properties
 
-**1. Zero Parent Pointers**: `parent` no existe. Esto permite Structural Sharing.
+**1. Zero Parent Pointers**: `parent` does not exist. This enables Structural Sharing.
 
-**2. Inmutabilidad total**: El constructor congela el array de hijos con `Object.freeze()`.
+**2. Total immutability**: The constructor freezes the children array with `Object.freeze()`.
 
-**3. Structural Sharing Ready**: Dos GreenNodes sintácticamente idénticos comparten la misma referencia. Al ser inmutables, esto es seguro.
+**3. Structural Sharing Ready**: Two syntactically identical GreenNodes share the same reference. Since they are immutable, this is safe.
 
-**4. fullWidth**: Incluye trivia (espacios, newlines). Crucial para round-tripping.
+**4. fullWidth**: Includes trivia (spaces, newlines). Crucial for round-tripping.
 
 ```typescript
-// Constructores helper
+// Helper constructors
 function greenNode(kind, text, start, end, children?, leadingWidth?): GreenNode
 function greenLeaf(kind, text, start, end): GreenNode
 ```
 
-### Métodos de GreenNode
+### GreenNode Methods
 
-- `childAt(index)`: O(1) acceso a hijo
-- `findChild(predicate)`: Find lineal
-- `walk(visitor)`: Recorrido pre-order
-- `toString()`: Debug string con indentación
-- `getSourceText(source)`: Extrae el texto fuente original de este nodo
-- `isKind(kind)`: Comparación de kind
+- `childAt(index)`: O(1) child access
+- `findChild(predicate)`: Linear find
+- `walk(visitor)`: Pre-order traversal
+- `toString()`: Debug string with indentation
+- `getSourceText(source)`: Extracts the original source text of this node
+- `isKind(kind)`: Kind comparison
 
 ---
 
-## 9. RedNode — La Fachada de Estado (Syntax/RedNode)
+## 9. RedNode — The State Facade (Syntax/RedNode)
 
-**RedNode es la capa mutable que envuelve GreenNode.** Mientras GreenNode es el "código compilado", RedNode es el "entorno de ejecución".
+**RedNode is the mutable layer that wraps GreenNode.** While GreenNode is the "compiled code", RedNode is the "runtime environment".
 
 ```typescript
 class RedNode {
-  readonly green: GreenNode       // Referencia al GreenNode subyacente
-  readonly id: NodeId             // UUID estable que sobrevive re-parses
-  parent: RedNode | null          // Referencia al padre (null para root)
-  children: RedNode[]             // Hijos mutables
-  version: number                 // Versión para change tracking
-  diagnostics: Diagnostic[]       // Diagnósticos de este nodo
-  kind: NodeKind                  // Kind semántico
-  metadata: NodeMetadata          // Metadatos (atributos BBCode, estilo, etc.)
+  readonly green: GreenNode       // Reference to the underlying GreenNode
+  readonly id: NodeId             // Stable UUID that survives re-parses
+  parent: RedNode | null          // Reference to the parent (null for root)
+  children: RedNode[]             // Mutable children
+  version: number                 // Version for change tracking
+  diagnostics: Diagnostic[]       // Diagnostics of this node
+  kind: NodeKind                  // Semantic kind
+  metadata: NodeMetadata          // Metadata (BBCode attributes, style, etc.)
 }
 ```
 
-### Características Críticas
+### Critical Features
 
-**1. Mutation Lock**: `RedNode._isMutating` es una bandera estática que previene mutaciones accidentales. Solo se puede mutar dentro de `RedNode.allowMutation(() => {...})`.
+**1. Mutation Lock**: `RedNode._isMutating` is a static flag that prevents accidental mutations. You can only mutate inside `RedNode.allowMutation(() => {...})`.
 
 ```typescript
-// Esto lanza error:
+// This throws an error:
 root.appendChild(child)  // ❌ "RedNode mutation is only allowed within a transaction boundary"
 
-// Esto funciona:
+// This works:
 RedNode.allowMutation(() => {
   root.appendChild(child)  // ✅
 })
 ```
 
-**2. Identidad Estable**: El `id` (UUID) se asigna en creación y NO cambia aunque el contenido cambie. Esto permite:
-- Mantener selecciones del cursor después de re-parses
-- Animar transiciones (smooth DOM updates)
-- Undo/redo consistente
+**2. Stable Identity**: The `id` (UUID) is assigned at creation and does NOT change even if the content changes. This allows:
+- Keeping cursor selections after re-parses
+- Animating transitions (smooth DOM updates)
+- Consistent undo/redo
 
-**3. Navegación Bidireccional**:
-- `.parent`: Subir en el árbol
-- `.children[]`: Bajar
-- `.root`: Obtener la raíz
-- `.depth`: Distancia desde la raíz
-- `.previousSibling` / `.nextSibling`: Hermanos
-- `.index`: Índice en el padre
+**3. Bidirectional Navigation**:
+- `.parent`: Go up the tree
+- `.children[]`: Go down
+- `.root`: Get the root
+- `.depth`: Distance from the root
+- `.previousSibling` / `.nextSibling`: Siblings
+- `.index`: Index in the parent
 
-**4. Métodos de Mutación** (requieren allowMutation):
+**4. Mutation Methods** (require allowMutation):
 - `appendChild(child)`
 - `insertChildAt(index, child)`
 - `removeChild(id)`
 - `replaceChild(id, newChild)`
 - `bumpVersion()`
 
-**5. Conversión**: `toDocumentNode()` produce el `DocumentNode` público. `findById(id)` busca recursivamente. `findNodeAtOffset(offset)` encuentra el nodo en una posición de texto.
+**5. Conversion**: `toDocumentNode()` produces the public `DocumentNode`. `findById(id)` searches recursively. `findNodeAtOffset(offset)` finds the node at a text position.
 
 ---
 
-## 10. GreenNodePool — Flyweight & Deduplicación (Syntax/GreenNodePool)
+## 10. GreenNodePool — Flyweight & Deduplication (Syntax/GreenNodePool)
 
-**Pool de deduplicación usando el patrón Flyweight.**
+**Deduplication pool using the Flyweight pattern.**
 
 ```typescript
 class GreenNodePool {
@@ -568,27 +568,27 @@ class GreenNodePool {
 }
 ```
 
-### Cómo funciona
+### How it works
 
-Cuando creas dos hojas de texto con el mismo contenido:
+When you create two text leaves with the same content:
 
 ```typescript
 const a = GreenNodePool.instance.internLeaf('text', 'Hello')
 const b = GreenNodePool.instance.internLeaf('text', 'Hello')
-a === b  // true! Misma referencia en RAM
+a === b  // true! Same reference in RAM
 ```
 
-**Cache key**: `${kind}:${text}:${leadingWidth}` para leaves. Para nodos internos: `NODE:${kind}:${text}:${childrenKeys}`.
+**Cache key**: `${kind}:${text}:${leadingWidth}` for leaves. For inner nodes: `NODE:${kind}:${text}:${childrenKeys}`.
 
-**Estadísticas**: `size` (entradas en caché), `hits` (aciertos), `misses` (creaciones nuevas), `deduplicatedCount`.
+**Statistics**: `size` (cache entries), `hits`, `misses` (new creations), `deduplicatedCount`.
 
-**Impacto**: En documentos con texto repetitivo (listas de items similares), puede reducir el consumo de memoria significativamente y acelerar comparaciones a O(1).
+**Impact**: In documents with repetitive text (lists of similar items), it can cut memory use significantly and speed up comparisons to O(1).
 
 ---
 
-## 11. TreeBuilder — De Tokens a Árbol (Syntax/TreeBuilder)
+## 11. TreeBuilder — From Tokens to Tree (Syntax/TreeBuilder)
 
-Puente entre el lexer y el árbol sintáctico. Es **agnóstico al lenguaje** — usa factories registrados.
+The bridge between the lexer and the syntax tree. It is **language-agnostic** — it uses registered factories.
 
 ```typescript
 class TreeBuilder {
@@ -600,15 +600,15 @@ class TreeBuilder {
 }
 ```
 
-Por defecto, `buildGreen()` produce un documento plano con todos los tokens como hijos directos. Los parsers específicos (BBCode, Markdown) **reemplazan** este comportamiento.
+By default, `buildGreen()` produces a flat document with all tokens as direct children. The specific parsers (BBCode, Markdown) **replace** this behavior.
 
-Incluye un mapa `tagToKind()` que traduce tags BBCode a NodeKind (`'b' → 'bold'`, `'img' → 'image'`, etc.).
+It includes a `tagToKind()` map that translates BBCode tags to NodeKind (`'b' → 'bold'`, `'img' → 'image'`, etc.).
 
 ---
 
-## 12. NodeMatcher — Correspondencia Entre Versiones (Syntax/NodeMatcher)
+## 12. NodeMatcher — Matching Between Versions (Syntax/NodeMatcher)
 
-**Compara árboles viejos y nuevos para determinar qué cambió.**
+**Compares old and new trees to determine what changed.**
 
 ```typescript
 class NodeMatcher {
@@ -617,23 +617,23 @@ class NodeMatcher {
 }
 ```
 
-### Estrategia de Matching (3 fases):
+### Matching Strategy (3 phases):
 
-1. **Fase 1 — Match por ID estable**: Si `oldNode.id === newNode.id`, están matched. Determina si es `exact`, `moved` (cambió posición) o `updated` (cambió contenido).
+1. **Phase 1 — Match by stable ID**: If `oldNode.id === newNode.id`, they are matched. It determines whether it is `exact`, `moved` (position changed) or `updated` (content changed).
 
-2. **Fase 2 — Match por fingerprint**: Para nodos sin match por ID, calcula un fingerprint (kind + texto aplanado) y matchea por contenido.
+2. **Phase 2 — Match by fingerprint**: For nodes with no ID match, it computes a fingerprint (kind + flattened text) and matches by content.
 
-3. **Fase 3 — Restantes**: Los que no matchearon son `inserted` (nuevos) o `deleted` (eliminados).
+3. **Phase 3 — Leftovers**: Those that did not match are `inserted` (new) or `deleted` (removed).
 
-**Resultado**: `NodeMatch` con `oldToNew`, `newToOld`, `matches[]`, `stats`.
+**Result**: `NodeMatch` with `oldToNew`, `newToOld`, `matches[]`, `stats`.
 
-**Uso crítico**: Mantener selección del cursor, scroll position, y animaciones smooth entre re-parses.
+**Critical use**: Keeping the cursor selection, scroll position, and smooth animations between re-parses.
 
 ---
 
-## 13. BBCode Parser — El Corazón BBCode (BBCode/Parser)
+## 13. BBCode Parser — The BBCode Core (BBCode/Parser)
 
-**El parser sintáctico de BBCode.** Consume `BBCodeToken[]` y produce `GreenNode`.
+**The BBCode syntactic parser.** It consumes `BBCodeToken[]` and produces `GreenNode`.
 
 ```typescript
 function parseTokensToGreen(
@@ -645,9 +645,9 @@ function parseTokensToGreen(
 function parseBBCode(source: string, options?: ParseOptions): GreenNode
 ```
 
-### Algoritmo de Parsing
+### Parsing Algorithm
 
-Usa una **Pila Sintáctica (Syntax Stack)** para manejar tags anidados:
+It uses a **Syntax Stack** to handle nested tags:
 
 ```
 parseTokensToGreen(tokens, source) {
@@ -656,34 +656,34 @@ parseTokensToGreen(tokens, source) {
   
   for each token:
     if newline: 
-      → emite spacing (1er newline) + empty_line (2do+)
+      → emits spacing (1st newline) + empty_line (2nd+)
     if text:
       → greenNode('text', ...) → addToParent()
     if open tag:
-      if tag desconocido → trata como texto (NO como tag)
-      if '*' (list item) → auto-cierra el [*] anterior
-      → push al stack
+      if unknown tag → treats it as text (NOT as a tag)
+      if '*' (list item) → auto-closes the previous [*]
+      → push to the stack
     if close tag:
-      strict mode: solo matchea tope del stack
-      legacy mode: busca hacia atrás y auto-cierra tags internos
-      → pop del stack, emite greenNode()
+      strict mode: only matches the top of the stack
+      legacy mode: searches backwards and auto-closes inner tags
+      → pop from the stack, emits greenNode()
   
-  → Cierra tags no cerrados (todo lo que quedó en el stack)
-  → Normaliza: agrupa contenido inline en <paragraph>
-  → Devuelve greenNode('document', ..., normalizedRoot)
+  → Closes unclosed tags (everything left on the stack)
+  → Normalizes: groups inline content into <paragraph>
+  → Returns greenNode('document', ..., normalizedRoot)
 }
 ```
 
-### Modos de Parsing
+### Parsing Modes
 
-| Modo | Comportamiento |
+| Mode | Behavior |
 |------|---------------|
-| **Legacy (default)** | Auto-cierra tags internos. Tags de cierre huérfanos se ignoran. Compatible con osu! |
-| **Strict** | Solo matchea el tope del stack. Tags mal cerrados emiten nodos 'error' con diagnóstico |
+| **Legacy (default)** | Auto-closes inner tags. Orphan closing tags are ignored. Compatible with osu! |
+| **Strict** | Only matches the top of the stack. Badly closed tags emit 'error' nodes with a diagnostic |
 
-### Normalización de Párrafos
+### Paragraph Normalization
 
-Después del parseo, el contenido inline se agrupa en nodos `paragraph`:
+After parsing, inline content is grouped into `paragraph` nodes:
 
 ```typescript
 // Input: "Hello [b]World[/b]"
@@ -693,18 +693,18 @@ Después del parseo, el contenido inline se agrupa en nodos `paragraph`:
 // Output: document → [paragraph → text("Hello"), empty_line, paragraph → text("World")]
 ```
 
-Esto es fundamental para que el renderizador HTML produzca párrafos correctos.
+This is essential for the HTML renderer to produce correct paragraphs.
 
-### Tratamiento de Newlines
+### Newline Handling
 
-- **1er newline consecutivo**: `greenNode('spacing')` → renderizado como `<br>` (o ignorado en bloques)
-- **2do+ newlines consecutivos**: `greenNode('empty_line')` → renderizado como separador de párrafos
+- **1st consecutive newline**: `greenNode('spacing')` → rendered as `<br>` (or ignored in blocks)
+- **2nd+ consecutive newlines**: `greenNode('empty_line')` → rendered as a paragraph separator
 
 ---
 
-## 14. BBCodeDocumentModel — Puente BBCode (BBCode/BBCodeDocumentModel)
+## 14. BBCodeDocumentModel — BBCode Bridge (BBCode/BBCodeDocumentModel)
 
-**DocumentModel especializado para BBCode.** Hereda de `DocumentModel` y sobreescribe `parseToGreen()` y `buildRedFromGreen()`.
+**DocumentModel specialized for BBCode.** It inherits from `DocumentModel` and overrides `parseToGreen()` and `buildRedFromGreen()`.
 
 ```typescript
 class BBCodeDocumentModel extends DocumentModel {
@@ -714,7 +714,7 @@ class BBCodeDocumentModel extends DocumentModel {
 }
 ```
 
-**Flujo**:
+**Flow**:
 ```
 BBCode text
   ↓ scanBBCode() [Lexer]
@@ -722,19 +722,19 @@ BBCodeToken[]
   ↓ parseTokensToGreen() [Parser]
 GreenNode
   ↓ greenToRedNode() [BBCodeToGreenNode]
-RedNode  ← Con metadatos extraídos de atributos BBCode
+RedNode  ← With metadata extracted from BBCode attributes
 ```
 
-**Modo strict**: Opcional, para validación estricta de anidación.
+**Strict mode**: Optional, for strict nesting validation.
 
 ---
 
-## 15. BBCodeToGreenNode — Convertidores (BBCode/BBCodeToGreenNode)
+## 15. BBCodeToGreenNode — Converters (BBCode/BBCodeToGreenNode)
 
-**Puente entre el parser legacy (BBBlock[]) y el nuevo sistema GreenNode/RedNode.**
+**Bridge between the legacy parser (BBBlock[]) and the new GreenNode/RedNode system.**
 
 ```typescript
-// BBBlock — formato legacy del parser anterior
+// BBBlock — legacy format of the previous parser
 interface BBBlock {
   id: string
   tag: string | null
@@ -747,16 +747,16 @@ interface BBBlock {
   html?: string
 }
 
-// Convertidores
+// Converters
 function bbBlockToGreenNode(block: BBBlock): GreenNode
 function bbBlocksToGreenTree(blocks: BBBlock[], source: string): GreenNode
 function greenToRedNode(green: GreenNode, parent?): RedNode
 function bbBlocksToRedTree(blocks: BBBlock[], source: string): RedNode
 ```
 
-### Extracción de Metadatos
+### Metadata Extraction
 
-La función `extractGreenNodeMetadata()` es crítica: toma un `GreenNode` de BBCode y extrae sus atributos en metadatos estructurados:
+The `extractGreenNodeMetadata()` function is critical: it takes a BBCode `GreenNode` and extracts its attributes into structured metadata:
 
 ```typescript
 switch (kind):
@@ -770,7 +770,7 @@ switch (kind):
   'video'    → { videoId: value || firstChildText() }
 ```
 
-### Mapeo Tag → NodeKind
+### Tag → NodeKind Mapping
 
 ```typescript
 TAG_TO_KIND = {
@@ -782,7 +782,7 @@ TAG_TO_KIND = {
   'quote': 'quote', 'notice': 'notice',
   'spoilerbox': 'spoilerbox', 'box': 'box',
   'list': 'list', '*': 'list_item',
-  // ... más de 30 mapeos
+  // ... more than 30 mappings
 }
 
 function isBlockKind(kind: NodeKind): boolean
@@ -790,20 +790,20 @@ function isBlockKind(kind: NodeKind): boolean
 
 ---
 
-## 16. DocumentModel — El Orquestador Central (Model/DocumentModel)
+## 16. DocumentModel — The Central Orchestrator (Model/DocumentModel)
 
-**La clase central que coordina todos los subsistemas.** Es el punto de entrada para cualquier operación sobre un documento.
+**The central class that coordinates all the subsystems.** It is the entry point for any operation on a document.
 
 ```typescript
 class DocumentModel {
-  // Estado
+  // State
   private _source: string
   private _language: string
   private _redRoot: RedNode | null
   private _greenRoot: GreenNode | null
   private _version: number
   
-  // Sub-sistemas
+  // Subsystems
   readonly tagRegistry: TagRegistry
   readonly nodeFactory: NodeFactory
   readonly treeBuilder: TreeBuilder
@@ -817,48 +817,48 @@ class DocumentModel {
 }
 ```
 
-### API Pública
+### Public API
 
-| Método | Descripción |
+| Method | Description |
 |--------|-------------|
-| `rebuild(source)` | Re-parseo completo del documento |
-| `applyChange(change)` | Aplica un cambio de texto (usa parseo incremental) |
-| `applyTextUpdate(newSource)` | Calcula diff string y aplica cambio |
-| `transact(operations, label?)` | Ejecuta operaciones en una transacción (undoable) |
-| `undo()` / `redo()` | Deshacer/rehacer |
-| `analyze()` | Corre análisis semántico |
-| `findNode(id)` | Busca nodo por ID |
-| `query(q)` | Ejecuta consulta QueryEngine |
-| `registerValidator(validator)` | Registra validador semántico |
-| `toDocumentNode()` | Exporta a DocumentNode público |
-| `toString()` | Devuelve el source text |
+| `rebuild(source)` | Full re-parse of the document |
+| `applyChange(change)` | Applies a text change (uses incremental parsing) |
+| `applyTextUpdate(newSource)` | Computes the string diff and applies the change |
+| `transact(operations, label?)` | Runs operations in a transaction (undoable) |
+| `undo()` / `redo()` | Undo/redo |
+| `analyze()` | Runs semantic analysis |
+| `findNode(id)` | Finds a node by ID |
+| `query(q)` | Runs a QueryEngine query |
+| `registerValidator(validator)` | Registers a semantic validator |
+| `toDocumentNode()` | Exports to the public DocumentNode |
+| `toString()` | Returns the source text |
 
-### Flujo de `applyChange()`
+### Flow of `applyChange()`
 
 ```
 applyChange(change):
   1. changeTracker.track(change)
-  2. Aplica el cambio al source string
+  2. Applies the change to the source string
   3. incrementalParser.reparse(oldRed, oldGreen, change, newSource, parseCallback, buildCallback)
-     a. Si éxito → actualiza _greenRoot, _redRoot
-     b. Si falla → rebuild(source) como fallback
-  4. Emite evento 'document_changed' (síncrono)
-  5. Agenda tarea en background (setTimeout 10ms):
+     a. On success → updates _greenRoot, _redRoot
+     b. On failure → rebuild(source) as a fallback
+  4. Emits the 'document_changed' event (synchronous)
+  5. Schedules a background task (setTimeout 10ms):
      a. NodeMatcher.match(oldRoot, newRoot)
-     b. SemanticAnalyzer.analyze() (si autoAnalyze)
-     c. Emite evento 'diagnostics_updated'
+     b. SemanticAnalyzer.analyze() (if autoAnalyze)
+     c. Emits the 'diagnostics_updated' event
 ```
 
-### Sistema de Eventos que Emite
+### Events It Emits
 
-- `document_changed` → en cada rebuild, applyChange, transact, undo, redo
-- `diagnostics_updated` → después del análisis semántico (debounced)
+- `document_changed` → on every rebuild, applyChange, transact, undo, redo
+- `diagnostics_updated` → after semantic analysis (debounced)
 
 ---
 
-## 17. TagRegistry — Registro de Etiquetas (Model/TagRegistry)
+## 17. TagRegistry — Tag Registry (Model/TagRegistry)
 
-**El registro central de todas las etiquetas/node kinds conocidas.**
+**The central registry of all known tags/node kinds.**
 
 ```typescript
 interface TagDefinition {
@@ -872,7 +872,7 @@ interface TagDefinition {
   isDeprecated?: boolean
   deprecatedReplacement?: string
   
-  // Handlers de exportación/renderizado
+  // Export/rendering handlers
   toBBCode?: (ctx: TagHandlerContext) => string
   toRenderNode?: (ctx: TagHandlerContext) => RenderNode
   toHTML?: (ctx: TagHandlerContext) => string
@@ -883,7 +883,7 @@ interface TagDefinition {
 }
 ```
 
-### Tags Built-in Registrados
+### Registered Built-in Tags
 
 **Formatting**: `b, i, u, s, strike, color, size, c, font, shadow, spoiler`
 
@@ -895,22 +895,22 @@ interface TagDefinition {
 
 **Special**: `quote, code, svg, spoilerbox, box, list, *, url, email, profile, group`
 
-### Handlers de Efectos en TagRegistry
+### Effect Handlers in TagRegistry
 
-Los tags `gradient`, `sinewave`, `grow`, y `rainbow` tienen implementaciones completas de `toBBCode` y `toRenderNode` que:
+The tags `gradient`, `sinewave`, `grow`, and `rainbow` have full implementations of `toBBCode` and `toRenderNode` that:
 
-1. Extraen el texto plano del contenido (`extractTextContent`)
-2. Lo dividen por unidad (character, word, line)
-3. Aplican interpolación de color/tamaño usando `globalOffset` y `documentLength`
-4. Producen BBCode anidado o RenderNodes con estilo inline
+1. Extract the plain text of the content (`extractTextContent`)
+2. Split it by unit (character, word, line)
+3. Apply color/size interpolation using `globalOffset` and `documentLength`
+4. Produce nested BBCode or RenderNodes with inline style
 
-Ejemplo: `[gradient colors=#FF0000,#00FF00]Hello[/gradient]` produce `[color=#FF0000]H[/color][color=#XX]e[/color]...`
+Example: `[gradient colors=#FF0000,#00FF00]Hello[/gradient]` produces `[color=#FF0000]H[/color][color=#XX]e[/color]...`
 
 ---
 
-## 18. NodeFactory — Fábrica de Nodos (Model/NodeFactory)
+## 18. NodeFactory — Node Factory (Model/NodeFactory)
 
-Crea instancias de `RedNode` a partir de definiciones de `TagDefinition`.
+Creates `RedNode` instances from `TagDefinition` definitions.
 
 ```typescript
 class NodeFactory {
@@ -919,13 +919,13 @@ class NodeFactory {
 }
 ```
 
-**Parsing de atributos**: Usa `PropertyDefinition[]` del tag para parsear attrs string en `NodeAttributes` tipadas.
+**Attribute parsing**: It uses the tag's `PropertyDefinition[]` to parse the attrs string into typed `NodeAttributes`.
 
 ---
 
-## 19. IncrementalParser — Parseo Incremental (Incremental/)
+## 19. IncrementalParser — Incremental Parsing (Incremental/)
 
-**El corazón del rendimiento en tiempo real.** En lugar de re-parsear todo el documento, identifica la región mínima afectada y solo re-parsea esa.
+**The heart of real-time performance.** Instead of re-parsing the whole document, it identifies the minimal affected region and re-parses only that.
 
 ```typescript
 class IncrementalParser {
@@ -940,35 +940,35 @@ class IncrementalParser {
 }
 ```
 
-### Algoritmo
+### Algorithm
 
 ```
 1. findAffectedNodes(oldRed, change)
-   → Recorre desde la raíz, encuentra el nodo más profundo que contiene el cambio
+   → Walks from the root, finds the deepest node that contains the change
    
 2. Traverse up to safeBoundary
-   → Sube hasta encontrar un nodo 'safe' (document, quote, box, list)
-   → Esto asegura que no estamos re-parsendo dentro de un bloque que no debe romperse
+   → Climbs until it finds a 'safe' node (document, quote, box, list)
+   → This ensures we are not re-parsing inside a block that must not be broken
 
 3. Re-parse only affected region
-   → Extrae el substring del safe boundary
-   → Llama al parseCallback con solo ese substring
-   → Obtiene nuevo GreenNode
+   → Extracts the substring of the safe boundary
+   → Calls the parseCallback with only that substring
+   → Gets a new GreenNode
 
 4. Swap old node with new
-   → Reemplaza el safe boundary viejo con el nuevo en el árbol padre
-   → Preserva el resto del árbol intacto (por referencia)
+   → Replaces the old safe boundary with the new one in the parent tree
+   → Preserves the rest of the tree intact (by reference)
 ```
 
-**Rendimiento**: Operaciones de edición típicas < **0.15 ms**. En documentos de 50 KB, solo se re-parsea una fracción.
+**Performance**: Typical editing operations < **0.15 ms**. In 50 KB documents, only a fraction is re-parsed.
 
-**Safe boundaries**: `quote`, `box`, `list`, `center`, `document`. Si el cambio está dentro de un `[quote]`, solo el contenido de ese quote se re-parsea.
+**Safe boundaries**: `quote`, `box`, `list`, `center`, `document`. If the change is inside a `[quote]`, only the content of that quote is re-parsed.
 
 ---
 
-## 20. ChangeTracker — Rastreo de Cambios (Incremental/ChangeTracker)
+## 20. ChangeTracker — Change Tracking (Incremental/ChangeTracker)
 
-Rastrea los cambios de texto para que el `IncrementalParser` sepa qué parsear.
+Tracks text changes so the `IncrementalParser` knows what to parse.
 
 ```typescript
 class ChangeTracker {
@@ -981,13 +981,13 @@ class ChangeTracker {
 }
 ```
 
-**Límite**: 100 entradas de historial.
+**Limit**: 100 history entries.
 
 ---
 
-## 21. TreeDiffer — Diferenciación de Árboles (Diff/TreeDiffer)
+## 21. TreeDiffer — Tree Diffing (Diff/TreeDiffer)
 
-**Compara dos RedNode trees y produce una lista de operaciones diff.**
+**Compares two RedNode trees and produces a list of diff operations.**
 
 ```typescript
 class TreeDiffer {
@@ -995,33 +995,33 @@ class TreeDiffer {
 }
 ```
 
-### Tipos de Operación
+### Operation Types
 
-| Operación | Significado |
+| Operation | Meaning |
 |-----------|-------------|
-| `preserve` | Mismo ID, misma posición, mismo contenido |
-| `update` | Mismo ID, diferente contenido |
-| `move` | Mismo ID, diferente posición |
-| `insert` | Nuevo nodo (sin match en old) |
-| `delete` | Nodo eliminado (sin match en new) |
+| `preserve` | Same ID, same position, same content |
+| `update` | Same ID, different content |
+| `move` | Same ID, different position |
+| `insert` | New node (no match in old) |
+| `delete` | Deleted node (no match in new) |
 
-### Algoritmo
+### Algorithm
 
 ```
-1. Construye Mapas: oldMap(ID → node), newMap(ID → node)
-2. Itera newChildren:
-   - Si ID existe en oldMap y misma posición → preserve (o update si cambió contenido)
-   - Si ID existe en oldMap y diferente posición → move
-   - Si ID no existe → insert candidate
-3. Empareja inserts con deletes por contenido (fingerprint)
-4. Lo que queda → inserts reales y deletes reales
+1. Builds Maps: oldMap(ID → node), newMap(ID → node)
+2. Iterates newChildren:
+   - If the ID exists in oldMap and same position → preserve (or update if the content changed)
+   - If the ID exists in oldMap and different position → move
+   - If the ID does not exist → insert candidate
+3. Pairs inserts with deletes by content (fingerprint)
+4. What is left → real inserts and real deletes
 ```
 
 ---
 
-## 22. SemanticAnalyzer — Análisis Semántico (Semantic/)
+## 22. SemanticAnalyzer — Semantic Analysis (Semantic/)
 
-**Valida reglas de negocio sobre el árbol sintáctico.** Separado del parser por diseño.
+**Validates business rules over the syntax tree.** Separated from the parser by design.
 
 ```typescript
 class SemanticAnalyzer {
@@ -1038,24 +1038,24 @@ interface Validator {
 }
 ```
 
-### Validadores Built-in
+### Built-in Validators
 
-| Código | Severidad | Qué detecta |
+| Code | Severity | What it detects |
 |--------|-----------|-------------|
-| `unknown-tag` | warning | Tags BBCode desconocidos |
-| `deprecated-tag` | info | Uso de `[strike]` en vez de `[s]` |
-| `empty-tag` | hint | Tags sin contenido (ej: `[b][/b]`) |
-| `nested-structure` | warning | Tags BBCode dentro de `[code]` |
+| `unknown-tag` | warning | Unknown BBCode tags |
+| `deprecated-tag` | info | Use of `[strike]` instead of `[s]` |
+| `empty-tag` | hint | Tags with no content (e.g. `[b][/b]`) |
+| `nested-structure` | warning | BBCode tags inside `[code]` |
 
 ---
 
-## 23. EventBus — Sistema de Eventos (Events/EventBus)
+## 23. EventBus — Event System (Events/EventBus)
 
-**Sistema pub/sub para cambios del documento.**
+**Pub/sub system for document changes.**
 
 ```typescript
 class DocumentEventBus {
-  on(type, handler): () => void  // Retorna unsubscribe
+  on(type, handler): () => void  // Returns unsubscribe
   onAny(handler): () => void
   emit(event): void
   off(type, handler): void
@@ -1064,22 +1064,22 @@ class DocumentEventBus {
 }
 ```
 
-### Tipos de Evento
+### Event Types
 
-| Tipo | Cuándo se emite |
+| Type | When it is emitted |
 |------|-----------------|
 | `document_changed` | Rebuild, applyChange, transact |
-| `diagnostics_updated` | Después de análisis semántico (debounced) |
+| `diagnostics_updated` | After semantic analysis (debounced) |
 | `undo_performed` / `redo_performed` | Undo/redo |
-| `cursor_moved` / `selection_changed` | (Reservado para integración con editor) |
+| `cursor_moved` / `selection_changed` | (Reserved for editor integration) |
 
 ---
 
-## 24. Transaction & UndoManager — Transacciones (Transactions/)
+## 24. Transaction & UndoManager — Transactions (Transactions/)
 
 ### Transaction
 
-**Agrupa operaciones en una unidad atómica y reversible.**
+**Groups operations into an atomic, reversible unit.**
 
 ```typescript
 class Transaction {
@@ -1088,16 +1088,16 @@ class Transaction {
   readonly timestamp: number
   
   apply(root: RedNode): RedNode | null
-  invert(root: RedNode): Transaction  // Para undo
+  invert(root: RedNode): Transaction  // For undo
   getLabel(): string
 }
 ```
 
-**Inversión**: `invert()` produce una Transaction que deshace la original (invirtiendo el orden y los efectos).
+**Inversion**: `invert()` produces a Transaction that undoes the original (reversing the order and the effects).
 
 ### UndoManager
 
-**Maneja el stack de undo/redo.**
+**Handles the undo/redo stack.**
 
 ```typescript
 class UndoManager {
@@ -1111,14 +1111,14 @@ class UndoManager {
 }
 ```
 
-- **Límite**: 50 entradas por defecto (configurable)
-- **Clear redo on new action**: Al hacer push, el redo stack se limpia
+- **Limit**: 50 entries by default (configurable)
+- **Clear redo on new action**: On push, the redo stack is cleared
 
 ---
 
-## 25. Command System — Sistema de Comandos (Commands/)
+## 25. Command System (Commands/)
 
-**Comandos de alto nivel que producen Transactions.**
+**High-level commands that produce Transactions.**
 
 ```typescript
 interface Command {
@@ -1139,23 +1139,23 @@ class CommandRegistry {
 }
 ```
 
-### Comandos Built-in
+### Built-in Commands
 
-| Comando | ID | Función |
+| Command | ID | Function |
 |---------|-----|---------|
-| `InsertText` | `insert-text` | Insertar texto en cursor |
-| `DeleteNode` | `delete-node` | Eliminar nodo seleccionado |
-| `WrapInTag` | `wrap-in-tag` | Envolver selección en tag |
-| `SplitNode` | `split-node` | Partir nodo en posición |
-| `MergeNode` | `merge-nodes` | Fusionar nodos adyacentes |
+| `InsertText` | `insert-text` | Insert text at the cursor |
+| `DeleteNode` | `delete-node` | Delete the selected node |
+| `WrapInTag` | `wrap-in-tag` | Wrap the selection in a tag |
+| `SplitNode` | `split-node` | Split a node at a position |
+| `MergeNode` | `merge-nodes` | Merge adjacent nodes |
 
-**Nota**: Los comandos built-in tienen implementaciones placeholder (stubs). La lógica real está en el pipeline de Transactions.
+**Note**: The built-in commands have placeholder implementations (stubs). The real logic is in the Transactions pipeline.
 
 ---
 
-## 26. QueryEngine — Motor de Consultas (Queries/QueryEngine)
+## 26. QueryEngine — Query Engine (Queries/QueryEngine)
 
-**Sistema de consultas estilo CSS sobre el RedNode tree.**
+**CSS-style query system over the RedNode tree.**
 
 ```typescript
 class QueryEngine {
@@ -1163,10 +1163,10 @@ class QueryEngine {
 }
 ```
 
-### Sintaxis de Consultas
+### Query Syntax
 
 ```typescript
-// Crear una consulta desde string CSS-like
+// Create a query from a CSS-like string
 const q = query('paragraph > bold')
 const q = query('quote text')
 const q = query('[color]')
@@ -1175,31 +1175,31 @@ const q = query('*:first-child')
 const q = query('*:nth-child(3)')
 ```
 
-### Combinadores
+### Combinators
 
-| Símbolo | Significado |
+| Symbol | Meaning |
 |---------|-------------|
-| `>` | Child (hijo directo) |
-| ` ` (espacio) | Descendant (cualquier descendiente) |
-| `+` | Adjacent sibling (hermano siguiente inmediato) |
-| `~` | Any sibling (cualquier hermano) |
+| `>` | Child (direct child) |
+| ` ` (space) | Descendant (any descendant) |
+| `+` | Adjacent sibling (immediate next sibling) |
+| `~` | Any sibling (any sibling) |
 
-### Selectores
+### Selectors
 
 - `kind` → `paragraph`, `bold`, `text`
 - `tag` → `b`, `color`, `img`
-- `[name]` → Tiene atributo
-- `[name=value]` → Atributo con valor específico
+- `[name]` → Has attribute
+- `[name=value]` → Attribute with a specific value
 - `:first-child`, `:last-child`, `:nth-child(n)`
-- `text(pattern)` → Texto contiene patrón
+- `text(pattern)` → Text contains pattern
 - `has_child(selector)` / `has_descendant(selector)`
 - `position(min?, max?)` / `depth(min?, max?)`
 
 ---
 
-## 27. SymbolTable — Tabla de Símbolos (Symbols/SymbolTable)
+## 27. SymbolTable — Symbol Table (Symbols/SymbolTable)
 
-**Sistema de símbolos para características IDE-like (go-to-definition, find-references).**
+**Symbol system for IDE-like features (go-to-definition, find-references).**
 
 ```typescript
 class SymbolTable {
@@ -1212,13 +1212,13 @@ class SymbolTable {
 }
 ```
 
-**En BBCode**, busca atributos `id=` (definiciones) y `goto=` (referencias).
+**In BBCode**, it looks for `id=` (definitions) and `goto=` (references) attributes.
 
 ---
 
-## 28. Formatter — Formateador (Formatter/)
+## 28. Formatter (Formatter/)
 
-**Re-formatea documentos BBCode.** Actualmente tiene una implementación simple que extrae texto plano:
+**Re-formats BBCode documents.** It currently has a simple implementation that extracts plain text:
 
 ```typescript
 class Formatter {
@@ -1227,38 +1227,38 @@ class Formatter {
 }
 ```
 
-**Opsiones planeadas**: `blockNewlines`, `normalizeInlineWhitespace`, `maxLineWidth`, `collapseEmptyLines`, `indent`.
+**Planned options**: `blockNewlines`, `normalizeInlineWhitespace`, `maxLineWidth`, `collapseEmptyLines`, `indent`.
 
 ---
 
-## 29. Linter — Inspección de Calidad (Linter/)
+## 29. Linter — Quality Inspection (Linter/)
 
-**Similar a ESLint pero para documentos BBCode.**
+**Similar to ESLint but for BBCode documents.**
 
 ```typescript
 class Linter {
   lint(root: RedNode, source: string): LintResult
   
-  // Registro de reglas
+  // Rule registration
   register(rule: LintRule): void
   unregister(code: string): void
 }
 ```
 
-### Reglas Built-in
+### Built-in Rules
 
-| Regla | Severidad | Descripción |
+| Rule | Severity | Description |
 |-------|-----------|-------------|
-| `no-nested-bold` | warning | `[b]` dentro de `[b]` es redundante |
-| `no-empty-tags` | hint | Tags vacíos sin efecto |
-| `max-quote-depth` | warning | Más de 3 quotes anidados |
-| `invalid-url-protocol` | error | URLs con protocolos no seguros (javascript:, file:) |
+| `no-nested-bold` | warning | `[b]` inside `[b]` is redundant |
+| `no-empty-tags` | hint | Empty tags with no effect |
+| `max-quote-depth` | warning | More than 3 nested quotes |
+| `invalid-url-protocol` | error | URLs with unsafe protocols (javascript:, file:) |
 
 ---
 
-## 30. Visitor Pattern — Patrón Visitante (Visitors/Visitor)
+## 30. Visitor Pattern (Visitors/Visitor)
 
-**Clase base abstracta para todos los exportadores y renderizadores.**
+**Abstract base class for all exporters and renderers.**
 
 ```typescript
 abstract class Visitor<T = string> {
@@ -1270,27 +1270,27 @@ abstract class Visitor<T = string> {
 }
 ```
 
-**Principio**: En lugar de switch statements sobre tipos de nodo, cada Visitor implementa su propia lógica de dispatch. Esto permite agregar nuevos exportadores sin modificar el árbol.
+**Principle**: Instead of switch statements over node types, each Visitor implements its own dispatch logic. This allows adding new exporters without modifying the tree.
 
 ---
 
-## 31. HTMLRenderer — Renderizador HTML (Visitors/HTMLRenderer)
+## 31. HTMLRenderer — HTML Renderer (Visitors/HTMLRenderer)
 
-**El renderizador principal para la vista previa BBCode.** Convierte el RedNode tree a HTML.
+**The main renderer for the BBCode preview.** It converts the RedNode tree to HTML.
 
 ```typescript
 class HTMLRenderer extends Visitor<string> {
   render(root: RedNode): string
   
   constructor(options?: {
-    registry?: TagRegistry   // Para tags custom
+    registry?: TagRegistry   // For custom tags
   })
 }
 ```
 
-### Dispatch por Kind (más de 30 casos)
+### Dispatch by Kind (more than 30 cases)
 
-Cada NodeKind tiene su propio método de renderizado:
+Each NodeKind has its own rendering method:
 
 ```typescript
 switch node.kind:
@@ -1307,139 +1307,139 @@ switch node.kind:
   'code'     → <pre><code>
   'list'     → <ul>/<ol>
   'center'   → <div style="text-align:center">
-  // ... y más
+  // ... and more
 ```
 
-### Quirks de osu! (`pairing: 'osu'`, no una opción del renderer)
+### osu! quirks (`pairing: 'osu'`, not a renderer option)
 
-**OFF por defecto** (`previewOsuBehaviour` en `PreviewSettings`). Ya no vive en
-`HTMLRenderer` — el renderer no tiene ninguna noción de "osu!" en absoluto y
-renderiza SIEMPRE de la misma forma, sin importar cómo se emparejaron los
-tags. La diferencia está enteramente ANTES del renderer, en qué ÁRBOL se
-construye: ver `Osu/osuPairing.ts` y `BBCodeDocumentModelOptions.pairing` /
+**OFF by default** (`previewOsuBehaviour` in `PreviewSettings`). It no longer lives in
+`HTMLRenderer` — the renderer has no notion of "osu!" at all and
+ALWAYS renders the same way, no matter how the
+tags were paired. The difference lies entirely BEFORE the renderer, in which TREE
+gets built: see `Osu/osuPairing.ts` and `BBCodeDocumentModelOptions.pairing` /
 `ParseOptions.pairing`.
 
-Su significado: **"emparejar los tags exactamente como osu! lo haría"**. osu!
-no construye un árbol — `BBCodeForDB::generate()` corre ~20 pasadas regex
-sobre el texto crudo, una por tag (o familia de tags: `b`/`i`/`strike`/`s`/
-`u`/`spoiler` son CINCO pasadas independientes, no una compartida), cada una
-sellando lo que puede con un regex perezoso-no-anidante y dejando el resto
-como texto plano. `pairing: 'osu'` reproduce esa decisión — leftmost-opener
-empareja con el `[/tag]` MÁS CERCANO del mismo nombre, un opener anidado del
-mismo nombre queda como texto literal dentro, `box`/`spoilerbox` sellan
-siempre (nunca quedan literales), `quote`/`list` sellan por CONTEO
-(`min(aperturas, cierres)`, los primeros `limit` de cada uno, sin importar
-anidamiento) — como un FILTRO DE TOKENS que corre antes de `parseTokensToGreen`:
-cualquier token `open`/`close` que osu! no sellaría se convierte en un token
-`text` (mismos offsets), y de ahí en adelante el árbol se construye con las
-mismas reglas estructurales de siempre (auto-close, `discarded_tag`, `error`
-en modo estricto, agrupación de párrafos). Full-parse únicamente: el parser
-incremental no soporta este pairing (`BBCodeDocumentModel` cae a
-`incremental: false` en cuanto se pide `pairing: 'osu'`).
+What it means: **"pair the tags exactly as osu! would"**. osu!
+does not build a tree — `BBCodeForDB::generate()` runs ~20 regex passes
+over the raw text, one per tag (or tag family: `b`/`i`/`strike`/`s`/
+`u`/`spoiler` are FIVE independent passes, not one shared pass), each
+sealing what it can with a lazy, non-nesting regex and leaving the rest
+as plain text. `pairing: 'osu'` reproduces that decision — the leftmost opener
+pairs with the NEAREST `[/tag]` of the same name, a nested opener of the
+same name stays as literal text inside, `box`/`spoilerbox` always seal
+(they are never left literal), `quote`/`list` seal by COUNT
+(`min(openers, closers)`, the first `limit` of each, regardless of
+nesting) — as a TOKEN FILTER that runs before `parseTokensToGreen`:
+any `open`/`close` token that osu! would not seal is turned into a `text`
+token (same offsets), and from there on the tree is built with the
+same structural rules as always (auto-close, `discarded_tag`, `error`
+in strict mode, paragraph grouping). Full-parse only: the incremental
+parser does not support this pairing (`BBCodeDocumentModel` falls back to
+`incremental: false` as soon as `pairing: 'osu'` is requested).
 
-El árbol del EDITOR (diagnósticos, parseo incremental, undo/redo) nunca usa
-este pairing — sigue siendo `'quasar'` siempre. Solo la PREVIEW, cuando
-`previewOsuBehaviour` está activo, parsea la misma fuente una SEGUNDA vez con
-`pairing: 'osu'` y renderiza ESE árbol en su lugar; ver
+The EDITOR tree (diagnostics, incremental parsing, undo/redo) never uses
+this pairing — it is always `'quasar'`. Only the PREVIEW, when
+`previewOsuBehaviour` is on, parses the same source a SECOND time with
+`pairing: 'osu'` and renders THAT tree instead; see
 `packages/features/BBCode/preview/Preview.tsx`.
 
-**No cubierto** (alcance deliberado, ver el doc de módulo de `osuPairing.ts`):
-los valores bare de `email`/`url`/`youtube` no se validan contra el patrón
-exacto de osu! (solo "no vacío, una línea"); un tag que Quasar conoce pero
-osu! no (`font`, `gradient`, `tables`, `align`, `wnotice`, `boxw`, …) sigue
-emparejando con las reglas normales de Quasar, sin tocar.
+**Not covered** (deliberate scope, see the module doc of `osuPairing.ts`):
+the bare values of `email`/`url`/`youtube` are not validated against the
+exact osu! pattern (only "non-empty, one line"); a tag that Quasar knows but
+osu! does not (`font`, `gradient`, `tables`, `align`, `wnotice`, `boxw`, …) still
+pairs with the normal Quasar rules, untouched.
 
-**Dos brechas ya arregladas** (medidas contra el pipeline real de osu-web:
-BBCodeForDB → BBCodeFromDB → HTMLPurifier). Ninguna vive en `osuPairing.ts`
-mismo — cada una vive donde estaba la divergencia real:
+**Two gaps already fixed** (measured against the real osu-web pipeline:
+BBCodeForDB → BBCodeFromDB → HTMLPurifier). Neither lives in `osuPairing.ts`
+itself — each lives where the real divergence was:
 
-1. **`[code]`/`[c]` sin cerrar ya no se traga el resto del documento.**
-   osu! real deja un `[code]`/`[c]` sin cerrar SIN PROTEGER: una etiqueta
-   escrita después sigue sellando normalmente (medido: `[code]x\n[b]y[/b]` →
-   `[code]x<br /><strong>y</strong>`). El LEXER (`Lexer/BBCodeLexer.ts`,
-   `scanBBCode`) trataba `code`/`c` como bloque crudo INCONDICIONALMENTE —
-   sin cierre, se tragaba el resto del documento entero en un solo token de
-   texto opaco antes de que `applyOsuPairing` o `parseTokensToGreen` lo
-   vieran, bajo CUALQUIER pairing. Ahora `scanBBCode` recibe un `pairing`
-   opcional: bajo `'osu'` sólo aísla el bloque (protegiendo su contenido de
-   la tokenización normal) cuando existe un cierre Y — para `c`, que no es
-   dotall en osu! — llegar a él no cruza un salto de línea; si no, el opener
-   queda como un token `open` normal y el lexer sigue tokenizando
-   normalmente, y `sealRawBlock` lo degrada a texto literal igual que
-   cualquier otra etiqueta de la familia `lazy`. El pairing `'quasar'` por
-   defecto no pasa esta opción: sigue tragándose el resto del documento,
-   exactamente como antes.
-2. **Un `[/box]`/`[/spoilerbox]` huérfano ahora no se ve y se come saltos
-   de línea igual que uno emparejado.** osu! sella TODO `[/box]`/
-   `[/spoilerbox]` — huérfano o no (familia `alwaysSeal`, este módulo nunca
-   los degrada) — y su renderer come los saltos de línea a su alrededor
-   (`\n*[/box]\n?`) antes de que HTMLPurifier tire el `</div>` sin pareja
-   (medido: `"hola\n\n[/box]\n\nmundo"` → `hola<br />mundo`). Esto no se
-   puede expresar como un filtro de tokens — no hay un `open` con el cual
-   emparejarlo. `parseTokensToGreen` (Parser.ts) ahora trata el caso
-   especial `pairing: 'osu'` + cierre huérfano de `box`/`spoilerbox`: en vez
-   de la hoja `text` literal que recibe cualquier otro cierre huérfano, emite
-   una hoja `discarded_box_close` (`Types/core.ts`), invisible en
-   `HTMLRenderer`/`BBCodeExporter` igual que `discarded_tag`, y con el mismo
-   presupuesto de saltos de línea que un cierre `box`/`spoilerbox`
-   EMPAREJADO (`HTMLRenderer.NEWLINE_RULES`).
+1. **An unclosed `[code]`/`[c]` no longer swallows the rest of the document.**
+   Real osu! leaves an unclosed `[code]`/`[c]` UNPROTECTED: a tag
+   written after it still seals normally (measured: `[code]x\n[b]y[/b]` →
+   `[code]x<br /><strong>y</strong>`). The LEXER (`Lexer/BBCodeLexer.ts`,
+   `scanBBCode`) treated `code`/`c` as a raw block UNCONDITIONALLY —
+   with no closer, it swallowed the entire rest of the document into a single opaque
+   text token before `applyOsuPairing` or `parseTokensToGreen` ever saw it, under ANY
+   pairing. Now `scanBBCode` takes an optional `pairing`:
+   under `'osu'` it only isolates the block (protecting its content from
+   normal tokenization) when a closer exists AND — for `c`, which is not
+   dotall in osu! — reaching it does not cross a line break; otherwise the opener
+   stays a normal `open` token and the lexer keeps tokenizing
+   normally, and `sealRawBlock` downgrades it to literal text just like
+   any other tag of the `lazy` family. The default `'quasar'` pairing
+   does not pass this option: it still swallows the rest of the document,
+   exactly as before.
+2. **An orphan `[/box]`/`[/spoilerbox]` is now invisible and eats line breaks
+   just like a paired one.** osu! seals EVERY `[/box]`/
+   `[/spoilerbox]` — orphan or not (`alwaysSeal` family, this module never
+   downgrades them) — and its renderer eats the line breaks around it
+   (`\n*[/box]\n?`) before HTMLPurifier drops the unmatched `</div>`
+   (measured: `"hola\n\n[/box]\n\nmundo"` → `hola<br />mundo`). This cannot
+   be expressed as a token filter — there is no `open` to pair it with.
+   `parseTokensToGreen` (Parser.ts) now handles the special case
+   `pairing: 'osu'` + orphan `box`/`spoilerbox` closer: instead of
+   the literal `text` leaf that any other orphan closer gets, it emits
+   a `discarded_box_close` leaf (`Types/core.ts`), invisible in
+   `HTMLRenderer`/`BBCodeExporter` just like `discarded_tag`, and with the same
+   line-break budget as a PAIRED `box`/`spoilerbox` closer
+   (`HTMLRenderer.NEWLINE_RULES`).
 
-**Cierre por CONTEO DE DIVS** (`Parser.ts`'s `closeDivUnits`, `pairing: 'osu'`
-únicamente — no vive en `osuPairing.ts`, que solo decide SELLADO de tokens,
-no anidado). osu! no anida por nombre: `box`/`spoilerbox` empujan DOS `<div>`
-anónimos (wrapper, luego body), `notice`/`centre`/`left`/`right` empujan uno,
-y HTMLPurifier cierra cada `</div>` contra el `<div>` abierto más INTERNO por
-POSICIÓN — nunca por qué tag BBCode lo produjo, auto-cerrando de paso
-cualquier cosa que no sea un div (medido: `[centre]x[quote]y[/centre]z
-[/quote]` cierra el `<blockquote>` antes de llegar al div de `centre`; el
-`[/quote]` que sigue ya no encuentra nada abierto). `[centre][box=a]x
-[/centre]y[/box]` — el `</div>` de `[/centre]` cierra solo el div BODY de
-`box` (su primera unidad), dejando el wrapper abierto alrededor de `x` Y de
-`y`: osu! real — `<div box><a/><div body>x</div>y</div>`. Ese contenido
-"cruzado" (body cerrado, wrapper todavía abierto) se guarda como un hijo
-`box_tail` al final de los children del nodo `box`/`spoilerbox`
-(`Types/core.ts`) — nunca cambia la forma de un cierre normal, sin cruce.
-`HTMLRenderer` lo pinta DENTRO del wrapper, después del body (como osu!); en
-`miliastry` (boxes como `<details>`, sin forma de mostrar "dentro del
-wrapper pero fuera del panel colapsable") se pinta DESPUÉS de todo el
-`<details>` — visible aunque el box esté colapsado, la misma propiedad que
-tiene en el HTML real de osu!. Un cierre que no encuentra suficientes divs
-abiertos consume lo que SÍ hay y tira el resto sin efecto (medido en
-`docs/ai/NyuPenyu.from-intent.bbcode`: un `[/box]` extra con solo la unidad
-de `centre` disponible cierra `centre`, no se queda sin hacer nada); si no
-hay NINGÚN div abierto, no toca nada (ni siquiera una etiqueta inline sin
-relación, medido: `[b]bold[/centre]` deja `[b]` intacto). `sealLazy`
-(`Osu/osuPairing.ts`) fuerza ahora a texto literal cualquier cierre de la
-familia `lazy` (`notice`/`centre`/`left`/`right`, y todas las demás:
+**Closing by DIV COUNT** (`Parser.ts`'s `closeDivUnits`, `pairing: 'osu'`
+only — it does not live in `osuPairing.ts`, which only decides token SEALING,
+not nesting). osu! does not nest by name: `box`/`spoilerbox` push TWO anonymous
+`<div>`s (wrapper, then body), `notice`/`centre`/`left`/`right` push one,
+and HTMLPurifier closes each `</div>` against the INNERMOST open `<div>` by
+POSITION — never by which BBCode tag produced it, auto-closing along the way
+anything that is not a div (measured: `[centre]x[quote]y[/centre]z
+[/quote]` closes the `<blockquote>` before reaching the `centre` div; the
+`[/quote]` that follows finds nothing open). `[centre][box=a]x
+[/centre]y[/box]` — the `</div>` of `[/centre]` closes only the BODY div of
+`box` (its first unit), leaving the wrapper open around `x` AND `y`:
+real osu! — `<div box><a/><div body>x</div>y</div>`. That "crossed"
+content (body closed, wrapper still open) is kept as a `box_tail` child
+at the end of the children of the `box`/`spoilerbox` node
+(`Types/core.ts`) — it never changes the shape of a normal, non-crossed closer.
+`HTMLRenderer` paints it INSIDE the wrapper, after the body (like osu!); in
+`miliastry` (boxes as `<details>`, with no way to show "inside the
+wrapper but outside the collapsible panel") it is painted AFTER the whole
+`<details>` — visible even if the box is collapsed, the same property it
+has in the real osu! HTML. A closer that does not find enough open divs
+consumes what IS there and drops the rest with no effect (measured in
+`docs/ai/NyuPenyu.from-intent.bbcode`: an extra `[/box]` with only the unit
+of `centre` available closes `centre`, it does not end up doing nothing); if
+there is NO open div, it touches nothing (not even an unrelated inline tag,
+measured: `[b]bold[/centre]` leaves `[b]` intact). `sealLazy`
+(`Osu/osuPairing.ts`) now forces to literal text any closer of the
+`lazy` family (`notice`/`centre`/`left`/`right`, and all the others:
 `b`/`i`/`u`/`s`/`strike`/`spoiler`/`color`/`size`/`heading`/`audio`/
-`profile`/`email`/`url`/`youtube`/`imagemap`) que nunca fue consumido como
-la pareja de un opener — antes solo forzaba los de case incorrecto, y un
-cierre sobrante (sin opener) le llegaba a `parseTokensToGreen` como un token
-`close` real, algo que el modelo de conteo de divs interpretaba mal (medido
-en el mismo archivo: un `[/notice]` extra terminaba cerrando `centre`,
-que osu! real deja abierto — el cierre nunca estuvo sellado). **No cubierto**
-(divergencia medida y documentada, no un conteo de divs): HTMLPurifier
-TAMBIÉN auto-cierra una etiqueta INLINE (`<strong>`, `<span>` de
-`color`/`size`, …) en cuanto un div intenta abrir DENTRO de ella, y puede
-llegar a partir una sola etiqueta inline en varios elementos separados
-alrededor de contenido de bloque interpuesto — un mecanismo distinto
-(reglas de modelo de contenido de HTMLPurifier), fuera del alcance de este
-cambio. Ver el doc de módulo de `Osu/osuPairing.ts` y de `closeDivUnits`
-(`Parser.ts`) para el detalle completo, incluidas las tablas de unidades y
-los casos medidos contra osu-web. Test: `Tests/OsuDivClosing.test.ts`.
+`profile`/`email`/`url`/`youtube`/`imagemap`) that was never consumed as
+the partner of an opener — before, it only forced the wrong-case ones, and a
+leftover closer (with no opener) reached `parseTokensToGreen` as a real
+`close` token, which the div-count model misread (measured
+in the same file: an extra `[/notice]` ended up closing `centre`,
+which real osu! leaves open — the closer was never sealed). **Not covered**
+(measured and documented divergence, not a div count): HTMLPurifier
+ALSO auto-closes an INLINE tag (`<strong>`, `<span>` of
+`color`/`size`, …) as soon as a div tries to open INSIDE it, and can
+end up splitting a single inline tag into several separate elements
+around interposed block content — a different mechanism
+(HTMLPurifier content-model rules), out of scope for this
+change. See the module doc of `Osu/osuPairing.ts` and of `closeDivUnits`
+(`Parser.ts`) for the full detail, including the unit tables and
+the cases measured against osu-web. Test: `Tests/OsuDivClosing.test.ts`.
 
-### Atributos data-node-id
+### data-node-id Attributes
 
-Cada elemento HTML incluye `data-node-id="${node.id}"` para permitir:
-- Mapeo inverso (click en preview → selección en editor)
-- Highlight sincronizado
-- Animaciones de transición
+Every HTML element includes `data-node-id="${node.id}"` to allow:
+- Reverse mapping (click in the preview → selection in the editor)
+- Synchronized highlighting
+- Transition animations
 
 ---
 
-## 32. BBCodeExporter — Exportador BBCode (Visitors/BBCodeExporter)
+## 32. BBCodeExporter — BBCode Exporter (Visitors/BBCodeExporter)
 
-**Convierte el RedNode tree de vuelta a texto BBCode.** Esencial para round-tripping.
+**Converts the RedNode tree back to BBCode text.** Essential for round-tripping.
 
 ```typescript
 class BBCodeExporter extends Visitor<string> {
@@ -1448,7 +1448,7 @@ class BBCodeExporter extends Visitor<string> {
 }
 ```
 
-**Mapeo Kind → Tag**:
+**Kind → Tag mapping**:
 
 ```typescript
 'bold' → 'b', 'italic' → 'i', 'underline' → 'u',
@@ -1459,43 +1459,43 @@ class BBCodeExporter extends Visitor<string> {
 // ...
 ```
 
-**Exportación de efectos**: Los tags `gradient`, `sinewave`, `grow`, `rainbow` usan sus handlers `toBBCode` del `TagRegistry` para producir BBCode anidado (`[color=#FF0000]...[/color]`).
+**Effect export**: The `gradient`, `sinewave`, `grow`, `rainbow` tags use their `toBBCode` handlers from the `TagRegistry` to produce nested BBCode (`[color=#FF0000]...[/color]`).
 
 ---
 
-## 33. DOMMorpher — Morphing DOM (Visitors/DOMMorpher)
+## 33. DOMMorpher — DOM Morphing (Visitors/DOMMorpher)
 
-**Actualiza el DOM existente in-place para reflejar nuevo HTML, preservando estado interactivo.**
+**Updates the existing DOM in-place to reflect new HTML, preserving interactive state.**
 
 ```typescript
 function morphHTML(container: HTMLElement, newHTML: string): void
 ```
 
-### Algoritmo
+### Algorithm
 
 ```
 morphNodes(parent, newParent):
-  Itera childNodes en paralelo:
-  - Si falta newNode → removeChild
-  - Si falta oldNode → appendChild(clone)
-  - Si ambos son text nodes → update nodeValue
-  - Si ambos son elementos con mismo tagName →:
-    • Preserva estado de <details open>
-    • Preserva clases 'open', 'is-open'
-    • Sincroniza atributos (set/remove)
+  Iterates childNodes in parallel:
+  - If newNode is missing → removeChild
+  - If oldNode is missing → appendChild(clone)
+  - If both are text nodes → update nodeValue
+  - If both are elements with the same tagName →:
+    • Preserves the state of <details open>
+    • Preserves the 'open', 'is-open' classes
+    • Syncs attributes (set/remove)
     • Recurse morphNodes(oldEl, newEl)
-  - Si son diferentes → replaceChild(clone)
+  - If they are different → replaceChild(clone)
 ```
 
-**Esto evita**: parpadeo (flash), pérdida de estado de spoilers/boxes, reinicio de videos/audios.
+**This avoids**: flicker (flash), loss of spoiler/box state, restarting of videos/audios.
 
 ---
 
-## 34. Otros Exportadores
+## 34. Other Exporters
 
 ### MarkdownExporter
 
-Convierte BBCode → Markdown. Mapeos clave:
+Converts BBCode → Markdown. Key mappings:
 
 | BBCode | Markdown |
 |--------|----------|
@@ -1510,14 +1510,14 @@ Convierte BBCode → Markdown. Mapeos clave:
 
 ### JSONExporter
 
-Serializa el árbol completo a JSON. Útil para:
-- Depuración
-- Persistencia estructurada
-- Envío por red (colaboración)
+Serializes the whole tree to JSON. Useful for:
+- Debugging
+- Structured persistence
+- Sending over the network (collaboration)
 
 ### SVGRenderer
 
-**Wraps el HTML output en un SVG `<foreignObject>`**. Permite exportar el preview como SVG sin calcular layouts manualmente.
+**Wraps the HTML output in an SVG `<foreignObject>`**. It allows exporting the preview as SVG without computing layouts manually.
 
 ```html
 <svg>
@@ -1529,7 +1529,7 @@ Serializa el árbol completo a JSON. Útil para:
 
 ### TiptapExporter
 
-Convierte a formato Tiptap/ProseMirror JSON:
+Converts to Tiptap/ProseMirror JSON format:
 
 ```json
 {
@@ -1547,9 +1547,9 @@ Convierte a formato Tiptap/ProseMirror JSON:
 
 ---
 
-## 35. RenderPipeline — Pipeline de Renderizado (RenderPipeline/)
+## 35. RenderPipeline — Rendering Pipeline (RenderPipeline/)
 
-**Capa intermedia entre DocumentModel y la salida final.** Permite a plugins interceptar y transformar el renderizado.
+**Intermediate layer between DocumentModel and the final output.** It lets plugins intercept and transform rendering.
 
 ```typescript
 class RenderPipeline {
@@ -1558,10 +1558,10 @@ class RenderPipeline {
 }
 ```
 
-### Fases
+### Phases
 
 1. **build**: DocumentModel → RenderNode tree
-2. **transform**: Plugins transforman el RenderTree
+2. **transform**: Plugins transform the RenderTree
 3. **serialize**: RenderNode → Output string (HTML, SVG, etc.)
 
 ### RenderHooks
@@ -1575,9 +1575,9 @@ interface RenderHook {
 
 ---
 
-## 36. RenderTree — Árbol Intermedio (RenderPipeline/RenderTree)
+## 36. RenderTree — Intermediate Tree (RenderPipeline/RenderTree)
 
-**Representación intermedia entre DocumentModel y el output final.**
+**Intermediate representation between DocumentModel and the final output.**
 
 ```typescript
 interface RenderNode {
@@ -1602,9 +1602,9 @@ class RenderTree {
 
 ---
 
-## 37. Plugin System — Sistema de Plugins (Plugins/)
+## 37. Plugin System (Plugins/)
 
-**Sistema de plugins completo que permite extender Quasar sin modificar su código fuente.**
+**A full plugin system that lets you extend Quasar without modifying its source code.**
 
 ### PluginRegistry
 
@@ -1631,7 +1631,7 @@ interface PluginContribution {
 
 ### PluginAPI
 
-**La API pública expuesta a los plugins:**
+**The public API exposed to plugins:**
 
 ```typescript
 class PluginAPI {
@@ -1650,9 +1650,9 @@ class PluginAPI {
 
 ---
 
-## 38. Transformers — Transformadores (Transformers/)
+## 38. Transformers (Transformers/)
 
-**Transformaciones OOP que mutan el DocumentModel produciendo Transactions.**
+**OOP transformations that mutate the DocumentModel by producing Transactions.**
 
 ```typescript
 interface Transformer {
@@ -1662,21 +1662,21 @@ interface Transformer {
 
 ### ASTOptimizer
 
-Optimiza el árbol sintáctico con reglas:
+Optimizes the syntax tree with rules:
 
-1. **Remove empty tags**: Elimina tags sin contenido (excepto void tags)
-2. **Merge adjacent siblings**: Fusiona tags iguales con mismos atributos separados por spacing
-3. **Canonical ordering**: Reordena wrappers para orden canónico (ej: `[color][b] → [b][color]`)
+1. **Remove empty tags**: Removes tags with no content (except void tags)
+2. **Merge adjacent siblings**: Merges identical tags with the same attributes separated by spacing
+3. **Canonical ordering**: Reorders wrappers into canonical order (e.g. `[color][b] → [b][color]`)
 
 ### RainbowTransformer
 
-Aplica efecto arcoíris: cada caracter recibe un color HSL interpolado a través del texto.
+Applies a rainbow effect: each character gets an HSL color interpolated across the text.
 
 ```typescript
 const transformer = new RainbowTransformer({
   saturation: 80,   // 0-100
   lightness: 60,    // 0-100
-  spread: 300,      // grados de hue
+  spread: 300,      // hue degrees
   offset: 0
 })
 transformer.transform(document)
@@ -1684,30 +1684,30 @@ transformer.transform(document)
 
 ### GradientTransformer
 
-Aplica gradiente entre dos colores a través del texto.
+Applies a gradient between two colors across the text.
 
 ```typescript
 const transformer = new GradientTransformer({
   from: '#e8b04b',
   to: '#d94f4f',
-  unit: 'char',      // o 'word'
-  easing: 'linear'   // o 'easeIn', 'easeOut', 'easeInOut'
+  unit: 'char',      // or 'word'
+  easing: 'linear'   // or 'easeIn', 'easeOut', 'easeInOut'
 })
 ```
 
 ### GrowTransformer
 
-Aplica ondas de tamaño (sine wave de font-size).
+Applies size waves (a sine wave of font-size).
 
 ### SineWaveTransformer
 
-Aplica ondas senoidales de tamaño
+Applies sinusoidal size waves
 
 ---
 
-## 39. treeTransformers — Transformadores Funcionales (Utils/treeTransformers)
+## 39. treeTransformers — Functional Transformers (Utils/treeTransformers)
 
-**Versión funcional (no OOP) de los transformadores.** Son funciones puras que operan sobre `RedNode`.
+**Functional (non-OOP) version of the transformers.** They are pure functions that operate on `RedNode`.
 
 ### API
 
@@ -1721,14 +1721,14 @@ function applyEffect(root: RedNode, effect: TreeEffect): RedNode
 function countTextLength(node: RedNode): number
 ```
 
-### Algoritmo de Dos Pasadas
+### Two-Pass Algorithm
 
-1. **countTextLength()**: Cuenta la longitud total de texto plano (omite nodos como img, code)
-2. **Walk con wrapping**: Recorre el árbol, y por cada text leaf, lo envuelve en nodos de efecto con metadatos de posición global
+1. **countTextLength()**: Counts the total length of plain text (skips nodes like img, code)
+2. **Walk with wrapping**: Walks the tree, and for each text leaf, wraps it in effect nodes with global position metadata
 
-**IMPORTANTE**: Los efectos se aplican **dentro** de los tags de formato (b, i, u, color), no los reemplazan. Los nodos estructurales (box, quote, list) se preservan intactos.
+**IMPORTANT**: Effects are applied **inside** the formatting tags (b, i, u, color), they do not replace them. Structural nodes (box, quote, list) are preserved intact.
 
-### Ejemplo de Transformación
+### Transformation Example
 
 ```
 Input:  [box][b]Hello[/b] World[/box]
@@ -1738,9 +1738,9 @@ Output: [box][b][gradient]H[/gradient][gradient]e[/gradient]...
 
 ---
 
-## 40. Studio Integration — Integración con TextStudio (Studio/)
+## 40. Studio Integration — TextStudio Integration (Studio/)
 
-**Motor de efectos visuales para TextStudio.** Opera sobre segmentos de texto con wrappers.
+**Visual effects engine for TextStudio.** It operates on text segments with wrappers.
 
 ### QuasarSegment Model
 
@@ -1752,40 +1752,40 @@ interface QuasarSegment {
 }
 ```
 
-### Funciones de Efecto
+### Effect Functions
 
-| Función | Efecto |
+| Function | Effect |
 |---------|--------|
-| `applyGradient()` | Gradiente de colores con easing |
-| `applyRainbow()` | Arcoíris HSL |
-| `applyGrow()` | Ondas de tamaño |
-| `applyColorize()` | Coloreado con modos (linear, central, multi, random) |
-| `applyRGBCurves()` | Curvas Bezier por canal RGB |
-| `applyTextDecoration()` | Efectos Unicode (zalgo, aesthetic, sparkle, bubble) |
-| `applyASCIIFont()` | Fuentes Unicode (fullwidth, fraktur, smallcaps, etc.) |
+| `applyGradient()` | Color gradient with easing |
+| `applyRainbow()` | HSL rainbow |
+| `applyGrow()` | Size waves |
+| `applyColorize()` | Coloring with modes (linear, central, multi, random) |
+| `applyRGBCurves()` | Bezier curves per RGB channel |
+| `applyTextDecoration()` | Unicode effects (zalgo, aesthetic, sparkle, bubble) |
+| `applyASCIIFont()` | Unicode fonts (fullwidth, fraktur, smallcaps, etc.) |
 
 ### Studio Layer System
 
-Sistema de capas apilables:
+A stackable layer system:
 
 ```typescript
 type StudioLayer = StudioGradientLayer | StudioRainbowLayer 
   | StudioGrowLayer | StudioRGBLayer
 ```
 
-Cada capa tiene `enabled`, `id`, y parámetros específicos. Se aplican en orden (de fondo a frente).
+Each layer has `enabled`, `id`, and specific parameters. They are applied in order (from back to front).
 
-**procesStudioAST()**: Toma texto fuente + capas + opciones, y produce un GreenNode/RedNode transformado con todos los efectos aplicados.
+**procesStudioAST()**: Takes source text + layers + options, and produces a GreenNode/RedNode transformed with all the effects applied.
 
 ---
 
-## 41. Color Utils — Matemática de Color (Utils/color)
+## 41. Color Utils — Color Math (Utils/color)
 
-**Funciones de color sin dependencias externas.**
+**Color functions with no external dependencies.**
 
 ```typescript
-function mixHex(from: string, to: string, t: number): string     // Interpolación RGB lineal
-function mixMultiple(colors: string[], t: number): string          // Interpolación multi-color
+function mixHex(from: string, to: string, t: number): string     // Linear RGB interpolation
+function mixMultiple(colors: string[], t: number): string          // Multi-color interpolation
 function hslToHex(h: number, s: number, l: number): string        // HSL → #RRGGBB
 function ease(t: number, kind: Easing): number                    // Easing functions
 function clamp(n: number, min?: number, max?: number): number
@@ -1795,16 +1795,16 @@ function clamp(n: number, min?: number, max?: number): number
 
 ---
 
-## 42. HTML Bridge — De HTML a AST (HTML/)
+## 42. HTML Bridge — From HTML to AST (HTML/)
 
-**Convierte HTML renderizado de vuelta a GreenNode.** Útil para importar contenido existente.
+**Converts rendered HTML back to GreenNode.** Useful for importing existing content.
 
 ```typescript
 function htmlStringToGreenTree(html: string): GreenNode
 function greenToRedNode(green: GreenNode, parent?): RedNode
 ```
 
-**Mapeo HTML → NodeKind**:
+**HTML → NodeKind mapping**:
 
 | HTML | Kind |
 |------|------|
@@ -1822,24 +1822,24 @@ function greenToRedNode(green: GreenNode, parent?): RedNode
 
 ---
 
-## 43. Markdown Bridge — De Markdown a AST (Markdown/)
+## 43. Markdown Bridge — From Markdown to AST (Markdown/)
 
-**Convierte Markdown a GreenNode.** Incluye su propio lexer (`scanMarkdown`) y parser (`parseMarkdown`).
+**Converts Markdown to GreenNode.** It includes its own lexer (`scanMarkdown`) and parser (`parseMarkdown`).
 
 ### MarkdownLexer
 
-Produce **22 tipos de token**: hash, gt, star, underscore, tilde, backtick, bracket_open/close, paren_open/close, bang, dash, plus, dot, text, newline, fence, hr, escape, angle.
+Produces **22 token types**: hash, gt, star, underscore, tilde, backtick, bracket_open/close, paren_open/close, bang, dash, plus, dot, text, newline, fence, hr, escape, angle.
 
 ### MarkdownParser
 
-Parser recursivo descendente que produce `MarkdownDocument` (AST):
+A recursive descent parser that produces `MarkdownDocument` (AST):
 
 ```
 document → [paragraph, heading, code_block, blockquote, notice, list, ...]
 
 paragraph → [text, strong, emphasis, strikethrough, link, image, code_inline, ...]
 heading → level + children
-blockquote → children (con > prefix)
+blockquote → children (with > prefix)
 code_block → lang + value
 list → ordered? + [list_item, ...]
 link → url + children
@@ -1848,13 +1848,13 @@ image → url + alt
 
 ### MarkdownToGreenNode
 
-Convierte el AST Markdown a GreenNode/RedNode, mapeando tipos Markdown a `NodeKind`.
+Converts the Markdown AST to GreenNode/RedNode, mapping Markdown types to `NodeKind`.
 
 ---
 
-## 44. Bridges — Arquitectura Multi-Formato
+## 44. Bridges — Multi-Format Architecture
 
-Quasar NO es un parser de BBCode. Es un motor de documentos multi-formato.
+Quasar is NOT a BBCode parser. It is a multi-format document engine.
 
 ```
                     ┌──────────────────────┐
@@ -1869,18 +1869,18 @@ Quasar NO es un parser de BBCode. Es un motor de documentos multi-formato.
     └────────────┘   └────────────┘   └────────────┘
 ```
 
-Cada Bridge implementa:
-1. **Lexer**: Texto → Tokens
+Each Bridge implements:
+1. **Lexer**: Text → Tokens
 2. **Parser**: Tokens → GreenNode
-3. **Metadata extractor**: GreenNode → RedNode con metadatos
+3. **Metadata extractor**: GreenNode → RedNode with metadata
 
-**Los exportadores (Visitors) son agnósticos al formato de entrada.** Un documento BBCode puede exportarse a Markdown sin cambiar nada en el pipeline.
+**The exporters (Visitors) are agnostic to the input format.** A BBCode document can be exported to Markdown without changing anything in the pipeline.
 
 ---
 
-## 45. API Pública (index.ts)
+## 45. Public API (index.ts)
 
-El archivo `src/index.ts` exporta 52 símbolos públicos. Aquí están agrupados por categoría:
+The `src/index.ts` file exports 52 public symbols. Here they are grouped by category:
 
 ### Model & Core
 - `DocumentModel`, `BBCodeDocumentModel`, `HTMLDocumentModel`, `MarkdownDocumentModel`
@@ -1896,7 +1896,7 @@ El archivo `src/index.ts` exporta 52 símbolos públicos. Aquí están agrupados
 - `DocumentNode`, `NodeKind`, `NodeAttributes`, `NodeMetadata`, `DocumentChangeEvent`
 - `Token`, `TokenKind`, `Trivia`, `TriviaKind`
 - `Diagnostic`, `DiagnosticSeverity`, `DiagnosticTag`
-- `Operation` (13 tipos)
+- `Operation` (13 types)
 - `Query`, `QueryMatch`, `QueryResult`
 - `SymbolInfo`, `SymbolKind`, `Reference`, `SymbolSearchResult`
 
@@ -1932,22 +1932,22 @@ El archivo `src/index.ts` exporta 52 símbolos públicos. Aquí están agrupados
 
 ---
 
-## 46. Pruebas y Cobertura
+## 46. Tests and Coverage
 
-### Archivos de Test
+### Test Files
 
-| Archivo | Lo que prueba |
+| File | What it tests |
 |---------|---------------|
-| `Syntax/__tests__/GreenNode.test.ts` | Creación de nodos, inmutabilidad, hijos |
-| `Syntax/__tests__/RedNode.test.ts` | Creación, navegación, mutación, mutation lock |
-| `Diff/__tests__/TreeDiffer.test.ts` | Detección de moves, updates, inserts/deletes |
-| `Incremental/__tests__/IncrementalParser.test.ts` | Re-parseo incremental preservando bloques no afectados |
+| `Syntax/__tests__/GreenNode.test.ts` | Node creation, immutability, children |
+| `Syntax/__tests__/RedNode.test.ts` | Creation, navigation, mutation, mutation lock |
+| `Diff/__tests__/TreeDiffer.test.ts` | Detection of moves, updates, inserts/deletes |
+| `Incremental/__tests__/IncrementalParser.test.ts` | Incremental re-parsing preserving unaffected blocks |
 
-### Patrones de Test
+### Test Patterns
 
-Los tests usan `vitest`, ejecutado desde la raíz del monorepo: la configuración
-(`vitest.config.ts`, con `environment: 'jsdom'`, los alias `@miliastry/*` y el
-setup `vitest.setup.ts`) vive allí, no en este paquete. Ejemplo de patrón de test:
+The tests use `vitest`, run from the monorepo root: the configuration
+(`vitest.config.ts`, with `environment: 'jsdom'`, the `@miliastry/*` aliases and the
+`vitest.setup.ts` setup) lives there, not in this package. Example of a test pattern:
 
 ```typescript
 describe('RedNode', () => {
@@ -1971,21 +1971,21 @@ describe('RedNode', () => {
 
 ### Testing Mutation Lock
 
-El test más importante verifica que las mutaciones fuera de `allowMutation()` lancen error:
+The most important test verifies that mutations outside `allowMutation()` throw an error:
 
 ```typescript
 expect(() => {
-  root.appendChild(child)  // Sin allowMutation
+  root.appendChild(child)  // Without allowMutation
 }).toThrow(/transaction boundary/)
 ```
 
 ---
 
-## 47. Diagrama Completo de Dependencias
+## 47. Full Dependency Diagram
 
 ```
                           ┌───────────┐
-                          │   Types   │ ← Tipos base (core, tokens, diagnostics, etc.)
+                          │   Types   │ ← Base types (core, tokens, diagnostics, etc.)
                           └─────┬─────┘
                                 │
           ┌─────────────────────┼─────────────────────┐
@@ -2003,7 +2003,7 @@ expect(() => {
     └─────┬──────┘      └────────────┘      └────────────┘
           │
     ┌─────▼──────────┐
-    │  DocumentModel  │ ← Orquestador Central
+    │  DocumentModel  │ ← Central Orchestrator
     │                 │
     │  ┌─ TagRegistry │
     │  ├─ NodeFactory │
@@ -2027,60 +2027,60 @@ expect(() => {
 
 ---
 
-## 48. Análisis Crítico: Fortalezas y Debilidades
+## 48. Critical Analysis: Strengths and Weaknesses
 
-### Fortalezas
+### Strengths
 
-1. **Arquitectura Red-Green Tree**: Implementación rigurosa de un patrón probado en compiladores industriales (Roslyn, SwiftSyntax). Esto le da a Quasar una base teórica sólida.
+1. **Red-Green Tree architecture**: A rigorous implementation of a pattern proven in industrial compilers (Roslyn, SwiftSyntax). This gives Quasar a solid theoretical base.
 
-2. **Cero dependencias en runtime**: El `package.json` solo tiene TypeScript como devDependency. Esto lo hace portable a cualquier runtime (Node, browser, Bun, Deno).
+2. **Zero runtime dependencies**: The `package.json` only has TypeScript as a devDependency. This makes it portable to any runtime (Node, browser, Bun, Deno).
 
-3. **Parseo Incremental**: Con presupuestos de <0.15ms, es viable para edición en tiempo real incluso en documentos grandes.
+3. **Incremental Parsing**: With budgets of <0.15ms, it is viable for real-time editing even on large documents.
 
-4. **Multi-formato nativo**: BBCode + HTML + Markdown + JSON + SVG + Tiptap. No es un parser de un solo formato.
+4. **Native multi-format**: BBCode + HTML + Markdown + JSON + SVG + Tiptap. It is not a single-format parser.
 
-5. **Round-tripping**: La preservación de trivia y la arquitectura Visitor permiten ir y volver entre formatos sin pérdida.
+5. **Round-tripping**: Trivia preservation and the Visitor architecture allow going back and forth between formats without loss.
 
-6. **Mutation Lock en RedNode**: Previene bugs difíciles de encontrar al forzar que todas las mutaciones pasen por `allowMutation()`.
+6. **Mutation Lock in RedNode**: Prevents hard-to-find bugs by forcing all mutations to go through `allowMutation()`.
 
-7. **Sistema de plugins completo**: Manifest, contributions, activate/deactivate lifecycle.
+7. **Full plugin system**: Manifest, contributions, activate/deactivate lifecycle.
 
-8. **Efectos de TextStudio**: El sistema de capas y transformadores permite efectos visuales complejos (gradientes, ondas, arcoíris, curvas RGB) sin modificar el parser.
+8. **TextStudio effects**: The layer system and the transformers allow complex visual effects (gradients, waves, rainbows, RGB curves) without modifying the parser.
 
-### Debilidades y Áreas de Mejora
+### Weaknesses and Areas for Improvement
 
-1. **Commands con implementaciones stub**: `InsertText`, `DeleteNode`, `WrapInTag`, `SplitNode`, `MergeNode` son placeholders que devuelven `{ success: true }`. La lógica real de edición no está implementada.
+1. **Commands with stub implementations**: `InsertText`, `DeleteNode`, `WrapInTag`, `SplitNode`, `MergeNode` are placeholders that return `{ success: true }`. The real editing logic is not implemented.
 
-2. **Formatter minimalista**: Solo extrae texto plano. No formatea BBCode real con indentación.
+2. **Minimalist Formatter**: It only extracts plain text. It does not format real BBCode with indentation.
 
-3. **Doble implementación de efectos**: Existen tanto en `Utils/treeTransformers.ts` (funcional) como en `Transformers/` (OOP). Esto duplica lógica y puede llevar a inconsistencias.
+3. **Double implementation of effects**: They exist both in `Utils/treeTransformers.ts` (functional) and in `Transformers/` (OOP). This duplicates logic and can lead to inconsistencies.
 
-4. **BBCodeGenerator es un generador de datos de prueba**, no parte del pipeline real. No debería confundirse con el BBCodeExporter.
+4. **BBCodeGenerator is a test data generator**, not part of the real pipeline. It should not be confused with the BBCodeExporter.
 
-5. **HTMLRenderer acoplado a clases CSS específicas**: `bbcode-sp`, `bbcode-para`, `bbcode-preview`. Idealmente esto debería ser configurable.
+5. **HTMLRenderer coupled to specific CSS classes**: `bbcode-sp`, `bbcode-para`, `bbcode-preview`. Ideally this should be configurable.
 
-6. **Markdown bridge incompleto**: El parser Markdown cubre lo básico pero no tiene el mismo nivel de robustez que el parser BBCode.
+6. **Incomplete Markdown bridge**: The Markdown parser covers the basics but is not as robust as the BBCode parser.
 
-7. **Sin integración con Monaco Editor**: La integración real está en los módulos fuera de Quasar (MiliastryNovaFeatures). Quasar proporciona la API pero no la conexión.
+7. **No Monaco Editor integration**: The real integration is in the modules outside Quasar (MiliastryNovaFeatures). Quasar provides the API but not the connection.
 
-8. **GreenNodePool no se usa en el pipeline principal**: Está implementado pero las funciones de creación (`greenNode`, `greenLeaf`) no lo usan automáticamente. Habría que integrarlo explícitamente.
+8. **GreenNodePool is not used in the main pipeline**: It is implemented but the creation functions (`greenNode`, `greenLeaf`) do not use it automatically. It would have to be integrated explicitly.
 
-9. **Test coverage bajo**: Solo 4 archivos de test para más de 40 módulos. Áreas críticas como `DocumentModel`, `BBCodeParser`, `HTMLRenderer` no tienen tests.
+9. **Low test coverage**: Only 4 test files for more than 40 modules. Critical areas such as `DocumentModel`, `BBCodeParser`, `HTMLRenderer` have no tests.
 
 ---
 
-## 49. Guía de Contribución
+## 49. Contribution Guide
 
-### Cómo agregar un nuevo formato de entrada (Bridge)
+### How to add a new input format (Bridge)
 
 ```typescript
-// 1. Crea tu lexer
+// 1. Create your lexer
 function scanMyFormat(source: string): MyToken[]
 
-// 2. Crea tu parser
+// 2. Create your parser
 function parseMyFormat(tokens: MyToken[], source: string): GreenNode
 
-// 3. Crea tu DocumentModel
+// 3. Create your DocumentModel
 class MyFormatDocumentModel extends DocumentModel {
   protected parseToGreen(source: string): GreenNode {
     const tokens = scanMyFormat(source)
@@ -2091,17 +2091,17 @@ class MyFormatDocumentModel extends DocumentModel {
   }
 }
 
-// 4. ¡Exporta usando los Visitors existentes!
+// 4. Export using the existing Visitors!
 const model = new MyFormatDocumentModel({ source })
 const html = new HTMLRenderer().render(model.redRoot!)
 ```
 
-### Cómo agregar un nuevo Exportador
+### How to add a new Exporter
 
 ```typescript
 class MyFormatExporter extends Visitor<string> {
   visit(node: RedNode): string {
-    // Implementa tu lógica de exportación
+    // Implement your export logic
     switch (node.kind) {
       case 'text': return node.text
       case 'bold': return `**${this.visitChildren(node)}**`
@@ -2111,7 +2111,7 @@ class MyFormatExporter extends Visitor<string> {
 }
 ```
 
-### Cómo agregar un Plugin
+### How to add a Plugin
 
 ```typescript
 const pluginAPI = new PluginAPI(model)
@@ -2135,7 +2135,7 @@ pluginAPI.registerPlugin(
 )
 ```
 
-### Cómo agregar un Transformer
+### How to add a Transformer
 
 ```typescript
 class MyTransformer implements Transformer {
@@ -2155,29 +2155,29 @@ class MyTransformer implements Transformer {
 
 ---
 
-## 50. Glosario
+## 50. Glossary
 
-| Término | Definición |
+| Term | Definition |
 |---------|------------|
-| **AST** | Abstract Syntax Tree — representación jerárquica del documento |
-| **Bridge** | Adaptador que convierte un formato externo (BBCode, HTML, MD) al GreenNode interno |
-| **Diagnostic** | Mensaje de error, warning o hint asociado a un nodo |
-| **Exporter** (o Visitor) | Recorre el RedNode tree y produce output (HTML, BBCode, JSON, etc.) |
-| **Full Width** | Ancho total de un nodo incluyendo trivia (espacios, newlines) |
-| **GreenNode** | Nodo inmutable del árbol sintáctico — la representación "compilada" |
-| **Mutation Lock** | Mecanismo que previene mutaciones accidentales de RedNode fuera de transacciones |
-| **NodeMatch** | Correspondencia entre nodos viejos y nuevos después de un re-parse |
-| **RedNode** | Fachada mutable que envuelve GreenNode con IDs, padres y versión |
-| **Round-tripping** | Capacidad de convertir texto → AST → texto sin pérdida de información |
-| **Safe Boundary** | Nodo que sirve como límite para el re-parseo incremental (quote, box, list) |
-| **Structural Sharing** | Dos subárboles idénticos comparten la misma referencia de GreenNode en RAM |
-| **Syntax Stack** | Pila que usa el parser para rastrear tags abiertos y auto-cerrar los mal anidados |
-| **Transaction** | Grupo atómico de operaciones que puede ser deshecho/rehecho |
-| **Trivia** | Caracteres sin significado semántico pero esenciales para round-tripping (espacios, newlines) |
-| **Validator** | Función que inspecciona un nodo y produce diagnósticos |
+| **AST** | Abstract Syntax Tree — hierarchical representation of the document |
+| **Bridge** | Adapter that converts an external format (BBCode, HTML, MD) to the internal GreenNode |
+| **Diagnostic** | Error, warning or hint message attached to a node |
+| **Exporter** (or Visitor) | Walks the RedNode tree and produces output (HTML, BBCode, JSON, etc.) |
+| **Full Width** | Total width of a node including trivia (spaces, newlines) |
+| **GreenNode** | Immutable node of the syntax tree — the "compiled" representation |
+| **Mutation Lock** | Mechanism that prevents accidental mutations of RedNode outside transactions |
+| **NodeMatch** | Correspondence between old and new nodes after a re-parse |
+| **RedNode** | Mutable facade that wraps GreenNode with IDs, parents and version |
+| **Round-tripping** | Ability to convert text → AST → text with no loss of information |
+| **Safe Boundary** | Node that serves as a boundary for incremental re-parsing (quote, box, list) |
+| **Structural Sharing** | Two identical subtrees share the same GreenNode reference in RAM |
+| **Syntax Stack** | Stack the parser uses to track open tags and auto-close the badly nested ones |
+| **Transaction** | Atomic group of operations that can be undone/redone |
+| **Trivia** | Characters with no semantic meaning but essential for round-tripping (spaces, newlines) |
+| **Validator** | Function that inspects a node and produces diagnostics |
 
 ---
 
-> *Este documento fue generado mediante análisis estructural del código fuente de Quasar. Cada afirmación está respaldada por la implementación real en `packages/quasar/src/`. Para la referencia más actualizada, consulta los archivos fuente directamente.*
+> *This document was generated through structural analysis of the Quasar source code. Every claim is backed by the real implementation in `packages/quasar/src/`. For the most up-to-date reference, consult the source files directly.*
 >
 > *Copyright (c) 2026 hxovc.*

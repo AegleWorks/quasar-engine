@@ -1,860 +1,859 @@
-# 🌌 Quasar — Auditoría de Rendimiento y Roadmap de Optimización
+# 🌌 Quasar — Performance Audit and Optimization Roadmap
 
-> Auditoría estricta del motor completo (126 ficheros, ~17k LOC) realizada el **2026-07-31**.
-> Todas las cifras de este documento son **medidas**, no estimadas. La metodología está al final.
+> A strict audit of the whole engine (126 files, ~17k LOC) carried out on **2026-07-31**.
+> Every figure in this document is **measured**, not estimated. The methodology is at the end.
 >
-> **Estado:** Semanas 1 a 11 ✅ completadas. **La auditoría está cerrada**: los cuatro
-> pilares que el motor declaraba y no ejecutaba —*structural sharing*, *parseo incremental*,
-> *identidad estable de nodos*, *offsets fiables*— funcionan y están validados diferencialmente.
+> **Status:** Weeks 1 to 11 ✅ completed. **The audit is closed**: the four
+> pillars the engine declared and did not execute —*structural sharing*, *incremental parsing*,
+> *stable node identity*, *reliable offsets*— work and are validated differentially.
 
 ---
 
-## Índice
+## Index
 
-- [0. Veredicto](#0-veredicto)
-- [1. Tabla de resultados](#1-tabla-de-resultados)
-- [2. Hallazgos — Tier S (roto)](#2-hallazgos--tier-s-roto)
-- [3. Hallazgos — Tier A (rendimiento)](#3-hallazgos--tier-a-rendimiento)
-- [4. Hallazgos — Tier B (arquitectura)](#4-hallazgos--tier-b-arquitectura)
-- [5. Semana 1 — Parar la hemorragia ✅](#5-semana-1--parar-la-hemorragia-)
-- [6. Semana 2 — El 10× de verdad ✅](#6-semana-2--el-10-de-verdad-)
-- [7. Semana 3 — Deuda estructural ✅](#7-semana-3--deuda-estructural--salvo-el-bloque-14--9)
-- [7-bis. Semana 4 — La partición y el incremental ✅](#7-bis-semana-4--la-partición-y-el-incremental-)
-- [7-ter. Semana 5 — Structural sharing de verdad ✅](#7-ter-semana-5--structural-sharing-de-verdad-)
-- [7-quater. Semana 6 — El lexer ✅](#7-quater-semana-6--el-lexer)
-- [7-quinquies. Semana 7 — Granularidad del incremental ✅](#7-quinquies-semana-7--granularidad-del-incremental)
-- [7-sexies. Semana 8 — El parser ✅](#7-sexies-semana-8--el-parser)
-- [7-septies. Semana 9 — El diff de `applyTextUpdate` ✅](#7-septies-semana-9--el-diff-de-applytextupdate)
-- [7-octies. Semana 10 — `analyze()` ✅](#7-octies-semana-10--analyze)
-- [7-nonies. Semana 11 — El memo de corchetes ✅](#7-nonies-semana-11--el-memo-de-corchetes-del-lexer)
-- [8. Metodología de medición](#8-metodología-de-medición)
-
----
-
-## 0. Veredicto
-
-La arquitectura *sobre el papel* es correcta (Roslyn green/red, parseo incremental, pipeline de passes).
-Pero el motor **no ejecutaba esa arquitectura**. Tres de sus cuatro pilares —*structural sharing*,
-*parseo incremental*, *identidad estable de nodos*— estaban rotos o desconectados en runtime.
-
-`QUASAR.MD §3` declara un presupuesto de **140 FPS / < 0.2 ms**. La medición real de partida
-fue **290 ms por pulsación de tecla**: un factor **1450×** por encima del objetivo autoimpuesto.
+- [0. Verdict](#0-verdict)
+- [1. Results table](#1-results-table)
+- [2. Findings — Tier S (broken)](#2-findings--tier-s-broken)
+- [3. Findings — Tier A (performance)](#3-findings--tier-a-performance)
+- [4. Findings — Tier B (architecture)](#4-findings--tier-b-architecture)
+- [5. Week 1 — Stop the bleeding ✅](#5-week-1--stop-the-bleeding-)
+- [6. Week 2 — The real 10× ✅](#6-week-2--the-real-10-)
+- [7. Week 3 — Structural debt ✅](#7-week-3--structural-debt--except-block-14--9)
+- [7-bis. Week 4 — The partition and the incremental ✅](#7-bis-week-4--the-partition-and-the-incremental-)
+- [7-ter. Week 5 — Real structural sharing ✅](#7-ter-week-5--real-structural-sharing-)
+- [7-quater. Week 6 — The lexer ✅](#7-quater-week-6--the-lexer)
+- [7-quinquies. Week 7 — Incremental granularity ✅](#7-quinquies-week-7--incremental-granularity)
+- [7-sexies. Week 8 — The parser ✅](#7-sexies-week-8--the-parser)
+- [7-septies. Week 9 — The `applyTextUpdate` diff ✅](#7-septies-week-9--the-applytextupdate-diff)
+- [7-octies. Week 10 — `analyze()` ✅](#7-octies-week-10--analyze)
+- [7-nonies. Week 11 — The lexer's bracket memo ✅](#7-nonies-week-11--the-lexers-bracket-memo)
+- [8. Measurement methodology](#8-measurement-methodology)
 
 ---
 
-## 1. Tabla de resultados
+## 0. Verdict
 
-Documento de referencia: `src/problematic_sectionwgradient.milia` — 19.6 KB, 1736 nodos.
+The architecture *on paper* is correct (Roslyn green/red, incremental parsing, pass pipeline).
+But the engine **did not execute that architecture**. Three of its four pillars —*structural sharing*,
+*incremental parsing*, *stable node identity*— were broken or disconnected at runtime.
 
-| Métrica | Baseline | Tras Semana 1 | Tras Semanas 2-3 | Objetivo |
+`QUASAR.MD §3` declares a budget of **140 FPS / < 0.2 ms**. The real starting measurement
+was **290 ms per keystroke**: a factor of **1450×** above the self-imposed target.
+
+---
+
+## 1. Results table
+
+Reference document: `src/problematic_sectionwgradient.milia` — 19.6 KB, 1736 nodes.
+
+| Metric | Baseline | After Week 1 | After Weeks 2-3 | Target |
 |---|---|---|---|---|
-| Vectores XSS vivos en el preview | 5 | **0** ✅ | 0 | — |
-| Lexer, 16k `[` sin cerrar | 555.56 ms | **2.72 ms** ✅ | 2.72 ms | — |
-| `NodeMatcher.match` (1 char) | 380.2 ms | 5.14 ms | **~0** ✅ (perezoso) | ~1 ms |
+| Live XSS vectors in the preview | 5 | **0** ✅ | 0 | — |
+| Lexer, 16k unclosed `[` | 555.56 ms | **2.72 ms** ✅ | 2.72 ms | — |
+| `NodeMatcher.match` (1 char) | 380.2 ms | 5.14 ms | **~0** ✅ (lazy) | ~1 ms |
 | **`DocumentModel.rebuild`** | 290.4 ms | 15.13 ms | **3.81 ms** ✅ | < 5 ms |
 | **`HTMLRenderer.render`** | 1.95 ms | 1.43 ms | **0.290 ms** ✅ | < 0.3 ms |
-| `render`, 4000 hermanos | 14.11 ms | 14.11 ms | **1.25 ms** ✅ | lineal |
+| `render`, 4000 siblings | 14.11 ms | 14.11 ms | **1.25 ms** ✅ | linear |
 | **`greenToRedNode`** | 3.95 ms | 2.13 ms | **0.252 ms** ✅ | < 0.8 ms |
 | `new BBCodeDocumentModel` | 5.92 ms | 5.85 ms | **2.88 ms** ✅ | — |
-| HTML emitido (doc de 19.2 KB) | — | 140.6 KB | **88.7 KB** ✅ | — |
+| HTML emitted (19.2 KB doc) | — | 140.6 KB | **88.7 KB** ✅ | — |
 | `parseTokensToGreen` | 0.583 ms | 0.546 ms | 0.644 ms | — |
-| Errores `tsc --noEmit` | 48 | **0** ✅ | 0 ✅ | 0 (gate en CI) |
-| Diagnósticos que el motor emitía | **0** (3 de 4 validadores inalcanzables) | 0 | **funcionan + `unclosed-tag` nuevo** ✅ | — |
-| Suite de tests | 4 rojos + 60% flake | 170 verdes + 1 `expected fail` | **195 verdes, sin `expected fail`** ✅ | — |
+| `tsc --noEmit` errors | 48 | **0** ✅ | 0 ✅ | 0 (gate in CI) |
+| Diagnostics the engine emitted | **0** (3 of 4 validators unreachable) | 0 | **they work + new `unclosed-tag`** ✅ | — |
+| Test suite | 4 red + 60% flake | 170 green + 1 `expected fail` | **195 green, no `expected fail`** ✅ | — |
 
-### Semana 4 — lo que añadió
+### Week 4 — what it added
 
-| Métrica | Antes (semana 3) | Tras Semana 4 | Nota |
+| Metric | Before (week 3) | After Week 4 | Note |
 |---|---|---|---|
-| Documentos cuyo árbol particiona la fuente | **12.42%** | **100%** ✅ | 18.017 documentos |
-| Violaciones de partición en el corpus | 270.771 | **0** ✅ | 5 tipos distintos |
-| Punto fijo de `parse → export` | 99.67% | **100%** ✅ | el borrado de huérfanos lo rompía |
-| Ediciones incrementales con árbol correcto | 3 de 6 escenarios | **22.100 de 22.100** ✅ | validación diferencial |
-| Coste por pulsación (fixture 19.6 KB) | 2.78 ms (rebuild) | **1.22 ms** ✅ (−56%) | 100% de aciertos del incremental |
-| Suite de tests | 195 verdes | **243 verdes** ✅ | +40 de partición, +8 de incremental |
+| Documents whose tree partitions the source | **12.42%** | **100%** ✅ | 18,017 documents |
+| Partition violations in the corpus | 270,771 | **0** ✅ | 5 distinct types |
+| Fixed point of `parse → export` | 99.67% | **100%** ✅ | deleting orphans broke it |
+| Incremental edits with a correct tree | 3 of 6 scenarios | **22,100 of 22,100** ✅ | differential validation |
+| Cost per keystroke (19.6 KB fixture) | 2.78 ms (rebuild) | **1.22 ms** ✅ (−56%) | 100% incremental hit rate |
+| Test suite | 195 green | **243 green** ✅ | +40 partition, +8 incremental |
 
-### Semana 5 — lo que añadió
+### Week 5 — what it added
 
-| Métrica | Antes | Tras Semana 5 | Nota |
+| Metric | Before | After Week 5 | Note |
 |---|---|---|---|
-| Deduplicación real de nodos verdes | **0%** | **59,6%** ✅ | 1736 nodos → 702 objetos |
-| `collisionHits` del interner | 0 | **226** ✅ | el interning de nodos internos funciona |
-| Memoria del árbol verde | 258 KB | **148 KB** (`leaves`) / **114 KB** (`full`) | −42% / −56% |
-| Interner ON vs OFF: árbol, HTML, export, partición | *offsets mentían* | **100% idéntico** ✅ | 18.016 documentos, ambos modos |
-| `shiftGreen` en el splice incremental | 14% del reparse | **eliminado** ✅ | ya no hay nada que desplazar |
-| Suite de tests | 243 verdes | **259 verdes** ✅ | +16 de sharing |
+| Real deduplication of green nodes | **0%** | **59.6%** ✅ | 1736 nodes → 702 objects |
+| Interner `collisionHits` | 0 | **226** ✅ | interning of inner nodes works |
+| Green tree memory | 258 KB | **148 KB** (`leaves`) / **114 KB** (`full`) | −42% / −56% |
+| Interner ON vs OFF: tree, HTML, export, partition | *offsets lied* | **100% identical** ✅ | 18,016 documents, both modes |
+| `shiftGreen` in the incremental splice | 14% of the reparse | **eliminated** ✅ | there is nothing left to shift |
+| Test suite | 243 green | **259 green** ✅ | +16 sharing |
 
-### Semana 6 — el lexer
+### Week 6 — the lexer
 
-| Métrica | Antes | Después | Nota |
+| Metric | Before | After | Note |
 |---|---|---|---|
-| `scanBBCode`, fixture 19,6 KB | 0,618 ms | **0,278 ms** ✅ | **2,22×** |
-| `scanBBCode`, 20 KB muy etiquetado | 0,576 ms | **0,263 ms** ✅ | 2,19× |
-| `scanBBCode`, 20 KB en MAYÚSCULAS | 0,563 ms | **0,290 ms** ✅ | 1,94× |
-| `scanBBCode`, 20 KB de texto plano | 0,073 ms | **0,058 ms** ✅ | 1,27× |
-| **Coste por pulsación** | 1,09 ms | **0,905 ms** ✅ | −17% |
-| Flujo de tokens vs el lexer anterior | — | **idéntico** ✅ | 56.049 docs, 776.021 tokens |
-| Suite de tests | 259 verdes | **308 verdes** ✅ | +49, el lexer no tenía ninguno |
+| `scanBBCode`, 19.6 KB fixture | 0.618 ms | **0.278 ms** ✅ | **2.22×** |
+| `scanBBCode`, 20 KB heavily tagged | 0.576 ms | **0.263 ms** ✅ | 2.19× |
+| `scanBBCode`, 20 KB in UPPERCASE | 0.563 ms | **0.290 ms** ✅ | 1.94× |
+| `scanBBCode`, 20 KB of plain text | 0.073 ms | **0.058 ms** ✅ | 1.27× |
+| **Cost per keystroke** | 1.09 ms | **0.905 ms** ✅ | −17% |
+| Token stream vs the previous lexer | — | **identical** ✅ | 56,049 docs, 776,021 tokens |
+| Test suite | 259 green | **308 green** ✅ | +49, the lexer had none |
 
-### Semana 7 — granularidad del incremental
+### Week 7 — incremental granularity
 
-| Métrica | Antes | Después | Nota |
+| Metric | Before | After | Note |
 |---|---|---|---|
-| `parse` por pulsación dentro de `[notice]` | 0,267 ms | **0,0098 ms** ✅ | **27×** — la región deja de ser el 66% del documento |
-| Reparse dentro de `[notice]` | 0,688 ms | **0,378 ms** ✅ | −45% |
-| Escribir al final del post | *rebuild completo* | **0,657 ms** ✅ | 43/43 aciertos; antes 0/43 |
-| Pulsación con el caret al final | 1,92 ms | **0,657 ms** ✅ | −66% |
-| Divergencias vs rebuild | — | **0 de 32.100** ✅ | fuzz diferencial |
-| Suite de tests | 308 verdes | **311 verdes** ✅ | +3 de edición en raíz |
+| `parse` per keystroke inside `[notice]` | 0.267 ms | **0.0098 ms** ✅ | **27×** — the region stops being 66% of the document |
+| Reparse inside `[notice]` | 0.688 ms | **0.378 ms** ✅ | −45% |
+| Typing at the end of the post | *full rebuild* | **0.657 ms** ✅ | 43/43 hits; before 0/43 |
+| Keystroke with the caret at the end | 1.92 ms | **0.657 ms** ✅ | −66% |
+| Divergences vs rebuild | — | **0 of 32,100** ✅ | differential fuzz |
+| Test suite | 308 green | **311 green** ✅ | +3 root edit |
 
-### Semana 8 — el parser
+### Week 8 — the parser
 
-| Métrica | Antes | Después | Nota |
+| Metric | Before | After | Note |
 |---|---|---|---|
-| `parseTokensToGreen`, fixture 19,6 KB | 0,480 ms | **0,314 ms** ✅ | **1,53×**, A/B alternado contra HEAD |
-| `Object.freeze` por nodo | 30% del parser | **0** en producción | se conserva en dev y en tests |
-| Árbol idéntico al parser anterior | — | **196.076 parseos** ✅ | 1.985.691 nodos, 0 divergencias |
-| Coste por pulsación | 0,698 ms | 0,700 ms | sin cambio, y es lo esperado |
+| `parseTokensToGreen`, 19.6 KB fixture | 0.480 ms | **0.314 ms** ✅ | **1.53×**, A/B alternating against HEAD |
+| `Object.freeze` per node | 30% of the parser | **0** in production | kept in dev and in tests |
+| Tree identical to the previous parser | — | **196,076 parses** ✅ | 1,985,691 nodes, 0 divergences |
+| Cost per keystroke | 0.698 ms | 0.700 ms | no change, and that is expected |
 
-### Semana 9 — el diff de `applyTextUpdate`
+### Week 9 — the `applyTextUpdate` diff
 
-| Métrica | Antes | Después | Nota |
+| Metric | Before | After | Note |
 |---|---|---|---|
-| Pulsación, edición **en medio** | 0,702 ms | **0,620 ms** ✅ | −12%, A/B contra HEAD |
-| Pulsación, **añadir al final** | 0,617 ms | 0,627 ms | sin cambio (ver abajo) |
-| `TextChange` idéntico al anterior | — | **253.902 pares** ✅ | 0 divergencias |
+| Keystroke, edit **in the middle** | 0.702 ms | **0.620 ms** ✅ | −12%, A/B against HEAD |
+| Keystroke, **append at the end** | 0.617 ms | 0.627 ms | no change (see below) |
+| `TextChange` identical to the previous one | — | **253,902 pairs** ✅ | 0 divergences |
 
-### Semana 10 — `analyze()`
+### Week 10 — `analyze()`
 
-| Métrica | Antes | Después | Nota |
+| Metric | Before | After | Note |
 |---|---|---|---|
-| `analyze()`, documento limpio | 0,601 ms | **0,295 ms** ✅ | **2,0×**, mediana de 7 tandas |
-| `analyze()`, documento lleno de errores | 1,58 ms | **1,12 ms** ✅ | 1,4× |
-| `rebuild` con análisis | 2,74 ms | **2,03 ms** ✅ | −26% |
-| Diagnósticos y su asignación a nodos | — | **idénticos** ✅ | 20.002 docs, 18.929 con diagnósticos |
+| `analyze()`, clean document | 0.601 ms | **0.295 ms** ✅ | **2.0×**, median of 7 batches |
+| `analyze()`, document full of errors | 1.58 ms | **1.12 ms** ✅ | 1.4× |
+| `rebuild` with analysis | 2.74 ms | **2.03 ms** ✅ | −26% |
+| Diagnostics and their assignment to nodes | — | **identical** ✅ | 20,002 docs, 18,929 with diagnostics |
 
-### Semana 11 — el memo de corchetes del lexer
+### Week 11 — the lexer's bracket memo
 
-| Métrica | Antes | Después | Nota |
+| Metric | Before | After | Note |
 |---|---|---|---|
-| `scanBBCode`, fixture 19,6 KB | 0,286 ms | **0,226 ms** ✅ | −21% |
-| `scanBBCode`, 20 KB muy etiquetado | 0,283 ms | **0,199 ms** ✅ | −30% |
-| `scanBBCode`, 16k corchetes sin cerrar | 1,996 ms | 2,004 ms | **sin cambio** — el arreglo del cuadrático sigue intacto |
-| Flujo de tokens | — | **idéntico** ✅ | 56.012 docs, 882.752 tokens |
+| `scanBBCode`, 19.6 KB fixture | 0.286 ms | **0.226 ms** ✅ | −21% |
+| `scanBBCode`, 20 KB heavily tagged | 0.283 ms | **0.199 ms** ✅ | −30% |
+| `scanBBCode`, 16k unclosed brackets | 1.996 ms | 2.004 ms | **no change** — the quadratic fix is still intact |
+| Token stream | — | **identical** ✅ | 56,012 docs, 882,752 tokens |
 
-### Desglose del pipeline (baseline)
+### Pipeline breakdown (baseline)
 
-| Fase | ms | Nota |
+| Phase | ms | Note |
 |---|---|---|
-| `scanBBCode` (lex) | 0.91 | aceptable |
-| `parseTokensToGreen` | 0.82 | aceptable |
-| **`greenToRedNode`** | **3.95** | más lento que lex+parse juntos |
-| `HTMLRenderer.render` | 1.95 | sin caché |
-| `new BBCodeDocumentModel` | 5.92 | por llamada |
-| **`rebuild()` con matcher** | **290** | 🔴 |
+| `scanBBCode` (lex) | 0.91 | acceptable |
+| `parseTokensToGreen` | 0.82 | acceptable |
+| **`greenToRedNode`** | **3.95** | slower than lex+parse together |
+| `HTMLRenderer.render` | 1.95 | no cache |
+| `new BBCodeDocumentModel` | 5.92 | per call |
+| **`rebuild()` with matcher** | **290** | 🔴 |
 
 ---
 
-## 2. Hallazgos — Tier S (roto)
+## 2. Findings — Tier S (broken)
 
-### S1 · `GreenNode._hash` no existía — structural sharing era ficción ✅ RESUELTO
+### S1 · `GreenNode._hash` did not exist — structural sharing was fiction ✅ RESOLVED
 
-`GreenNodePool` y `RedNodeStore` leían una propiedad que la clase nunca definía:
+`GreenNodePool` and `RedNodeStore` read a property that the class never defined:
 
 ```
 src/Syntax/GreenNodePool.ts:151   h = this.hashCombine(h, children[0]._hash)   // undefined
 src/Syntax/RedNodeStore.ts:52     const hash = green._hash.toString()          // TypeError
 ```
 
-Consecuencias:
-- `RedNodeStore.getOrCreate()` lanzaba `TypeError` en su primera línea. **Nunca se ejecutó.**
-- `computeBucketKey()` hacía `seed ^= undefined` → coacciona a `0` → la clave **ignoraba los hijos**.
-  Todos los `<kind, text, childCount>` iguales caían en el mismo bucket → interning `O(N)` por nodo → **`O(N²)` global**.
+Consequences:
+- `RedNodeStore.getOrCreate()` threw `TypeError` on its first line. **It never ran.**
+- `computeBucketKey()` did `seed ^= undefined` → coerces to `0` → the key **ignored the children**.
+  All equal `<kind, text, childCount>` fell into the same bucket → `O(N)` interning per node → **global `O(N²)`**.
 
-**Resuelto:** `_hash` implementado (FNV-1a, memoizado, *excluyendo el rango*). `RedNodeStore` ya
-funciona: **53.5% de dedup** en un documento real.
+**Resolved:** `_hash` implemented (FNV-1a, memoized, *excluding the range*). `RedNodeStore` now
+works: **53.5% dedup** on a real document.
 
-### S2 · `internLeaf` devuelve rangos incorrectos ✅ RESUELTO (Semana 5) — ver §7-ter
+### S2 · `internLeaf` returns incorrect ranges ✅ RESOLVED (Week 5) — see §7-ter
 
 ```ts
 // GreenNodePool.ts:68
-const key = `${kind}:${text}`   // sin start/end
+const key = `${kind}:${text}`   // without start/end
 ```
 
-La clave ignora la posición: la segunda aparición de `"Hello"` devuelve el nodo cacheado
-**con el rango de la primera**. Si se activa el interner, todo lo que depende de offsets
-(incremental, `findNodeAtOffset`, diagnósticos, mapeo Monaco↔AST) empieza a mentir en silencio.
+The key ignores the position: the second occurrence of `"Hello"` returns the cached node
+**with the range of the first**. If the interner is turned on, everything that depends on offsets
+(incremental, `findNodeAtOffset`, diagnostics, Monaco↔AST mapping) starts lying silently.
 
-Además `internNode` (`GreenNodePool.ts:108-109`) exige `range.start`/`range.end` idénticos para
-deduplicar → el mismo bloque pegado 10 veces da **0% de dedup y 100% del coste de escaneo**.
-Confirmado tras arreglar `_hash`: `collisionHits: 0`.
+In addition, `internNode` (`GreenNodePool.ts:108-109`) requires identical `range.start`/`range.end` to
+deduplicate → the same block pasted 10 times gives **0% dedup and 100% of the scanning cost**.
+Confirmed after fixing `_hash`: `collisionHits: 0`.
 
-### S3 · `NodeMatcher` — 380 ms por carácter escrito ✅ RESUELTO
+### S3 · `NodeMatcher` — 380 ms per typed character ✅ RESOLVED
 
-Dos fallos multiplicándose:
+Two failures multiplying:
 
-1. **La Fase 1 (match por ID) nunca acertaba.** `RedNode` genera `createNodeId()` fresco en cada
-   construcción → tras un `rebuild()` ningún ID coincide. `exact: 0`. Siempre.
-2. **La Fase 2 era `O(n² · subárbol)`**: bucle anidado que recomputaba `fingerprint()` (un `walk()`
-   completo con array de strings + `join()`) en cada comparación. 1736 × 1736 fingerprints.
+1. **Phase 1 (match by ID) never hit.** `RedNode` generates a fresh `createNodeId()` on every
+   construction → after a `rebuild()` no ID matches. `exact: 0`. Always.
+2. **Phase 2 was `O(n² · subtree)`**: a nested loop that recomputed `fingerprint()` (a full
+   `walk()` with a string array + `join()`) on every comparison. 1736 × 1736 fingerprints.
 
-Bonus: el resultado era **incoherente** — `moved: 1734` y `deleted: 1736` a la vez, porque la Fase 2
-borraba de `unmatchedNew` pero nunca de `unmatchedOld` (`NodeMatcher.ts:133`).
+Bonus: the result was **incoherent** — `moved: 1734` and `deleted: 1736` at the same time, because Phase 2
+deleted from `unmatchedNew` but never from `unmatchedOld` (`NodeMatcher.ts:133`).
 
-**Resuelto:** fingerprints memoizados bottom-up (64 bits, dos lanes FNV) + índice por bucket con
-cursor. Escalado ahora lineal. Coherencia arreglada: 1736 clasificaciones para 1736 nodos.
+**Resolved:** memoized bottom-up fingerprints (64 bits, two FNV lanes) + a bucket index with a
+cursor. Scaling is now linear. Coherence fixed: 1736 classifications for 1736 nodes.
 
-### S4 · XSS activo en el preview ✅ RESUELTO
+### S4 · Active XSS in the preview ✅ RESOLVED
 
-`escapeHtml` cubría `& < > "` pero los valores de estilo se inyectaban **sin escapar ninguno**:
+`escapeHtml` covered `& < > "` but style values were injected **without escaping any of them**:
 
 ```
 IN : [color=red;" onmouseover="alert(1)]hola[/color]
 OUT: <span style="color:red;" onmouseover="alert(1);">hola</span>
-                       ↑ atributo de evento real y funcional
+                       ↑ real, working event attribute
 ```
 
-Vectores confirmados: `color`, `size`, `font`, `shadow` (`HTMLRenderer.ts:218-240`) y `gradient`
-(`:432` — el filtro `startsWith('#')` no salvaba nada: `#a" onmouseover="…` pasa).
-Llegaba a `morphHTML()` / `dangerouslySetInnerHTML` en `Preview.tsx:56`,
+Confirmed vectors: `color`, `size`, `font`, `shadow` (`HTMLRenderer.ts:218-240`) and `gradient`
+(`:432` — the `startsWith('#')` filter saved nothing: `#a" onmouseover="…` gets through).
+It reached `morphHTML()` / `dangerouslySetInnerHTML` in `Preview.tsx:56`,
 `preview-panel.tsx:124`, `SnippetsWindow.tsx:309`.
 
-**Resuelto:** `escapeHtml` escapa también `'`, y los valores CSS pasan por allowlists
-(`CSS_COLOR_RE`, `CSS_SIZE_RE`, `CSS_FONT_RE`). Verificado: 0 inyecciones, render de BBCode válido
-idéntico.
+**Resolved:** `escapeHtml` now also escapes `'`, and CSS values go through allowlists
+(`CSS_COLOR_RE`, `CSS_SIZE_RE`, `CSS_FONT_RE`). Verified: 0 injections, render of valid BBCode
+identical.
 
-### S5 · El parser incremental deja el árbol mintiendo ✅ RESUELTO (Semana 4) — ver el punto 9
+### S5 · The incremental parser leaves the tree lying ✅ RESOLVED (Week 4) — see point 9
 
-`IncrementalParser.reparse()` sustituye un subárbol in-place pero **nunca desplaza los offsets de
-hermanos ni ancestros**. El propio código lo admite:
+`IncrementalParser.reparse()` replaces a subtree in-place but **never shifts the offsets of
+siblings or ancestors**. The code itself admits it:
 
 ```ts
 // IncrementalParser.ts:78
 // Tree ranges are stale (after fast-path appends without range updates).
 ```
 
-Y en vez de arreglarlo, hace un rebuild completo cuando detecta la corrupción. Peor:
+And instead of fixing it, it does a full rebuild when it detects the corruption. Worse:
 
 ```ts
 return { green: newRootRed.green, ... }   // :151, :202
 ```
 
-Devuelve el **green node viejo** de la raíz → `_greenRoot` y `_redRoot` quedan desincronizados
-permanentemente tras la primera edición incremental.
+It returns the root's **old green node** → `_greenRoot` and `_redRoot` stay out of sync
+permanently after the first incremental edit.
 
-Además `BBCodePipeline.process()` devuelve **la misma referencia** `this._model.redRoot` mutada
-in-place: cualquier consumidor React que compare `prevAst !== nextAst` no ve nada.
+In addition, `BBCodePipeline.process()` returns **the same reference** `this._model.redRoot` mutated
+in-place: any React consumer that compares `prevAst !== nextAst` sees nothing.
 
-### S6 · Lexer `O(n²)` con corchetes sin cerrar ✅ RESUELTO
+### S6 · `O(n²)` lexer with unclosed brackets ✅ RESOLVED
 
-Para cada `[`, se escaneaba hasta encontrar `]`; si no había, se escaneaba **hasta el final** y se
-avanzaba *un solo carácter*.
+For each `[`, it scanned until it found `]`; if there was none, it scanned **to the end** and
+advanced *a single character*.
 
-| Entrada | Antes | Ahora |
+| Input | Before | Now |
 |---|---|---|
-| 2000 `[` sin cerrar | 12.25 ms | ~1 ms |
+| 2000 unclosed `[` | 12.25 ms | ~1 ms |
 | 4000 `[` | 36.29 ms | ~1 ms |
 | 8000 `[` | 143.38 ms | ~2 ms |
 | 16000 `[` | **555.56 ms** | **2.72 ms** |
 
-DoS por pegado: cualquier snippet de código o ASCII art con corchetes congelaba el editor.
+DoS by pasting: any code snippet or ASCII art with brackets froze the editor.
 
-**Resuelto:** un solo barrido descubre el `]` de *todos* los `[` que atraviesa vía la pila de
-corchetes, y memoiza. `O(n²)` → `O(n)`.
-**Validado diferencialmente** contra el algoritmo anterior: 149.894 posiciones comparadas,
-**0 discrepancias** + 50.000 documentos aleatorios con cobertura contigua intacta.
+**Resolved:** a single sweep discovers the `]` of *all* the `[` it crosses via the bracket
+stack, and memoizes. `O(n²)` → `O(n)`.
+**Validated differentially** against the previous algorithm: 149,894 positions compared,
+**0 discrepancies** + 50,000 random documents with contiguous coverage intact.
 
 ---
 
-## 3. Hallazgos — Tier A (rendimiento)
+## 3. Findings — Tier A (performance)
 
-### A1 · `greenToRedNode` — 90% es ceremonia ✅ RESUELTO (Semana 2)
+### A1 · `greenToRedNode` — 90% is ceremony ✅ RESOLVED (Week 2)
 
 ```
 greenToRedNode (real)              2.59 ms
-walk equivalente sin ceremonia     0.27 ms   ← 9.6×
+equivalent walk without ceremony   0.27 ms   ← 9.6×
 walk + randomUUID                  0.78 ms
 ```
 
-El coste no es construir el árbol, es:
-- **`crypto.randomUUID()` por nodo** (1736 UUIDs). Además son 36 caracteres que se escupen en *cada*
-  elemento HTML como `data-node-id` → HTML inflado y morphing más lento. Un contador monótono es
-  ~7× más rápido y 4× más corto. La aleatoriedad no aporta nada: no son IDs distribuidos.
-- **`RedNode.allowMutation(() => {...})` por nodo** — closure + `try/finally` + flag estático, 1736
-  veces, para poblar hijos recién creados.
-- **`extractGreenNodeMetadata`** aloja dos closures (`firstChildText`, `stripBBCode`) **por nodo**
-  aunque el `switch` no las use.
+The cost is not building the tree, it is:
+- **`crypto.randomUUID()` per node** (1736 UUIDs). They are also 36 characters that get spat out into *every*
+  HTML element as `data-node-id` → bloated HTML and slower morphing. A monotonic counter is
+  ~7× faster and 4× shorter. The randomness adds nothing: these are not distributed IDs.
+- **`RedNode.allowMutation(() => {...})` per node** — closure + `try/finally` + static flag, 1736
+  times, to populate freshly created children.
+- **`extractGreenNodeMetadata`** allocates two closures (`firstChildText`, `stripBBCode`) **per node**
+  even when the `switch` does not use them.
 
-### A2 · `previousSibling` / `nextSibling` / `index` son `O(n)` ✅ RESUELTO (Semana 2)
+### A2 · `previousSibling` / `nextSibling` / `index` are `O(n)` ✅ RESOLVED (Week 2)
 
 ```ts
 // RedNode.ts:132, 139, 146
 const idx = this.parent.children.indexOf(this)
 ```
 
-`HTMLRenderer.isPrevBlockBoundary()` (`:177`) recorre hermanos hacia atrás en bucle, y **cada paso
-hace un `indexOf`** → render cuadrático:
+`HTMLRenderer.isPrevBlockBoundary()` (`:177`) walks siblings backwards in a loop, and **every step
+does an `indexOf`** → quadratic render:
 
-| Hermanos raíz | ms |
+| Root siblings | ms |
 |---|---|
 | 500 | 0.96 |
 | 1000 | 1.97 |
 | 2000 | 5.33 |
-| 4000 | **14.11** ← 2.6× por duplicación |
+| 4000 | **14.11** ← 2.6× per doubling |
 
-**Fix:** cachear `indexInParent` en el `RedNode`, invalidado en las mutaciones estructurales (que ya
-pasan todas por `assertMutating`). Tres getters `O(n)` → `O(1)`, render lineal.
+**Fix:** cache `indexInParent` in the `RedNode`, invalidated on structural mutations (which all
+already go through `assertMutating`). Three `O(n)` getters → `O(1)`, linear render.
 
-> Nota: `NodeMatcher` ya no usa el getter `index` (Semana 1 lo precomputa en su traversal), pero el
-> `HTMLRenderer` y el `QueryEngine` sí siguen usándolo.
+> Note: `NodeMatcher` no longer uses the `index` getter (Week 1 precomputes it in its traversal), but
+> `HTMLRenderer` and `QueryEngine` still use it.
 
-### A3 · Cero caché de render ⛔ DESCARTADO (Semana 2) — ver el aviso del punto 8
+### A3 · Zero render cache ⛔ DISCARDED (Week 2) — see the warning in point 8
 
-`RedNodeStore.ts:21` promete *"HTMLRenderer cache: same canonicalId = same HTML"*. **No existe.**
-Cada pulsación re-renderiza el documento entero a string. Con `_hash` (ya disponible) + memo por
-hash el hit ratio sería altísimo: el 99% del árbol no cambia entre teclas.
+`RedNodeStore.ts:21` promises *"HTMLRenderer cache: same canonicalId = same HTML"*. **It does not exist.**
+Every keystroke re-renders the whole document to a string. With `_hash` (already available) + a memo by
+hash the hit ratio would be very high: 99% of the tree does not change between keys.
 
-### A4 · `HTMLRenderer` construye strings por concatenación ✅ RESUELTO (Semana 2) — pero el cuello era `escapeHtml`
+### A4 · `HTMLRenderer` builds strings by concatenation ✅ RESOLVED (Week 2) — but the bottleneck was `escapeHtml`
 
-Cada `wrapInline`/`wrapBlock` hace `children.map(...).join('')` + template literal → dos arrays
-intermedios y N strings temporales por nodo. Un `string[]` acumulador único en pre-orden elimina
-casi todo.
+Every `wrapInline`/`wrapBlock` does `children.map(...).join('')` + a template literal → two
+intermediate arrays and N temporary strings per node. A single accumulator `string[]` in pre-order eliminates
+almost all of it.
 
-Detalle: `this.depth` y `this.inlineLevel` se incrementan y decrementan religiosamente y
-**no se leen nunca**. Estado muerto en el bucle caliente.
+Detail: `this.depth` and `this.inlineLevel` are incremented and decremented religiously and
+**never read**. Dead state in the hot loop.
 
-### A5 · Opciones descartadas en silencio ✅ RESUELTO (Semana 3)
+### A5 · Options silently discarded ✅ RESOLVED (Week 3)
 
 ```ts
 // BBCodeDocumentModel.ts:48
 super({ source: '', language: options.language ?? 'bbcode' })
 ```
 
-`autoAnalyze` y `maxUndo` **nunca llegan a `DocumentModel`**. Verificado: pasar
-`autoAnalyze: false` no cambia el tiempo. No se puede desactivar el análisis semántico.
+`autoAnalyze` and `maxUndo` **never reach `DocumentModel`**. Verified: passing
+`autoAnalyze: false` does not change the time. Semantic analysis cannot be turned off.
 
-`QuasarEngineService.parse()` (`:35`) construye un `BBCodeDocumentModel` completo por llamada
-—instanciando `TagRegistry`, `NodeFactory`, `TreeBuilder`, `NodeMatcher`, `SemanticAnalyzer`,
-`IncrementalParser`, `ChangeTracker`, `UndoManager`, `QueryEngine`, `EventBus`— para un parse de
-usar y tirar. `SnippetsWindow` lo llama por cada snippet.
+`QuasarEngineService.parse()` (`:35`) builds a full `BBCodeDocumentModel` per call
+—instantiating `TagRegistry`, `NodeFactory`, `TreeBuilder`, `NodeMatcher`, `SemanticAnalyzer`,
+`IncrementalParser`, `ChangeTracker`, `UndoManager`, `QueryEngine`, `EventBus`— for a
+throwaway parse. `SnippetsWindow` calls it for every snippet.
 
-### A6 · `analyze()` es `O(N · D)` innecesariamente ✅ RESUELTO (Semana 3) — pero D era 0, ver el punto 15
+### A6 · `analyze()` is `O(N · D)` unnecessarily ✅ RESOLVED (Week 3) — but D was 0, see point 15
 
-`DocumentModel.analyze():404` hace un `walk()` completo para vaciar diagnósticos y luego un
-`findById()` (`O(N)`) **por cada diagnóstico**. El `Map<id, node>` ya se construye dentro de
-`SemanticAnalyzer.analyze()` — basta devolverlo.
+`DocumentModel.analyze():404` does a full `walk()` to clear diagnostics and then a
+`findById()` (`O(N)`) **for each diagnostic**. The `Map<id, node>` is already built inside
+`SemanticAnalyzer.analyze()` — it is enough to return it.
 
-### A7 · `ASTOptimizer` clona con `JSON.parse(JSON.stringify(...))` ✅ RESUELTO (Semana 3)
+### A7 · `ASTOptimizer` clones with `JSON.parse(JSON.stringify(...))` ✅ RESOLVED (Week 3)
 
-Cuatro sitios (`:84, :117, :123, :151`) y dos comparaciones por `JSON.stringify` (`:192-193`).
-Deep-clone y deep-equal por serialización en un transformador que recorre todo el árbol.
+Four places (`:84, :117, :123, :151`) and two comparisons via `JSON.stringify` (`:192-193`).
+Deep-clone and deep-equal by serialization in a transformer that walks the whole tree.
 
-### A8 · `DOMMorpher` sin keys ✅ RESUELTO (Semana 3) — pero no con keys, ver el punto 12
+### A8 · `DOMMorpher` without keys ✅ RESOLVED (Week 3) — but not with keys, see point 12
 
-`morphNodes` empareja hijos **por índice**. Insertar un nodo al principio provoca una cascada de
-`replaceChild` sobre todo lo que sigue — justo lo que un morpher debe evitar. Ya se emite
-`data-node-id` en cada elemento: usarlo como key (como `morphdom`/`idiomorph`).
-Además `Array.from(childNodes)` en cada nivel de recursión.
+`morphNodes` pairs children **by index**. Inserting a node at the start causes a cascade of
+`replaceChild` over everything that follows — exactly what a morpher must avoid. `data-node-id` is already
+emitted on every element: use it as the key (like `morphdom`/`idiomorph`).
+Also `Array.from(childNodes)` at every level of recursion.
 
 ---
 
-## 4. Hallazgos — Tier B (arquitectura)
+## 4. Findings — Tier B (architecture)
 
-### B1 · `tsc` no compilaba — 48 errores ✅ RESUELTO
+### B1 · `tsc` did not compile — 48 errors ✅ RESOLVED
 
-Incluidos 3 que eran un **crash real en runtime** (`_hash`). `tsc` lo detectaba desde siempre;
-simplemente nadie ejecutaba `tsc`.
+Including 3 that were a **real runtime crash** (`_hash`). `tsc` had been detecting it all along;
+nobody just ran `tsc`.
 
-Dos bugs latentes descubiertos al arreglar los tipos:
+Two latent bugs discovered while fixing the types:
 
-- **`MarkdownExporter.extractValue` leía `node.properties` / `node.attributes`**, que no existen en
-  `RedNode` → devolvía `undefined` siempre. La exportación a Markdown llevaba desde siempre
-  perdiendo destinos de enlace y títulos de quote/box. ✅ Reescrito.
-- **`MarkdownToGreenNode` descartaba `image` y `code_inline`** (caían en `default` como texto vacío).
-  ✅ Añadidos, y el `default` es ahora un guard de exhaustividad (`const unhandled: never = node`).
-- `MarkdownSpoiler`/`MarkdownNotice` añadidos al union: el parser ya los producía con `as any`.
+- **`MarkdownExporter.extractValue` read `node.properties` / `node.attributes`**, which do not exist on
+  `RedNode` → it always returned `undefined`. Markdown export had always been
+  losing link destinations and quote/box titles. ✅ Rewritten.
+- **`MarkdownToGreenNode` dropped `image` and `code_inline`** (they fell into `default` as empty text).
+  ✅ Added, and the `default` is now an exhaustiveness guard (`const unhandled: never = node`).
+- `MarkdownSpoiler`/`MarkdownNotice` added to the union: the parser already produced them with `as any`.
 
-### B2 · El "lock de mutación" no protege nada ✅ RESUELTO (Semana 3) — ver el punto 13
+### B2 · The "mutation lock" protects nothing ✅ RESOLVED (Week 3) — see point 13
 
-`RedNode.assertMutating()` es un flag estático **global**. `allowMutation()` lo activa para todo el
-proceso. No hay aislamiento por documento, transacción ni hilo. Es un `console.assert` caro
-disfrazado de invariante — y el árbol rojo se muta libremente desde `IncrementalParser`,
-`treeTransformers`, `Transaction` y `RedNodeStore`. La "inmutabilidad estricta" que `QUASAR.MD §3`
-invoca para justificar la tolerancia a concurrencia **no está en el código**.
+`RedNode.assertMutating()` is a **global** static flag. `allowMutation()` turns it on for the whole
+process. There is no isolation per document, transaction or thread. It is an expensive `console.assert`
+disguised as an invariant — and the red tree is freely mutated from `IncrementalParser`,
+`treeTransformers`, `Transaction` and `RedNodeStore`. The "strict immutability" that `QUASAR.MD §3`
+invokes to justify the concurrency tolerance **is not in the code**.
 
-### B3 · Lógica duplicada palabra por palabra ✅ RESUELTO (Semana 3)
+### B3 · Logic duplicated word for word ✅ RESOLVED (Week 3)
 
-`RedNodeStore.extractIntrinsicMetadata()` (`:133-183`) es una **copia literal** de
-`BBCodeToGreenNode.extractGreenNodeMetadata()` (`:184-236`). El propio comentario lo dice:
-*"Mirrors extractGreenNodeMetadata"*. Dos fuentes de verdad para el mapeo attrs→metadata.
+`RedNodeStore.extractIntrinsicMetadata()` (`:133-183`) is a **literal copy** of
+`BBCodeToGreenNode.extractGreenNodeMetadata()` (`:184-236`). The comment itself says so:
+*"Mirrors extractGreenNodeMetadata"*. Two sources of truth for the attrs→metadata mapping.
 
-### B4 · Código muerto declarado como feature ✅ RESUELTO (Semana 3)
+### B4 · Dead code declared as a feature ✅ RESOLVED (Week 3)
 
-- `const SELF_CLOSING = new Set<string>([])` (`Parser.ts:39`) — **vacío**. Todas las ramas
-  `SELF_CLOSING.has(...)` son inalcanzables.
-- `IncrementalParser.fullReparse()` ignora el parser y devuelve el documento entero como **un único
-  nodo de texto**. Si algo la llama, destruye el árbol.
-- `SAFE_BOUNDARY_TAGS` es un array con `.includes()` en el bucle de ascenso (`:102`) → debería ser `Set`.
-- Bloques copy-paste inertes en el lexer (asignan variables y las reasignan idénticas dos líneas después).
+- `const SELF_CLOSING = new Set<string>([])` (`Parser.ts:39`) — **empty**. All the
+  `SELF_CLOSING.has(...)` branches are unreachable.
+- `IncrementalParser.fullReparse()` ignores the parser and returns the whole document as **a single
+  text node**. If anything calls it, it destroys the tree.
+- `SAFE_BOUNDARY_TAGS` is an array with `.includes()` in the climbing loop (`:102`) → it should be a `Set`.
+- Inert copy-paste blocks in the lexer (they assign variables and reassign them identically two lines later).
 
-### B5 · Los tests mentían sobre el estado del motor ✅ RESUELTO (parcial)
+### B5 · The tests lied about the state of the engine ✅ RESOLVED (partial)
 
-- ✅ **4 tests permanentemente rojos** por `src/document_test.milia`, que no existe ni en el
-  historial de git. Borrados (aprobado por el usuario), junto a `UrlImgBugEngine.test.ts` que
-  importaba `../Engine/QuasarEngine` (inexistente) y era un duplicado sin aserciones de
+- ✅ **4 permanently red tests** because of `src/document_test.milia`, which does not exist and is not even in
+  the git history. Deleted (approved by the user), along with `UrlImgBugEngine.test.ts`, which
+  imported `../Engine/QuasarEngine` (nonexistent) and was a duplicate, without assertions, of
   `UrlImgBug.test.ts`.
-- ✅ **El fuzzer usaba `Math.random()` sin semilla.** Medido: `pass, FAIL, FAIL, FAIL, pass`
-  → **60% de flake**, y cuando fallaba el payload se perdía. Ahora usa mulberry32 con semilla fija
-  y override por `QUASAR_FUZZ_SEED`. Determinista 5/5.
-- ✅ **`ASTOptimizer` no es idempotente** — resuelto en la Semana 3, punto 11.
-- ⏳ Varios tests son `console.log` sin aserciones (`StudioDebugText`, `UrlImgBug`,
-  `ProblematicSection`): imprimen, no verifican.
+- ✅ **The fuzzer used `Math.random()` with no seed.** Measured: `pass, FAIL, FAIL, FAIL, pass`
+  → **60% flake**, and when it failed the payload was lost. It now uses mulberry32 with a fixed seed
+  and an override via `QUASAR_FUZZ_SEED`. Deterministic 5/5.
+- ✅ **`ASTOptimizer` is not idempotent** — resolved in Week 3, point 11.
+- ⏳ Several tests are `console.log` with no assertions (`StudioDebugText`, `UrlImgBug`,
+  `ProblematicSection`): they print, they do not verify.
 
 ---
 
-## 5. Semana 1 — Parar la hemorragia ✅
+## 5. Week 1 — Stop the bleeding ✅
 
-**Completada el 2026-07-31.** Suite: 170 verdes + 1 `expected fail`, determinista 5/5. `tsc`: 0 errores.
+**Completed on 2026-07-31.** Suite: 170 green + 1 `expected fail`, deterministic 5/5. `tsc`: 0 errors.
 
-| # | Tarea | Estado |
+| # | Task | Status |
 |---|---|---|
-| 1 | Escapar atributos + allowlist de valores CSS (S4) | ✅ |
-| 2 | Cachear el fallo de `indexOf(']')` en el lexer (S6) | ✅ |
-| 3 | Reescribir la Fase 2 de `NodeMatcher` + arreglar `unmatchedOld` (S3) | ✅ |
-| 4 | `tsc --noEmit` en CI + arreglar los 13 errores de `src/` (B1) | ✅ |
+| 1 | Escape attributes + CSS value allowlist (S4) | ✅ |
+| 2 | Cache the `indexOf(']')` failure in the lexer (S6) | ✅ |
+| 3 | Rewrite Phase 2 of `NodeMatcher` + fix `unmatchedOld` (S3) | ✅ |
+| 4 | `tsc --noEmit` in CI + fix the 13 errors in `src/` (B1) | ✅ |
 
-### Ficheros tocados
+### Files touched
 
 ```
-src/Syntax/hash.ts                        NUEVO — primitivas FNV-1a compartidas
-src/Syntax/GreenNode.ts                   _hash real (lazy, sentinela -1, `declare`)
-src/Syntax/NodeMatcher.ts                 reescritura de fases 1-3
-src/Lexer/BBCodeLexer.ts                  memo de emparejamiento de corchetes
-src/Visitors/HTMLRenderer.ts              allowlists CSS + escapado de `'`
-src/Visitors/MarkdownExporter.ts          extractValue arreglado (bug latente)
-src/BBCode/Parser.ts                      cast NodeKind
+src/Syntax/hash.ts                        NEW — shared FNV-1a primitives
+src/Syntax/GreenNode.ts                   real _hash (lazy, sentinel -1, `declare`)
+src/Syntax/NodeMatcher.ts                 rewrite of phases 1-3
+src/Lexer/BBCodeLexer.ts                  bracket-pairing memo
+src/Visitors/HTMLRenderer.ts              CSS allowlists + escaping of `'`
+src/Visitors/MarkdownExporter.ts          extractValue fixed (latent bug)
+src/BBCode/Parser.ts                      NodeKind cast
 src/Markdown/MarkdownAST.ts               + MarkdownSpoiler, MarkdownNotice
-src/Markdown/MarkdownParser.ts            quitados dos `as any`
-src/Markdown/MarkdownToGreenNode.ts       + image, code_inline, guard de exhaustividad
-src/Studio/index.ts                       desambiguación de ColorStop
-src/Tests/Fuzzer.test.ts                  mulberry32 con semilla
-src/Tests/ASTOptimizerIdempotence.test.ts NUEVO — repro fijado del bug de idempotencia
-src/Diff/__tests__/TreeDiffer.test.ts     tipos NodeId/NodeKind + imports vitest
-src/Incremental/__tests__/…test.ts        TextChange sin `kind`
-package.json                              scripts typecheck / verify
-../../.github/workflows/quasar-verify.yml NUEVO — gate de CI
-BORRADOS: StudioExport/Structure/Text/Equality.test.ts, UrlImgBugEngine.test.ts
+src/Markdown/MarkdownParser.ts            removed two `as any`
+src/Markdown/MarkdownToGreenNode.ts       + image, code_inline, exhaustiveness guard
+src/Studio/index.ts                       ColorStop disambiguation
+src/Tests/Fuzzer.test.ts                  mulberry32 with seed
+src/Tests/ASTOptimizerIdempotence.test.ts NEW — pinned repro of the idempotence bug
+src/Diff/__tests__/TreeDiffer.test.ts     NodeId/NodeKind types + vitest imports
+src/Incremental/__tests__/…test.ts        TextChange without `kind`
+package.json                              typecheck / verify scripts
+../../.github/workflows/quasar-verify.yml NEW — CI gate
+DELETED: StudioExport/Structure/Text/Equality.test.ts, UrlImgBugEngine.test.ts
 ```
 
-### Trampa encontrada durante la implementación
+### Trap found during implementation
 
-El campo `_hashCache` costaba **23% del parseo** (0.583 → 0.718 ms). Con `target: ES2022`,
-TypeScript activa `useDefineForClassFields` por defecto, así que una declaración de campo emite un
-`defineProperty` en **cada construcción**. Solución: `private declare _hashCache: number` +
-asignación en el constructor con centinela `-1`. Resultado: **0.546 ms**, por debajo del baseline.
+The `_hashCache` field cost **23% of parsing** (0.583 → 0.718 ms). With `target: ES2022`,
+TypeScript enables `useDefineForClassFields` by default, so a field declaration emits a
+`defineProperty` on **every construction**. Solution: `private declare _hashCache: number` +
+assignment in the constructor with a `-1` sentinel. Result: **0.546 ms**, below the baseline.
 
-> ⚠️ Esta trampa aplica a **cualquier campo nuevo** que se añada a `GreenNode` o `RedNode`.
-> Medir siempre antes y después.
+> ⚠️ This trap applies to **any new field** added to `GreenNode` or `RedNode`.
+> Always measure before and after.
 
 ---
 
-## 6. Semana 2 — El 10× de verdad ✅
+## 6. Week 2 — The real 10× ✅
 
-**Completada el 2026-07-31.** Ambos objetivos alcanzados: `rebuild` 15.13 → **3.81 ms** (< 5) y
-`render` 1.43 → **0.290 ms** (< 0.3). Suite: 170 verdes + 1 `expected fail`. `tsc`: 0 errores.
+**Completed on 2026-07-31.** Both targets reached: `rebuild` 15.13 → **3.81 ms** (< 5) and
+`render` 1.43 → **0.290 ms** (< 0.3). Suite: 170 green + 1 `expected fail`. `tsc`: 0 errors.
 
-Orden de ataque: 6 → 7 → 8 → 5, elegido para no bloquear la semana tras el cambio estructural.
+Order of attack: 6 → 7 → 8 → 5, chosen so as not to block the week behind the structural change.
 
-### 6. IDs monótonos + `indexInParent` cacheado (A1, A2) ✅
+### 6. Monotonic IDs + cached `indexInParent` (A1, A2) ✅
 
-- `createNodeId()` pasa de `crypto.randomUUID()` a un contador monótono (`n0`, `n1`, …).
-  Verificado antes de tocar nada: los `NodeId` **nunca se restauran desde persistencia**, solo se
-  escriben, así que la aleatoriedad no aportaba nada. **HTML emitido: 140.6 → 88.7 KB (−37%)**.
-- `indexInParent` cacheado con un diseño **auto-validante**: el getter confía en el índice solo si
-  `parent.children[cached] === this`, y recomputa si no. Esa única comparación por referencia lo
-  hace inmune al código que muta el array directamente (`treeTransformers` hace
-  `cloned.children = []`), que es justo donde un caché con invalidación explícita mentiría en
-  silencio. Además se siembra el índice en `appendChild`, así que la construcción nunca busca.
-- Validado diferencialmente contra `indexOf`: **35.111 nodos, 0 discrepancias**, incluyendo
-  5.382 mutaciones estructurales y manipulación directa del array a espaldas del caché.
-- Render de 4000 hermanos: **14.11 → 5.20 ms** (ya lineal en este punto).
+- `createNodeId()` goes from `crypto.randomUUID()` to a monotonic counter (`n0`, `n1`, …).
+  Verified before touching anything: `NodeId`s are **never restored from persistence**, only
+  written, so the randomness added nothing. **HTML emitted: 140.6 → 88.7 KB (−37%)**.
+- `indexInParent` cached with a **self-validating** design: the getter trusts the index only if
+  `parent.children[cached] === this`, and recomputes if not. That single reference comparison makes it
+  immune to code that mutates the array directly (`treeTransformers` does
+  `cloned.children = []`), which is exactly where a cache with explicit invalidation would lie
+  silently. The index is also seeded in `appendChild`, so construction never searches.
+- Validated differentially against `indexOf`: **35,111 nodes, 0 discrepancies**, including
+  5,382 structural mutations and direct manipulation of the array behind the cache's back.
+- Render of 4000 siblings: **14.11 → 5.20 ms** (already linear at this point).
 
-### 7. Quitar `allowMutation` del camino de construcción (A1) ✅
+### 7. Remove `allowMutation` from the construction path (A1) ✅
 
-- Nuevo `RedNode.initChildren(children)`: adopta el array entero de una vez, fuera del lock. Antes
-  se llamaba `allowMutation(() => { for (…) appendChild(…) })` **una vez por nodo** — 1736 closures,
-  1736 `try/finally` y 1736 guardas de flag estático por parseo.
-- Aplicado a los cuatro constructores de árbol rojo (`BBCodeToGreenNode`, `MarkdownToGreenNode`,
-  `HTMLToGreenNode`, `UIBlocksToRedTree`) y a `RedNodeStore`.
-- `extractGreenNodeMetadata`: las dos closures (`firstChildText`, `stripBBCode`) subidas a nivel de
-  módulo — se alojaban por nodo aunque el `switch` no las usara.
-- **`greenToRedNode`: 2.13 → 0.251 ms (8.5×)**, muy por debajo del objetivo de 0.8 ms.
+- New `RedNode.initChildren(children)`: adopts the whole array at once, outside the lock. Before,
+  `allowMutation(() => { for (…) appendChild(…) })` was called **once per node** — 1736 closures,
+  1736 `try/finally` and 1736 static flag guards per parse.
+- Applied to the four red tree constructors (`BBCodeToGreenNode`, `MarkdownToGreenNode`,
+  `HTMLToGreenNode`, `UIBlocksToRedTree`) and to `RedNodeStore`.
+- `extractGreenNodeMetadata`: the two closures (`firstChildText`, `stripBBCode`) hoisted to
+  module level — they were allocated per node even when the `switch` did not use them.
+- **`greenToRedNode`: 2.13 → 0.251 ms (8.5×)**, well below the 0.8 ms target.
 
-### 8. Renderer (A3, A4) ✅ — con una desviación
+### 8. Renderer (A3, A4) ✅ — with a deviation
 
-- **El cuello real no era el `map/join` que señalaba A4, sino `escapeHtml`**: hacía cinco pasadas
-  de regex sobre *cada* cadena, con hasta cinco asignaciones intermedias, aunque la prosa normal no
-  contiene ninguno de esos cinco caracteres. Reescrito a un `test` + una sola pasada.
-  Validado diferencialmente contra la implementación anterior: **208.212 casos, 0 discrepancias**
-  (incluye todo el espacio de un carácter hasta U+2000 y 200.000 cadenas aleatorias).
-- `renderChildren()` sustituye el idioma `map().join('')` en los 16 sitios.
-- `this.depth` y `this.inlineLevel` borrados. `tsc` confirmó que `inlineLevel` seguía referenciado,
-  pero solo para escribir: ocho `++`/`--` y ninguna lectura.
-- **`render`: 1.567 → 0.290 ms. Con 4000 hermanos: 14.11 → 1.25 ms (11.3×).**
+- **The real bottleneck was not the `map/join` that A4 pointed to, but `escapeHtml`**: it made five regex
+  passes over *every* string, with up to five intermediate allocations, even though normal prose does not
+  contain any of those five characters. Rewritten to a `test` + a single pass.
+  Validated differentially against the previous implementation: **208,212 cases, 0 discrepancies**
+  (includes the whole one-character space up to U+2000 and 200,000 random strings).
+- `renderChildren()` replaces the `map().join('')` idiom in the 16 places.
+- `this.depth` and `this.inlineLevel` deleted. `tsc` confirmed that `inlineLevel` was still referenced,
+  but only to write: eight `++`/`--` and no reads.
+- **`render`: 1.567 → 0.290 ms. With 4000 siblings: 14.11 → 1.25 ms (11.3×).**
 
-> ⚠️ **El caché por `_hash` NO se implementó, y no debe implementarse tal como está especificado.**
-> Dos razones independientes, ambas verificadas:
-> 1. El HTML lleva `node.id` incrustado en cada elemento. Cachear un subárbol por `_hash` haría que
->    dos subárboles estructuralmente idénticos emitieran **el mismo `data-node-id`** — ids
->    duplicados en el DOM, que es exactamente lo que rompería el plan A8 de usarlos como key del
->    morpher.
-> 2. `spacing` y `empty_line` dependen de sus **hermanos** (`isPrevBlockBoundary`,
->    `isNextCodeBlock`), no solo de su subárbol. `_hash` no captura ese contexto, así que sería una
->    clave incorrecta para esos nodos.
+> ⚠️ **The `_hash` cache was NOT implemented, and must not be implemented as specified.**
+> Two independent reasons, both verified:
+> 1. The HTML has `node.id` embedded in every element. Caching a subtree by `_hash` would make
+>    two structurally identical subtrees emit **the same `data-node-id`** — duplicate ids
+>    in the DOM, which is exactly what would break plan A8 of using them as the morpher's key.
+> 2. `spacing` and `empty_line` depend on their **siblings** (`isPrevBlockBoundary`,
+>    `isNextCodeBlock`), not just on their subtree. `_hash` does not capture that context, so it would be an
+>    incorrect key for those nodes.
 >
-> El objetivo de < 0.3 ms se alcanzó sin caché. Dato relacionado descubierto al analizarlo:
-> ~~**`data-node-id` se escribe pero no lo lee nadie** en todo el repo — hoy es peso muerto en el HTML.~~
+> The target of < 0.3 ms was reached without a cache. A related fact discovered while analyzing it:
+> ~~**`data-node-id` is written but nobody reads it** in the whole repo — today it is dead weight in the HTML.~~
 >
-> ⚠️ **Esto es FALSO y borrarlo por creerlo rompería el editor.** `usePreviewClick.ts:108-112`
-> hace `target.closest('[data-node-id]')` para traducir un clic en el preview a un nodo, y de ahí
-> sale el evento que sincroniza la selección con Monaco. Es la mitad Preview→Monaco del sistema
-> bidireccional. Corregido en la semana 7 al comprobarlo en vez de repetirlo.
+> ⚠️ **This is FALSE and deleting it because of that belief would break the editor.** `usePreviewClick.ts:108-112`
+> does `target.closest('[data-node-id]')` to translate a click in the preview into a node, and from there
+> comes the event that syncs the selection with Monaco. It is the Preview→Monaco half of the
+> bidirectional system. Corrected in week 7 by checking it instead of repeating it.
 >
-> Lo que sí es cierto y **es peor**: son **33,4 KB de los 88,7 KB** del HTML (38%), y como los ids
-> se regeneran en cada parseo, cambian en cada pulsación. Eso desactiva el camino rápido del
-> `DOMMorpher`, que salta subárboles con `isEqualNode`: medido sobre una edición de un carácter,
-> **2 de 5** hijos de primer nivel comparan iguales con los ids puestos, frente a **4 de 5** sin
-> ellos. La solución no es borrarlos, es hacer los ids **estables** entre reparseos.
+> What is true and **is worse**: they are **33.4 KB of the 88.7 KB** of HTML (38%), and since the ids
+> are regenerated on every parse, they change on every keystroke. That disables the fast path of the
+> `DOMMorpher`, which skips subtrees with `isEqualNode`: measured on a one-character edit,
+> **2 of 5** first-level children compare equal with the ids in place, versus **4 of 5** without
+> them. The solution is not to delete them, it is to make the ids **stable** across reparses.
 
-### 5. Structural sharing (S2) ⛔ en la Semana 2 — premisa refutada; ✅ RESUELTO en la Semana 5 (§7-ter)
+### 5. Structural sharing (S2) ⛔ in Week 2 — premise refuted; ✅ RESOLVED in Week 5 (§7-ter)
 
-**La decisión de adoptar el modelo Roslyn de anchura se tomó y luego se revirtió**, porque la
-validación diferencial previa refutó el supuesto sobre el que se había tomado.
+**The decision to adopt the Roslyn width model was made and then reverted**, because the earlier
+differential validation refuted the assumption it had been based on.
 
-El modelo de anchura exige que el árbol sea una **partición** del texto fuente. Medido sobre 71.070
-nodos (2 fixtures reales + 5.000 documentos aleatorios con semilla):
+The width model requires the tree to be a **partition** of the source text. Measured over 71,070
+nodes (2 real fixtures + 5,000 random documents with a seed):
 
-| Divergencia | Casos |
+| Divergence | Cases |
 |---|---|
-| Σ anchura de hijos ≠ anchura declarada | 34.366 |
-| `parent.start` ≠ `firstChild.start` | 32.630 |
-| Huecos entre hermanos | 6.272 |
-| Solapes entre hermanos | 3.250 |
+| Σ width of children ≠ declared width | 34,366 |
+| `parent.start` ≠ `firstChild.start` | 32,630 |
+| Gaps between siblings | 6,272 |
+| Overlaps between siblings | 3,250 |
 
-Dos causas, ambas confirmadas con casos mínimos:
+Two causes, both confirmed with minimal cases:
 
-1. **Los delimitadores no son tokens hijos.** En `[center]…[/center]` el texto `[center]` vive en el
-   `text` del padre, no como hijo, así que el padre se extiende legítimamente más allá de sus hijos.
-   Derivar posiciones sumando anchuras perdería los 8 caracteres de la etiqueta en cada anidamiento.
-2. **Hay hermanos con rangos idénticos.** `"hola\n\nmundo"` produce
-   `spacing [4..6]` y `empty_line [4..6]` — dos hermanos sobre los mismos 2 caracteres. Las anchuras
-   se contarían dos veces y todos los offsets posteriores se desplazarían.
+1. **Delimiters are not child tokens.** In `[center]…[/center]` the text `[center]` lives in the
+   `text` of the parent, not as a child, so the parent legitimately extends beyond its children.
+   Deriving positions by summing widths would lose the 8 characters of the tag at every nesting.
+2. **There are siblings with identical ranges.** `"hola\n\nmundo"` produces
+   `spacing [4..6]` and `empty_line [4..6]` — two siblings over the same 2 characters. The widths
+   would be counted twice and all later offsets would shift.
 
-**Conclusión:** hacer el modelo Roslyn de verdad exige que el parser emita delimitadores y espaciado
-como tokens reales del árbol. Eso no es quitar un campo, es reescribir el parser. Ver el punto 14 de
-la semana 3, donde además resulta ser **prerrequisito del punto 9**.
+**Conclusion:** doing the Roslyn model for real requires the parser to emit delimiters and spacing
+as real tokens of the tree. That is not removing a field, it is rewriting the parser. See point 14 of
+week 3, where it also turns out to be a **prerequisite of point 9**.
 
-En su lugar se atacó lo que de verdad bloqueaba el objetivo de la semana — abajo.
+Instead, what was really blocking the week's target was attacked — below.
 
-### 5-bis. `NodeMatcher` perezoso ✅ — lo que sí desbloqueó el objetivo
+### 5-bis. Lazy `NodeMatcher` ✅ — what did unblock the target
 
-Perfilando el `rebuild` real (no las fases sueltas), `NodeMatcher.match` era **5.11 de 8.17 ms, el
-62%**. Dos cambios:
+Profiling the real `rebuild` (not the isolated phases), `NodeMatcher.match` was **5.11 of 8.17 ms, 62%**.
+Two changes:
 
-- Una **Fase 0** que empareja subárboles sin cambios usando `green._hash`, recortando prefijo y
-  sufijo comunes en cada nivel. Detalle que costó una iteración: exigir que los recuentos de hijos
-  coincidieran antes de descender parecía razonable, pero significaba que **un solo nodo insertado
-  cerca de la raíz desactivaba el camino rápido para todo el árbol** (medido: seguía en 5.11 ms).
-  El recorte de prefijo/sufijo es inmune a eso.
-  Un hash de 32 bits no es prueba de igualdad, así que cada emparejamiento se **verifica
-  estructuralmente** antes de confirmarse, con commit atómico.
-- **El hallazgo grande: nadie consume `nodeMatch`.** Se calculaba en cada pulsación —~3.5 ms, un
-  objeto de resultado por nodo más cinco Maps/Sets— para rellenar un campo del evento que no lee
-  ningún suscriptor, ni en `packages/quasar`, ni en `MiliastryCore`, ni en `MiliastryNovaFeatures`.
-  Ahora es un **accessor perezoso** (`DocumentModel.defineLazyNodeMatch`): la capacidad sigue
-  disponible y `event.nodeMatch` funciona igual para los llamantes, pero no se ejecuta
-  especulativamente. Nota: la closure mantiene vivo `oldRoot` mientras se retenga el evento.
-- Invariantes revalidadas: **307 escenarios de edición, 1.054.602 nodos, 487.284 pares `exact`
-  verificados uno a uno, 0 fallos.** (La Fase 0 reclama nodos antes que las fases 1-3, así que la
-  contabilidad que arregló la semana 1 se volvió a comprobar entera.)
+- A **Phase 0** that pairs unchanged subtrees using `green._hash`, trimming the common prefix and
+  suffix at each level. A detail that cost an iteration: requiring the child counts to
+  match before descending seemed reasonable, but it meant that **a single node inserted
+  near the root disabled the fast path for the whole tree** (measured: it stayed at 5.11 ms).
+  Prefix/suffix trimming is immune to that.
+  A 32-bit hash is not proof of equality, so each pairing is **verified
+  structurally** before being confirmed, with an atomic commit.
+- **The big finding: nobody consumes `nodeMatch`.** It was computed on every keystroke —~3.5 ms, a
+  result object per node plus five Maps/Sets— to fill an event field that no
+  subscriber reads, neither in `packages/quasar`, nor in `MiliastryCore`, nor in `MiliastryNovaFeatures`.
+  It is now a **lazy accessor** (`DocumentModel.defineLazyNodeMatch`): the capability is still
+  available and `event.nodeMatch` works the same for callers, but it is not run
+  speculatively. Note: the closure keeps `oldRoot` alive for as long as the event is retained.
+- Invariants revalidated: **307 editing scenarios, 1,054,602 nodes, 487,284 `exact` pairs
+  verified one by one, 0 failures.** (Phase 0 claims nodes before phases 1-3, so the
+  bookkeeping that Week 1 fixed was checked again in full.)
 
-### Desglose final de `rebuild` (3.81 ms)
+### Final breakdown of `rebuild` (3.81 ms)
 
-| Fase | ms | % |
+| Phase | ms | % |
 |---|---|---|
 | `parseToGreen` (lex + parse) | 1.99 | 48.7% |
 | `analyze()` | 1.28 | 31.5% |
 | `buildRedFromGreen` | 0.79 | 19.4% |
-| `NodeMatcher` | 0 (perezoso) | — |
+| `NodeMatcher` | 0 (lazy) | — |
 
-Los siguientes objetivos naturales son `analyze()` (punto 10, A6) y el lexer.
+The next natural targets are `analyze()` (point 10, A6) and the lexer.
 
-### Ficheros tocados
+### Files touched
 
 ```
-src/Types/core.ts                     createNodeId monótono + __resetNodeIdCounter
-src/Syntax/RedNode.ts                 _idxCache auto-validante, initChildren, reindexFrom
-src/Syntax/NodeMatcher.ts             Fase 0 (prefijo/sufijo por _hash) + verifyIdentical
+src/Types/core.ts                     monotonic createNodeId + __resetNodeIdCounter
+src/Syntax/RedNode.ts                 self-validating _idxCache, initChildren, reindexFrom
+src/Syntax/NodeMatcher.ts             Phase 0 (prefix/suffix by _hash) + verifyIdentical
 src/Syntax/RedNodeStore.ts            initChildren
-src/Model/DocumentModel.ts            defineLazyNodeMatch en los dos caminos de evento
-src/Visitors/HTMLRenderer.ts          escapeHtml 1 pasada, renderChildren, sin inlineLevel/depth
-src/BBCode/BBCodeToGreenNode.ts       initChildren + closures de metadata a nivel de módulo
+src/Model/DocumentModel.ts            defineLazyNodeMatch in both event paths
+src/Visitors/HTMLRenderer.ts          escapeHtml single pass, renderChildren, no inlineLevel/depth
+src/BBCode/BBCodeToGreenNode.ts       initChildren + metadata closures at module level
 src/Markdown/MarkdownToGreenNode.ts   initChildren
 src/HTML/HTMLToGreenNode.ts           initChildren
-src/BBBlocks/UIBlocksToRedTree.ts     initChildren (dos ramas unificadas)
+src/BBBlocks/UIBlocksToRedTree.ts     initChildren (two branches unified)
 ```
 
 ---
 
-## 7. Semana 3 — Deuda estructural ✅ (salvo el bloque 14 → 9)
+## 7. Week 3 — Structural debt ✅ (except block 14 → 9)
 
-> ⚠️ **Leer primero el punto 14.** La semana 2 descubrió que el punto 9 no se puede hacer bien sin
-> él, y que es también la vía real para el punto 5.
+> ⚠️ **Read point 14 first.** Week 2 discovered that point 9 cannot be done properly without
+> it, and that it is also the real route to point 5.
 
-### 9. Arreglar el incremental de verdad (S5) ✅ RESUELTO en la Semana 4 — ver §7-bis
+### 9. Fix the incremental parser for real (S5) ✅ RESOLVED in Week 4 — see §7-bis
 
-Estaba bloqueado por el 14, y con razón: `shiftRanges` no tiene una respuesta correcta mientras los
-rangos no particionen la fuente. Con hermanos que ocupan el mismo `[4..6]` no hay una única cosa que
-desplazar.
+It was blocked by 14, and rightly so: `shiftRanges` has no correct answer while the
+ranges do not partition the source. With siblings that occupy the same `[4..6]` there is no single thing to
+shift.
 
-### 10. Limpieza (B3, B4, A5, A6, A7) ✅
+### 10. Cleanup (B3, B4, A5, A6, A7) ✅
 
-- ✅ **B3** — `RedNodeStore` ya no lleva una copia literal de `extractGreenNodeMetadata`: recibe un
-  `MetadataExtractor` por constructor (por defecto, ninguno). Además de deduplicar, arregla la
-  violación de capas: `Syntax/` no debe conocer semántica de BBCode. El cableado vive en
+- ✅ **B3** — `RedNodeStore` no longer carries a literal copy of `extractGreenNodeMetadata`: it receives a
+  `MetadataExtractor` via its constructor (none by default). Besides deduplicating, it fixes the layering
+  violation: `Syntax/` must not know BBCode semantics. The wiring lives in
   `createBBCodeRedNodeStore()`.
-- ✅ **B4** — borrado `SELF_CLOSING` (Set vacío) y simplificadas sus dos condiciones inalcanzables;
-  borrado `IncrementalParser.fullReparse()` (destruía el árbol, nadie la llamaba);
-  `SAFE_BOUNDARY_TAGS` array → `Set`. Los "bloques copy-paste inertes en el lexer" ya no existían:
-  la reescritura de la semana 1 se los había llevado.
-- ✅ **A5** — `BBCodeDocumentModel` propaga `autoAnalyze`/`maxUndo` al `super()`. Ahora
-  `autoAnalyze: false` **hace algo**: `rebuild` 3.78 → 2.41 ms (−36%). `QuasarEngineService.parse()`
-  reutiliza un modelo scratch sin análisis en vez de construir un modelo completo por llamada:
-  **3.4× por snippet** (0.057 → 0.0166 ms). `createDocumentModel()` se deja intacto porque
-  `ErrorCheckerWindow` sí lee sus diagnósticos.
-- ✅ **A6** — `SemanticAnalyzer.analyze()` devuelve el índice `allNodes` que ya construía, en un tipo
-  aparte (`IndexedAnalyzeResult`) *a propósito*: el índice referencia todo el árbol, así que no debe
-  colarse en un `AnalyzeResult` que alguien guarde a largo plazo. `DocumentModel` lo usa en vez de
-  `findById()` por diagnóstico, y solo reasigna `node.diagnostics` cuando hay algo que limpiar
-  (antes: 1736 arrays nuevos por `analyze`).
-- ✅ **A7** — fuera `JSON.parse(JSON.stringify)` (4 sitios) y la comparación por `JSON.stringify`.
-  Esta última **era un bug latente**: `JSON.stringify` es sensible al orden de las claves, así que
-  `{color,size}` y `{size,color}` se consideraban distintos y dos nodos perfectamente fusionables se
-  negaban a fusionarse según el orden en que se hubiera construido su metadata. Validado
-  diferencialmente: 200.000 bolsas de metadata aleatorias, 0 discrepancias en el clonado y 0 en la
-  igualdad, más el caso explícito del orden de claves, que ahora se resuelve bien.
+- ✅ **B4** — deleted `SELF_CLOSING` (empty Set) and simplified its two unreachable conditions;
+  deleted `IncrementalParser.fullReparse()` (it destroyed the tree, nobody called it);
+  `SAFE_BOUNDARY_TAGS` array → `Set`. The "inert copy-paste blocks in the lexer" no longer existed:
+  the Week 1 rewrite had taken them away.
+- ✅ **A5** — `BBCodeDocumentModel` propagates `autoAnalyze`/`maxUndo` to `super()`. Now
+  `autoAnalyze: false` **does something**: `rebuild` 3.78 → 2.41 ms (−36%). `QuasarEngineService.parse()`
+  reuses a scratch model without analysis instead of building a full model per call:
+  **3.4× per snippet** (0.057 → 0.0166 ms). `createDocumentModel()` is left untouched because
+  `ErrorCheckerWindow` does read its diagnostics.
+- ✅ **A6** — `SemanticAnalyzer.analyze()` returns the `allNodes` index it was already building, in a separate
+  type (`IndexedAnalyzeResult`) *on purpose*: the index references the whole tree, so it must not
+  sneak into an `AnalyzeResult` that someone stores long-term. `DocumentModel` uses it instead of
+  `findById()` per diagnostic, and only reassigns `node.diagnostics` when there is something to clear
+  (before: 1736 new arrays per `analyze`).
+- ✅ **A7** — out go `JSON.parse(JSON.stringify)` (4 places) and the comparison by `JSON.stringify`.
+  The latter **was a latent bug**: `JSON.stringify` is sensitive to key order, so
+  `{color,size}` and `{size,color}` were considered different and two perfectly mergeable nodes
+  refused to merge depending on the order in which their metadata had been built. Validated
+  differentially: 200,000 random metadata bags, 0 discrepancies in cloning and 0 in
+  equality, plus the explicit key-order case, which is now resolved correctly.
 
-> **Hallazgo nuevo (no estaba en la auditoría): A6 no mejoró nada medible, y la razón importa.**
-> `analyze()` devuelve **cero diagnósticos** incluso en documentos llenos de errores, así que el
-> `O(N·D)` nunca se ejecutaba: `D` es 0. Tres de los cuatro validadores integrados son
-> inalcanzables — ver el punto 15.
+> **New finding (it was not in the audit): A6 improved nothing measurable, and the reason matters.**
+> `analyze()` returns **zero diagnostics** even on documents full of errors, so the
+> `O(N·D)` never ran: `D` is 0. Three of the four built-in validators are
+> unreachable — see point 15.
 
-### 11. Arreglar la idempotencia del `ASTOptimizer` (B5) ✅
+### 11. Fix the idempotence of `ASTOptimizer` (B5) ✅
 
-Repro mínimo (minimizado de 356 → 71 chars):
+Minimal repro (minimized from 356 → 71 chars):
 
 ```
 [url=https://osu.ppy.sh][/url][notice][/notice][url=https://osu.ppy.sh]
 ```
 
-**La causa no era la que suponía la auditoría.** El `transform()` ya itera a punto fijo
-internamente, así que la no-idempotencia no estaba en el bucle: estaba en el **viaje de ida y
-vuelta por texto**.
+**The cause was not the one the audit assumed.** `transform()` already iterates to a fixed point
+internally, so the non-idempotence was not in the loop: it was in the **round trip through
+text**.
 
-Los `paragraph` existen porque un elemento de bloque parte el contenido inline. Al eliminar ese
-bloque —aquí un `[notice]` vacío— las dos mitades quedan como `paragraph` **adyacentes sin nada en
-medio**, y `paragraph` está en `UNMERGEABLE`. Exportar ese árbol no emite separador alguno, así que
-al reparsear los dos párrafos se funden en uno y una *segunda* pasada del optimizer encuentra más
-trabajo.
+`paragraph`s exist because a block element splits the inline content. When that
+block is removed —here an empty `[notice]`— the two halves are left as **adjacent** `paragraph`s **with nothing in
+between**, and `paragraph` is in `UNMERGEABLE`. Exporting that tree emits no separator at all, so
+on reparsing the two paragraphs merge into one and a *second* pass of the optimizer finds more
+work.
 
-**Arreglado** con `ASTOptimizer.isOrphanedParagraphPair`, que fusiona exactamente esa forma. El
-arreglo es deliberadamente estrecho —solo cuando `spaces` está vacío, porque una línea en blanco
-escrita por el usuario es una separación real y debe sobrevivir— y se apoya en una comprobación
-empírica previa: **en 202.764 nodos (fixtures reales + 20.000 documentos aleatorios) el parser
-produce esa forma cero veces**, así que la regla solo puede dispararse sobre árboles que ha creado
-el propio optimizer.
+**Fixed** with `ASTOptimizer.isOrphanedParagraphPair`, which merges exactly that shape. The
+fix is deliberately narrow —only when `spaces` is empty, because a blank line
+written by the user is a real separation and must survive— and it rests on a prior
+empirical check: **over 202,764 nodes (real fixtures + 20,000 random documents) the parser
+produces that shape zero times**, so the rule can only fire on trees that the
+optimizer itself created.
 
-Validado como propiedad, no solo en el repro: **30.002 documentos** (fixtures + 6 semillas × 5.000
-aleatorios), `optimizar → exportar → reparsear → optimizar` da **0 operaciones** en todos, y **0**
-pierden texto visible. Semillas del fuzzer que antes fallaban (`2`, `7`, `42`, `99999`): las cuatro
-en verde.
+Validated as a property, not just on the repro: **30,002 documents** (fixtures + 6 seeds × 5,000
+random), `optimize → export → reparse → optimize` gives **0 operations** in all of them, and **0**
+lose visible text. Fuzzer seeds that used to fail (`2`, `7`, `42`, `99999`): all four
+green.
 
-El test pasó de `it.fails` a test de regresión normal, como estaba previsto — y con él **la suite
-deja de tener `expected fail` por primera vez desde la semana 1: 172 verdes**.
+The test went from `it.fails` to a normal regression test, as planned — and with it **the suite
+stops having an `expected fail` for the first time since Week 1: 172 green**.
 
-### 12. `DOMMorpher` (A8) ✅ — pero **no** con keys por `data-node-id`
+### 12. `DOMMorpher` (A8) ✅ — but **not** with keys by `data-node-id`
 
-Vive en `src/Visitors/DOMMorpher.ts` (la auditoría no daba la ruta; no está en `RenderPipeline/`).
-Lo consumen `Preview.tsx`, `MorphPreview.tsx` y las dos páginas `de-tester`.
+It lives in `src/Visitors/DOMMorpher.ts` (the audit did not give the path; it is not in `RenderPipeline/`).
+It is consumed by `Preview.tsx`, `MorphPreview.tsx` and the two `de-tester` pages.
 
-**La solución que proponía A8 es inviable, y por la misma razón que ya invalidaba la Fase 1 del
-`NodeMatcher`:** los `data-node-id` se regeneran en cada parseo. Medido sobre una edición de un
-carácter, **0 de 3 ids sobreviven a un `rebuild`**. Emparejar por ellos no encontraría nada: cada
-nodo parecería nuevo y el morpher degeneraría en un reemplazo completo. Usar `data-node-id` como key
-exige antes identidad estable entre reparseos — el mismo bloqueo de siempre.
+**The solution that A8 proposed is not viable, and for the same reason that already invalidated Phase 1 of
+`NodeMatcher`:** the `data-node-id`s are regenerated on every parse. Measured on a one-character
+edit, **0 of 3 ids survive a `rebuild`**. Pairing by them would find nothing: every
+node would look new and the morpher would degenerate into a full replacement. Using `data-node-id` as a key
+first requires stable identity across reparses — the same old blocker.
 
-**Lo que sí se hizo:** recorte del prefijo y el sufijo idénticos con `isEqualNode` (comparación
-estructural profunda nativa) antes de emparejar por índice. Un subárbol que compara igual se deja
-**intacto**: sin recursión, sin bucles de atributos y, al no reemplazarse el nodo, su estado de
-runtime (spoilers abiertos, reproducción, selección) se conserva gratis. `Array.from()` pasa a
-copiar solo la ventana que cambió, no cada nivel entero. Las inserciones usan `insertBefore` contra
-el sufijo preservado, no `appendChild`.
+**What was done:** trimming of the identical prefix and suffix with `isEqualNode` (native deep
+structural comparison) before pairing by index. A subtree that compares equal is left
+**intact**: no recursion, no attribute loops and, since the node is not replaced, its
+runtime state (open spoilers, playback, selection) is preserved for free. `Array.from()` now
+copies only the window that changed, not every whole level. Insertions use `insertBefore` against
+the preserved suffix, not `appendChild`.
 
-**El defecto, cuantificado.** Insertando un nodo al principio de 200 párrafos, el morpher anterior
-dejaba **0** con su texto intacto —reescribía los 200, que es justo la cascada que un morpher existe
-para evitar—; el nuevo deja los **200** y la inserción es su única operación sobre el DOM.
+**The defect, quantified.** Inserting a node at the start of 200 paragraphs, the previous morpher
+left **0** with their text intact —it rewrote all 200, which is exactly the cascade a morpher exists
+to avoid—; the new one leaves all **200** and the insertion is its only operation on the DOM.
 
-**El morpher no tenía ni un test**, siendo código que muta el DOM que el usuario está mirando.
-Añadido `src/Tests/DOMMorpher.test.ts` (7 casos) con la propiedad central: tras el morph, el
-contenedor debe ser estructuralmente idéntico a lo que habría producido un `innerHTML = newHTML`.
-Verificado sobre 14 formas de edición a mano más **2.000 pares aleatorios** con semilla, además de
-la preservación de identidad de nodos y de `<details open>`.
+**The morpher did not have a single test**, despite being code that mutates the DOM the user is looking at.
+Added `src/Tests/DOMMorpher.test.ts` (7 cases) with the central property: after the morph, the
+container must be structurally identical to what an `innerHTML = newHTML` would have produced.
+Verified over 14 hand-written edit shapes plus **2,000 random pairs** with a seed, in addition to
+preservation of node identity and of `<details open>`.
 
-### 13. Revisar el lock de mutación (B2) ✅
+### 13. Review the mutation lock (B2) ✅
 
-**Decisión: se queda, descrito honestamente como lo que es.** Ni se hizo "real" ni se eliminó, y el
-razonamiento está medido, no supuesto:
+**Decision: it stays, described honestly as what it is.** It was neither made "real" nor removed, and the
+reasoning is measured, not assumed:
 
-- **No puede ser un mecanismo de aislamiento.** Es un booleano estático único: abrir una frontera en
-  cualquier sitio la abre en todos. Darle ámbito por documento obligaría a subir hasta la raíz en
-  cada mutación y a pasar esa raíz por los **26 sitios de llamada**, para cazar mutación entre
-  documentos: una clase de bug que un editor de un solo hilo no tiene.
-- **Tampoco puede ser hermético.** `children` es un array público mutable, y `treeTransformers` le
-  asigna directamente en **5 sitios**, saltándose los métodos por completo. Sellarlo exige hacer
-  `children` privado — un cambio de API grande para el mismo beneficio pequeño.
-- **Lo que sí aporta:** envolver una edición estructural marca la intención en el sitio de la
-  llamada, y mutar fuera de una frontera falla ruidosamente en vez de en silencio. Eso vale una
-  comprobación booleana.
+- **It cannot be an isolation mechanism.** It is a single static boolean: opening a boundary
+  anywhere opens it everywhere. Scoping it per document would force climbing to the root on
+  every mutation and passing that root through the **26 call sites**, to catch mutation across
+  documents: a class of bug that a single-threaded editor does not have.
+- **It cannot be airtight either.** `children` is a public mutable array, and `treeTransformers` assigns to it
+  directly in **5 places**, skipping the methods entirely. Sealing it requires making
+  `children` private — a big API change for the same small benefit.
+- **What it does provide:** wrapping a structural edit marks the intent at the call site, and
+  mutating outside a boundary fails loudly instead of silently. That is worth
+  one boolean check.
 
-Hecho además:
-- **7 envoltorios muertos borrados** en `StudioEffects`: eran `allowMutation(() => greenToRedNode(x))`,
-  y `greenToRedNode` dejó de mutar en la semana 2 (usa `initChildren`, fuera del lock).
-- Mensaje de error: "transaction boundary" → "mutation boundary". Hay una clase `Transaction` de
-  verdad en el motor y esto no lo es; llamarlo transacción confundía.
-- **`QUASAR.MD` corregido.** Afirmaba "Tolerancia a Concurrencia gracias a inmutabilidad estricta".
-  El árbol *verde* sí es inmutable y esa parte se conserva; la afirmación sobre el rojo era falsa y
-  ahora dice qué es realmente el lock.
+Also done:
+- **7 dead wrappers deleted** in `StudioEffects`: they were `allowMutation(() => greenToRedNode(x))`,
+  and `greenToRedNode` stopped mutating in Week 2 (it uses `initChildren`, outside the lock).
+- Error message: "transaction boundary" → "mutation boundary". There is a real `Transaction` class
+  in the engine and this is not one; calling it a transaction was confusing.
+- **`QUASAR.MD` corrected.** It claimed "Concurrency Tolerance thanks to strict immutability".
+  The *green* tree is indeed immutable and that part is kept; the claim about the red one was false and
+  it now says what the lock really is.
 
-### 14. Hacer que el árbol particione la fuente ✅ RESUELTO en la Semana 4 — ver §7-bis
+### 14. Make the tree partition the source ✅ RESOLVED in Week 4 — see §7-bis
 
-Descubierto al validar el punto 5 de la semana 2 (ver esa sección para las cifras completas).
+Discovered while validating point 5 of Week 2 (see that section for the full figures).
 
-**El problema.** Los rangos del árbol no son una partición del texto. Dos causas:
+**The problem.** The tree's ranges are not a partition of the text. Two causes:
 
-1. Los delimitadores no son nodos. `[center]` vive en el `text` del padre, así que el padre se
-   extiende más allá de sus hijos: 32.630 casos de `parent.start != firstChild.start`.
-2. Hay hermanos que ocupan el mismo rango. `"hola\n\nmundo"` → `spacing [4..6]` **y**
-   `empty_line [4..6]`. Verificado con caso mínimo.
+1. Delimiters are not nodes. `[center]` lives in the `text` of the parent, so the parent
+   extends beyond its children: 32,630 cases of `parent.start != firstChild.start`.
+2. There are siblings that occupy the same range. `"hola\n\nmundo"` → `spacing [4..6]` **and**
+   `empty_line [4..6]`. Verified with a minimal case.
 
-**Por qué importa más de lo que parece.** No es una cuestión estética: significa que el árbol no
-puede responder sin ambigüedad a *"¿qué nodo está en el offset 5?"*. Todo lo que traduce posiciones
-a nodos está construido sobre esa ambigüedad — `findNodeAtOffset`, el mapeo Monaco↔AST, los
-diagnósticos, la preservación de selección al reparsear.
+**Why it matters more than it seems.** It is not an aesthetic matter: it means the tree cannot
+answer unambiguously *"which node is at offset 5?"*. Everything that translates positions
+to nodes is built on that ambiguity — `findNodeAtOffset`, the Monaco↔AST mapping, the
+diagnostics, selection preservation on reparse.
 
-**Qué desbloquea:**
-- El **punto 9** (S5, incremental) — `shiftRanges` es irrealizable correctamente sin esto.
-- El **punto 5** (S2, structural sharing) — el modelo Roslyn de anchura, y con él el interning real.
-- Offsets fiables para diagnósticos y para el editor.
+**What it unblocks:**
+- **Point 9** (S5, incremental) — `shiftRanges` cannot be done correctly without this.
+- **Point 5** (S2, structural sharing) — the Roslyn width model, and with it real interning.
+- Reliable offsets for diagnostics and for the editor.
 
-**Qué exige:** que el lexer/parser emitan delimitadores y espaciado como tokens reales del árbol,
-de forma que las anchuras sumen exactamente. Es un proyecto propio, no una tarea de una tarde, y
-según la metodología de §8 hay que revalidarlo diferencialmente contra el parser actual antes de
-darlo por bueno.
+**What it requires:** that the lexer/parser emit delimiters and spacing as real tokens of the tree,
+so that the widths add up exactly. It is a project of its own, not an afternoon's task, and
+according to the methodology in §8 it must be revalidated differentially against the current parser before
+being declared good.
 
-> **Corrección de la semana 4:** lo de "tokens reales del árbol" resultó ser la opción cara y
-> equivocada. Ver §7-bis: el modelo de anchuras consigue la misma invariante sin tocar la forma del
-> árbol, que es además lo que hace Roslyn de verdad.
+> **Week 4 correction:** the "real tokens of the tree" idea turned out to be the expensive and
+> wrong option. See §7-bis: the width model achieves the same invariant without touching the shape of the
+> tree, which is also what Roslyn really does.
 
-### 15. Tres de los cuatro validadores del `SemanticAnalyzer` son inalcanzables ✅ RESUELTO
+### 15. Three of the four `SemanticAnalyzer` validators are unreachable ✅ RESOLVED
 
-Descubierto al implementar A6: `analyze()` devuelve **0 diagnósticos** incluso sobre documentos
-construidos a propósito con etiquetas desconocidas, sin cerrar y cierres huérfanos. Verificado caso
-a caso:
+Discovered while implementing A6: `analyze()` returns **0 diagnostics** even on documents
+built on purpose with unknown tags, unclosed ones and orphan closers. Verified case
+by case:
 
-| Validador | Por qué no dispara nunca |
+| Validator | Why it never fires |
 |---|---|
-| `unknown-tag` | Exige `node.kind === 'custom'`, pero `Parser.ts` convierte las etiquetas desconocidas en nodos `text` antes de que el analizador las vea |
-| `deprecated-tag` | Busca `deprecated[node.text]` con la clave `'strike'`, pero `node.text` guarda los **atributos**, y `[strike]` parsea a kind `strikethrough` con `text` vacío |
-| `nested-structure` | Exige hijos de `[code]` con kind ≠ `text`, pero el parser conserva el contenido de `code` como texto crudo, así que nunca los hay |
-| `empty-tag` | ✅ Este sí funciona |
+| `unknown-tag` | Requires `node.kind === 'custom'`, but `Parser.ts` turns unknown tags into `text` nodes before the analyzer sees them |
+| `deprecated-tag` | Looks up `deprecated[node.text]` with the key `'strike'`, but `node.text` holds the **attributes**, and `[strike]` parses to kind `strikethrough` with empty `text` |
+| `nested-structure` | Requires children of `[code]` with kind ≠ `text`, but the parser keeps the content of `code` as raw text, so there never are any |
+| `empty-tag` | ✅ This one does work |
 
-Consecuencia: el motor **no reporta ningún error de BBCode al usuario**, y `ErrorCheckerWindow`
-—que existe para eso— siempre muestra la lista vacía.
+Consequence: the engine **reports no BBCode error to the user**, and `ErrorCheckerWindow`
+—which exists for exactly that— always shows an empty list.
 
-**Segundo nivel de rotura, no detectado en la auditoría:** ningún validador rellenaba `range`. Aunque
-hubieran disparado, el clic para saltar al error en `ErrorCheckerWindow` (`if (err.range)`) no habría
-hecho nada y no habría línea ni columna.
+**A second level of breakage, not detected in the audit:** no validator filled in `range`. Even if
+they had fired, the click to jump to the error in `ErrorCheckerWindow` (`if (err.range)`) would not have
+done anything and there would be no line or column.
 
-#### Lo arreglado
+#### What was fixed
 
-- **`deprecated-tag`** — lee la grafía que escribió el autor desde la fuente. Hacía falta porque el
-  árbol no la conserva: `[strike]` y `[s]` producen ambos el kind `strikethrough`. Detalle que
-  costó una iteración: como `document`, `paragraph` y la etiqueta empiezan **en el mismo offset**
-  (el problema de rangos del punto 14 asomando aquí), leer la fuente por offset disparaba el aviso
-  **tres veces**; se ata al kind que la etiqueta produce.
-- **`nested-tags-in-code`** — busca las etiquetas *dentro* del texto del bloque, que es donde están:
-  el parser conserva el contenido de `[code]` como texto crudo justamente para no interpretarlas.
-- **`empty-tag`** — ya funcionaba; ahora emite `range`.
-- Todos los diagnósticos llevan `range`, así que el salto al error de `ErrorCheckerWindow` funciona.
+- **`deprecated-tag`** — reads the spelling the author wrote from the source. It was needed because the
+  tree does not keep it: `[strike]` and `[s]` both produce the kind `strikethrough`. A detail that
+  cost an iteration: since `document`, `paragraph` and the tag start **at the same offset**
+  (the range problem of point 14 showing up here), reading the source by offset fired the warning
+  **three times**; it is tied to the kind that the tag produces.
+- **`nested-tags-in-code`** — looks for the tags *inside* the block's text, which is where they are:
+  the parser keeps the content of `[code]` as raw text precisely so as not to interpret them.
+- **`empty-tag`** — it already worked; it now emits `range`.
+- All diagnostics carry `range`, so the jump to the error in `ErrorCheckerWindow` works.
 
-#### `unclosed-tag` — validador nuevo
+#### `unclosed-tag` — new validator
 
-Decidido con el usuario. Es el error de BBCode que de verdad se comete, y el modo legacy lo cierra
-en silencio por diseño, así que nada avisaba al autor.
+Decided with the user. It is the BBCode error that really gets made, and legacy mode closes it
+silently by design, so nothing warned the author.
 
-La detección es **exacta, no heurística**: una etiqueta que el autor cerró termina justo en su
-propio `[/tag]`, porque ahí es donde el parser pone el final del nodo; una que se cerró *por* él
-termina donde el parser se rindió. Una sola regla cubre las dos formas —`[b]x` (nunca cerrada) y
-`[b][i]x[/b]` (donde `[i]` lo auto-cierran las reglas de anidamiento legacy)— y no necesitó tocar el
-parser ni añadir campos a `GreenNode`.
+The detection is **exact, not heuristic**: a tag the author closed ends right at its
+own `[/tag]`, because that is where the parser puts the end of the node; one that was closed *by* it
+ends where the parser gave up. A single rule covers both shapes —`[b]x` (never closed) and
+`[b][i]x[/b]` (where `[i]` is auto-closed by the legacy nesting rules)— and it did not need to touch the
+parser or add fields to `GreenNode`.
 
-Validado contra falsos positivos, que es el riesgo real de un validador nuevo: **20.000 documentos
-generados con anidamiento siempre equilibrado, 0 avisos**. Y 0 diagnósticos sobre el documento real
-de 19.2 KB.
+Validated against false positives, which is the real risk of a new validator: **20,000 documents
+generated with always-balanced nesting, 0 warnings**. And 0 diagnostics on the real 19.2 KB
+document.
 
-#### `unknown-tag` — despertado con una regla de emparejado
+#### `unknown-tag` — woken up with a pairing rule
 
-Se quedó dormido a propósito, y con razón medida: sobre una frase de prosa normal —`Combo de
-[90 misses] con teclado [Gateron Yellow]`— marcaba **4** etiquetas, todas falsos positivos. El
-parser renderiza las desconocidas como texto *a propósito*, así que avisar de todas era ruido.
+It was left dormant on purpose, and with measured reason: on a sentence of normal prose —`Combo de
+[90 misses] con teclado [Gateron Yellow]`— it flagged **4** tags, all false positives. The
+parser renders unknown ones as text *on purpose*, so warning about all of them was noise.
 
-Lo que lo hace utilizable es exigir que la etiqueta **esté cerrada**. Nadie cierra un aparte entre
-corchetes: `[Gateron]` no lleva `[/Gateron]`. Sobre 53 userpages reales —que traen `[gb]`,
-`[insane]`, `[rm120]`, `[my]` y once más— la regla marca **0**; sobre `[bold]x[/bold]`, que hoy se
-publica como basura visible, marca 1 y propone `[b]`.
+What makes it usable is requiring that the tag **be closed**. Nobody closes an aside in
+brackets: `[Gateron]` does not come with `[/Gateron]`. Over 53 real userpages —which carry `[gb]`,
+`[insane]`, `[rm120]`, `[my]` and eleven more— the rule flags **0**; over `[bold]x[/bold]`, which today
+is published as visible garbage, it flags 1 and suggests `[b]`.
 
-La detección no lleva lista de nombres propia: el parser ya decidió qué es desconocido al emitir la
-etiqueta como texto literal, y la regla lee esa decisión, así que sigue siendo correcta en cualquier
-dialecto sin mantenimiento. La lista solo hace falta para la sugerencia, y la distancia de edición
-no basta —`bold` está a tres ediciones de `b`— así que se combina con una tabla corta de nombres que
-la gente escribe de más. Nunca propone una grafía deprecada. La corrección renombra apertura Y
-cierre, y es manual: convierte texto literal en formato, que es justo cambiar el render.
+The detection carries no name list of its own: the parser already decided what is unknown when emitting the
+tag as literal text, and the rule reads that decision, so it stays correct in any
+dialect with no maintenance. The list is only needed for the suggestion, and edit distance
+is not enough —`bold` is three edits away from `b`— so it is combined with a short table of names that
+people write too long. It never suggests a deprecated spelling. The fix renames opening AND
+closing, and is manual: it turns literal text into formatting, which is exactly changing the render.
 
-#### Coste
+#### Cost
 
-`analyze` 1.390 → 1.352 ms **con los validadores ya funcionando**. La primera versión costaba
-1.886 ms (+62%): se corrigió con un pre-filtro por kind y quitando dos asignaciones de string por
-nodo (regex *sticky* anclada por `lastIndex` en vez de `slice`, y comparación del cierre con
-`charCodeAt`). Tests: `src/Tests/SemanticValidators.test.ts`, 16 casos.
+`analyze` 1.390 → 1.352 ms **with the validators now working**. The first version cost
+1.886 ms (+62%): it was fixed with a pre-filter by kind and by removing two string allocations per
+node (a *sticky* regex anchored by `lastIndex` instead of `slice`, and comparing the closer
+with `charCodeAt`). Tests: `src/Tests/SemanticValidators.test.ts`, 16 cases.
 
 ---
 
-## 7-bis. Semana 4 — La partición y el incremental ✅
+## 7-bis. Week 4 — The partition and the incremental ✅
 
-El bloque `14 → 9` completo. Se hizo en ese orden porque el 9 es irrealizable sin el 14, y eso
-resultó ser literalmente cierto: la pieza central del incremental nuevo —"reparsea el interior del
-contenedor"— **no se puede ni enunciar** sin la invariante de partición, porque "el interior" no era
-un rango bien definido.
+The whole `14 → 9` block. It was done in that order because 9 cannot be done without 14, and that
+turned out to be literally true: the central piece of the new incremental parser —"reparse the interior of the
+container"— **cannot even be stated** without the partition invariant, because "the interior" was not
+a well-defined range.
 
-### 14. El árbol particiona la fuente ✅
+### 14. The tree partitions the source ✅
 
-**La decisión de diseño.** El roadmap proponía emitir los delimitadores como nodos hijos
-(`open_tag`, `close_tag`). Se descartó: cambia la forma del árbol y rompe todo lo que itera
-`children` — `HTMLRenderer`, `BBCodeExporter`, `ASTOptimizer`, `NodeMatcher`, `treeTransformers` y
-las 2150 líneas de `StudioEffects`.
+**The design decision.** The roadmap proposed emitting the delimiters as child nodes
+(`open_tag`, `close_tag`). It was discarded: it changes the shape of the tree and breaks everything that iterates
+`children` — `HTMLRenderer`, `BBCodeExporter`, `ASTOptimizer`, `NodeMatcher`, `treeTransformers` and
+the 2150 lines of `StudioEffects`.
 
-Se implementó en su lugar el **modelo de anchuras**, que es lo que Roslyn hace de verdad: el texto
-propio de un nodo vive en `leadingWidth`/`trailingWidth`, no en nodos hijos.
+The **width model** was implemented instead, which is what Roslyn really does: a node's own
+text lives in `leadingWidth`/`trailingWidth`, not in child nodes.
 
 ```
 element [0..17]  leading=3  trailing=4     "[b]hola mundo[/b]"
@@ -863,7 +862,7 @@ element [0..17]  leading=3  trailing=4     "[b]hola mundo[/b]"
 3 + 10 + 4 == 17   ✓
 ```
 
-La invariante, ahora ejecutable en `src/Syntax/partition.ts`:
+The invariant, now executable in `src/Syntax/partition.ts`:
 
 ```
 node.start + leadingWidth      == firstChild.start
@@ -871,1070 +870,1070 @@ child[i].end                   == child[i+1].start
 lastChild.end + trailingWidth  == node.end
 ```
 
-**Los tres agujeros que había, y qué se hizo con cada uno:**
+**The three holes there were, and what was done with each:**
 
-| Agujero | Antes | Ahora |
+| Hole | Before | Now |
 |---|---|---|
-| Delimitadores sin dueño | `[b]hola[/b]` → `bold [0..13]` con un único hijo `[3..7]`; 6 chars de nadie | `leadingWidth`/`trailingWidth` |
-| Hermanos solapados | `"hola\n\nmundo"` → `spacing [4..6]` **y** `empty_line [4..6]` | cada salto de línea tiene su propio rango |
-| Cierres huérfanos borrados | `[/b]` sin apertura desaparecía del árbol y del export | se conserva como texto, igual que las etiquetas desconocidas |
+| Delimiters with no owner | `[b]hola[/b]` → `bold [0..13]` with a single child `[3..7]`; 6 chars belonging to nobody | `leadingWidth`/`trailingWidth` |
+| Overlapping siblings | `"hola\n\nmundo"` → `spacing [4..6]` **and** `empty_line [4..6]` | each line break has its own range |
+| Orphan closers deleted | an unmatched `[/b]` vanished from the tree and from the export | it is kept as text, like unknown tags |
 
-Además: los auto-cierres ya no se tragan el delimitador ajeno (`[b][i]x[/b]` daba `italic` y `bold`
-**ambos** acabando en 11), y la raíz abarca `[0..source.length]` siempre en vez de derivarse de sus
-hijos.
+Also: auto-closes no longer swallow the other tag's delimiter (`[b][i]x[/b]` gave `italic` and `bold`
+**both** ending at 11), and the root always spans `[0..source.length]` instead of being derived from its
+children.
 
-**Coste de la invariante en `GreenNode`:** neutro. Se borró `fullWidth` —que era decorativo: con
-hijos valía `sum(children.fullWidth)`, ignorando los delimitadores del propio nodo, y sus únicos 7
-consumidores lo usaban como `fullWidth - width` para recuperar un `leadingWidth` que casi siempre
-era 0— y los dos campos nuevos usan `declare`, que no emite `defineProperty` (ver §8, trampa 2).
-`parseTokensToGreen` 0.659 → **0.606 ms**, un 8% más rápido.
+**Cost of the invariant in `GreenNode`:** neutral. `fullWidth` was deleted —it was decorative: with
+children it was worth `sum(children.fullWidth)`, ignoring the node's own delimiters, and its only 7
+consumers used it as `fullWidth - width` to recover a `leadingWidth` that almost always
+was 0— and the two new fields use `declare`, which does not emit `defineProperty` (see §8, trap 2).
+`parseTokensToGreen` 0.659 → **0.606 ms**, 8% faster.
 
-**Validación diferencial** (18.017 documentos: 2 fixtures reales, 15 casos mínimos y 6 semillas ×
-3.000 aleatorios con etiquetas desconocidas, sin cerrar, huérfanas y corchetes sueltos):
+**Differential validation** (18,017 documents: 2 real fixtures, 15 minimal cases and 6 seeds ×
+3,000 random ones with unknown, unclosed and orphan tags and stray brackets):
 
-| | Antes | Después |
+| | Before | After |
 |---|---|---|
-| Documentos que particionan | 2.238 (**12.42%**) | 18.017 (**100%**) ✅ |
-| Violaciones totales | 270.771 | **0** |
+| Documents that partition | 2,238 (**12.42%**) | 18,017 (**100%**) ✅ |
+| Total violations | 270,771 | **0** |
 
-Y contra el parser anterior, sobre HTML renderizado y BBCode reexportado: **6.672 de 6.672
-documentos sin cierres huérfanos dan salida idéntica**. Los 11.345 restantes divergen exactamente
-por el cambio intencionado.
+And against the previous parser, on rendered HTML and re-exported BBCode: **6,672 of 6,672
+documents without orphan closers give identical output**. The remaining 11,345 diverge exactly
+because of the intentional change.
 
-> **Efecto secundario que no se buscaba:** el punto fijo de `parse → export → parse → export` pasó
-> de **99.67% a 100%**. Borrar los huérfanos era en sí mismo una fuente de inestabilidad del
-> round-trip.
+> **A side effect that was not sought:** the fixed point of `parse → export → parse → export` went
+> from **99.67% to 100%**. Deleting the orphans was in itself a source of round-trip
+> instability.
 
-Tests: `src/Tests/Partition.test.ts` — 40 casos, incluidos los tres defectos originales fijados por
-su caso mínimo, "cada offset tiene exactamente un dueño", y 6.000 documentos de fuzz con semilla.
+Tests: `src/Tests/Partition.test.ts` — 40 cases, including the three original defects pinned by
+their minimal case, "every offset has exactly one owner", and 6,000 seeded fuzz documents.
 
-### 9. El incremental de verdad (S5) ✅
+### 9. The real incremental parser (S5) ✅
 
-**Primero se midió cuán roto estaba.** Seis escenarios de edición realistas, comparando el árbol
-resultante contra un rebuild completo del mismo texto final:
+**First we measured how broken it was.** Six realistic editing scenarios, comparing the resulting
+tree against a full rebuild of the same final text:
 
-| | Antes |
+| | Before |
 |---|---|
-| Escenarios con HTML **distinto** al del rebuild | **3 de 6** |
-| Escenarios cuyo árbol no particionaba | 4 de 6 |
-| Peor conteo de nodos | **1752 vs 1738** (14 nodos fantasma) |
+| Scenarios with HTML **different** from the rebuild's | **3 of 6** |
+| Scenarios whose tree did not partition | 4 of 6 |
+| Worst node count | **1752 vs 1738** (14 ghost nodes) |
 
-Las tres causas: el subárbol se parseaba de `newSource.slice(start, end)` y se injertaba **sin
-rebasar** (todos sus offsets desplazados por `start`); hermanos y ancestros conservaban rangos
-viejos; y `reparse` devolvía `newRootRed.green`, o sea **el green root viejo**.
+The three causes: the subtree was parsed from `newSource.slice(start, end)` and grafted in **without
+rebasing** (all its offsets shifted by `start`); siblings and ancestors kept
+old ranges; and `reparse` returned `newRootRed.green`, that is, **the old green root**.
 
-**Y luego, si merecía la pena arreglarlo** (§8, regla 5). Desglose de un rebuild completo:
-lexer 0.74 ms + parser 0.52 ms + `greenToRedNode` 0.27 ms = 2.48 ms reales. El techo de un
-incremental correcto que reparsee una región del 2-25%: **0.04-0.53 ms**, un ahorro del 79-98%.
-Sí merecía.
+**And then, whether it was worth fixing** (§8, rule 5). Breakdown of a full rebuild:
+lexer 0.74 ms + parser 0.52 ms + `greenToRedNode` 0.27 ms = 2.48 ms real. The ceiling of a
+correct incremental parser that reparses a region of 2-25%: **0.04-0.53 ms**, a saving of 79-98%.
+It was worth it.
 
-**El diseño: todo sobre el árbol verde.** No es una preferencia — `RedNode.range` es una vista de
-`green.range` (`RedNode.ts:132`), así que **un arreglo de rangos en rojo no es expresable**. Los
-rangos viven en verde, luego las ediciones ocurren en verde.
+**The design: everything on the green tree.** It is not a preference — `RedNode.range` is a view of
+`green.range` (`RedNode.ts:132`), so **a range fix in red is not expressible**. The
+ranges live in green, so the edits happen in green.
 
-1. Bajar hasta el **contenedor de bloque más profundo** cuyo *interior* contiene el cambio.
-2. Reparsear ese interior solo, con `normalizeParagraphs: false` (el agrupado en párrafos es de
-   raíz; aplicarlo aquí inventaría párrafos que un parseo completo nunca produce), y rebasarlo.
-3. Reconstruir la espina de ancestros: los subárboles anteriores al splice se comparten **por
-   referencia** y solo se desplaza lo que va detrás. Vive en `src/Syntax/greenEdit.ts`.
+1. Descend to the **deepest block container** whose *interior* contains the change.
+2. Reparse only that interior, with `normalizeParagraphs: false` (grouping into paragraphs is a
+   root matter; applying it here would invent paragraphs that a full parse never produces), and rebase it.
+3. Rebuild the ancestor spine: the subtrees before the splice are shared **by
+   reference** and only what comes after is shifted. It lives in `src/Syntax/greenEdit.ts`.
 
-**Los guardas, y por qué existe cada uno.** Cuando alguna precondición falla, devuelve un rebuild
-completo con el motivo en `lastReparseFallbackReason` — nunca un árbol plausible pero equivocado.
+**The guards, and why each one exists.** When any precondition fails, it returns a full
+rebuild with the reason in `lastReparseFallbackReason` — never a plausible but wrong tree.
 
-| Motivo | Qué evita |
+| Reason | What it prevents |
 |---|---|
-| `region-not-isolated` | un `[` a medias (su `]` estaría fuera), un `[code]` sin cerrar, un cierre huérfano que casaría con un ancestro, o una etiqueta **del mismo kind que el contenedor** abierta al final de la región, que le robaría su `[/centre]` |
-| `open-bracket-before` | un `[` sin cerrar **antes** de la región, que podría reclamar un `]` que la edición cree dentro |
-| `no-container` | la edición está a nivel de documento |
-| `stale-ranges` | el árbol no describe el texto previo |
-| `region-too-large` / `document-too-small` | casos donde el rebuild es más barato (ver abajo) |
+| `region-not-isolated` | a half-typed `[` (its `]` would be outside), an unclosed `[code]`, an orphan closer that would pair with an ancestor, or a tag **of the same kind as the container** left open at the end of the region, which would steal its `[/centre]` |
+| `open-bracket-before` | an unclosed `[` **before** the region, which could claim a `]` that the edit believes is inside |
+| `no-container` | the edit is at document level |
+| `stale-ranges` | the tree does not describe the previous text |
+| `region-too-large` / `document-too-small` | cases where the rebuild is cheaper (see below) |
 
-Los dos guardas de rendimiento salieron de medir, no de suponer:
-- El guarda de aislamiento **lexaba la región y el parser la volvía a lexar**. En un documento cuyo
-  contenedor abarca el 95% del texto, la ruta "rápida" medía **3-4× más lenta** que un rebuild. Se
-  reescribió para trabajar sobre el árbol ya parseado —posible precisamente porque el punto 14 hace
-  que el parser conserve el `[` suelto y el `[/tag]` huérfano como nodos `text`.
-- Umbrales: región ≤ 70% del documento, documento ≥ 2500 chars. A 1.8 KB / 173 nodos el incremental
-  era un **9% más lento**; a 3.5 KB / 341 nodos, un **50% más rápido**. Son opciones de constructor
-  (`IncrementalParserOptions`), porque son afinado y no semántica: el árbol es el mismo.
+The two performance guards came from measuring, not assuming:
+- The isolation guard **lexed the region and the parser lexed it again**. In a document whose
+  container spans 95% of the text, the "fast" path measured **3-4× slower** than a rebuild. It was
+  rewritten to work on the already-parsed tree —possible precisely because point 14 makes
+  the parser keep the stray `[` and the orphan `[/tag]` as `text` nodes.
+- Thresholds: region ≤ 70% of the document, document ≥ 2500 chars. At 1.8 KB / 173 nodes the incremental
+  was **9% slower**; at 3.5 KB / 341 nodes, **50% faster**. They are constructor options
+  (`IncrementalParserOptions`), because they are tuning and not semantics: the tree is the same.
 
-**Validación diferencial.** La propiedad exigida no es "renderiza parecido" sino **idéntico**, nodo
-a nodo, rango a rango, contra un rebuild del texto final:
+**Differential validation.** The required property is not "renders similarly" but **identical**, node
+by node, range by range, against a rebuild of the final text:
 
-| Suite | Ediciones | Desiguales | Partición rota |
+| Suite | Edits | Unequal | Broken partition |
 |---|---|---|---|
-| documento corto | 10.000 | 0 | 0 |
-| con anidamiento | 7.500 | 0 | 0 |
-| con `[code]` | 4.000 | 0 | 0 |
-| fixture real 19.6 KB | 600 | 0 | 0 |
-| **total** | **22.100** | **0** ✅ | **0** ✅ |
+| short document | 10,000 | 0 | 0 |
+| with nesting | 7,500 | 0 | 0 |
+| with `[code]` | 4,000 | 0 | 0 |
+| real 19.6 KB fixture | 600 | 0 | 0 |
+| **total** | **22,100** | **0** ✅ | **0** ✅ |
 
-El fuzz encontró **61 divergencias** en la primera pasada, todas de la misma forma: teclear
-`[centre]` dentro de un `[centre]`. Y **9 más** en la segunda, todas por el `[` sin cerrar previo a
-la región. Ambas se cerraron con los guardas de arriba.
+The fuzz found **61 divergences** on the first pass, all of the same shape: typing
+`[centre]` inside a `[centre]`. And **9 more** on the second, all due to the unclosed `[` before
+the region. Both were closed with the guards above.
 
-**Rendimiento con escritura real** (43 pulsaciones de texto normal dentro de un `[notice]` del
-fixture de 19.6 KB, comparando `incremental: true` contra `incremental: false` — la misma ruta de
-código en ambos, que es la única comparación honesta):
+**Performance with real typing** (43 keystrokes of normal text inside a `[notice]` of the
+19.6 KB fixture, comparing `incremental: true` against `incremental: false` — the same code path
+in both, which is the only honest comparison):
 
-| | ms/pulsación |
+| | ms/keystroke |
 |---|---|
-| rebuild completo | 2.78 |
-| **incremental** | **1.22** (−56%, estable en 3 tandas) |
+| full rebuild | 2.78 |
+| **incremental** | **1.22** (−56%, stable across 3 batches) |
 
-Con **100% de aciertos**: los guardas no se disparan ni una vez escribiendo texto normal.
+With a **100% hit rate**: the guards do not fire a single time when typing normal text.
 
-**Otros cambios:**
-- `reparse()` ya no devuelve `null`. Cuando no puede hacer el splice, hace el rebuild él mismo,
-  en vez de un `null` que el llamante tenía que interpretar.
-- `DocumentModelOptions.incremental` (por defecto `true`) desactiva la ruta. Es un interruptor de
-  rendimiento, no de corrección.
-- El test de `IncrementalParser` exigía que los `id` de RedNode de bloques no tocados sobrevivieran.
-  Ya no: el rojo se deriva del verde nuevo, igual que en un rebuild. Preservar esos `id` es
-  justamente lo que hacía el splice en rojo que dejaba los rangos mintiendo, y nada depende de
-  ellos — el `DOMMorpher` empareja por estructura (`isEqualNode`) desde el punto 12.
+**Other changes:**
+- `reparse()` no longer returns `null`. When it cannot do the splice, it does the rebuild itself,
+  instead of a `null` that the caller had to interpret.
+- `DocumentModelOptions.incremental` (default `true`) turns off the path. It is a performance
+  switch, not a correctness one.
+- The `IncrementalParser` test required that the RedNode `id`s of untouched blocks survive.
+  No longer: red is derived from the new green, just like in a rebuild. Preserving those `id`s is
+  precisely what the red splice did that left the ranges lying, and nothing depends on
+  them — the `DOMMorpher` pairs by structure (`isEqualNode`) since point 12.
 
-### Ficheros tocados
+### Files touched
 
-- `src/Syntax/partition.ts` 🆕 — la invariante, ejecutable.
+- `src/Syntax/partition.ts` 🆕 — the invariant, executable.
 - `src/Syntax/greenEdit.ts` 🆕 — `shiftGreen`, `spliceGreen`, `withChildren`.
-- `src/Syntax/GreenNode.ts` — `leadingWidth`/`trailingWidth`; fuera `fullWidth`.
-- `src/Syntax/GreenNodePool.ts` — anchuras propagadas.
-- `src/BBCode/Parser.ts` — delimitadores como anchuras, saltos de línea disjuntos, huérfanos como
-  texto, raíz completa, opción `normalizeParagraphs`.
-- `src/Incremental/IncrementalParser.ts` — reescrito sobre el árbol verde.
-- `src/Model/DocumentModel.ts`, `src/BBCode/BBCodeDocumentModel.ts` — opción `incremental`,
-  `parseToGreen` con opciones, `lastReparseFallbackReason`.
-- `src/Studio/StudioEffects.ts` — 7 sitios que usaban `fullWidth - width`.
-- `src/Tests/Partition.test.ts` 🆕, `src/Incremental/__tests__/IncrementalParser.test.ts` reescrito.
+- `src/Syntax/GreenNode.ts` — `leadingWidth`/`trailingWidth`; `fullWidth` removed.
+- `src/Syntax/GreenNodePool.ts` — widths propagated.
+- `src/BBCode/Parser.ts` — delimiters as widths, disjoint line breaks, orphans as
+  text, full root, `normalizeParagraphs` option.
+- `src/Incremental/IncrementalParser.ts` — rewritten on the green tree.
+- `src/Model/DocumentModel.ts`, `src/BBCode/BBCodeDocumentModel.ts` — `incremental` option,
+  `parseToGreen` with options, `lastReparseFallbackReason`.
+- `src/Studio/StudioEffects.ts` — 7 places that used `fullWidth - width`.
+- `src/Tests/Partition.test.ts` 🆕, `src/Incremental/__tests__/IncrementalParser.test.ts` rewritten.
 
-### Qué queda
+### What remains
 
-El **punto 5 / S2** (interning real con structural sharing) es lo único abierto, y el punto 14
-acaba de darle lo que le faltaba: ahora que las anchuras son honestas, un `GreenNode` puede
-identificarse por `(kind, text, hijos, anchuras)` sin su posición absoluta.
+**Point 5 / S2** (real interning with structural sharing) is the only thing still open, and point 14
+has just given it what it was missing: now that the widths are honest, a `GreenNode` can be
+identified by `(kind, text, children, widths)` without its absolute position.
 
 ---
 
-## 7-ter. Semana 5 — Structural sharing de verdad ✅
+## 7-ter. Week 5 — Real structural sharing ✅
 
-El último punto abierto: **5 / S2**, el interning. El punto 14 lo había desbloqueado, y este es
-el cambio que lo cobra.
+The last open point: **5 / S2**, the interning. Point 14 had unblocked it, and this is
+the change that cashes it in.
 
-### El diagnóstico, otra vez distinto del que decía la auditoría
+### The diagnosis, once again different from what the audit said
 
-La auditoría trataba S2 como dos bugs sueltos. Son el mismo bug, y no tenía arreglo local:
+The audit treated S2 as two separate bugs. They are the same bug, and it had no local fix:
 
-- `internLeaf` cacheaba por `kind:text` **ignorando la posición**, así que el segundo `"Hello"`
-  del documento recibía el nodo del primero, con **sus** offsets. Encender el interner hacía que
-  todo lo que depende de posiciones mintiera en silencio.
-- `internNode` hacía lo contrario: exigía `start` y `end` idénticos para deduplicar, cosa que dos
-  apariciones distintas nunca cumplen. El mismo bloque pegado diez veces daba **0% de dedup y 100%
-  del coste de escaneo**.
+- `internLeaf` cached by `kind:text` **ignoring the position**, so the second `"Hello"`
+  in the document got the first one's node, with **its** offsets. Turning the interner on made
+  everything that depends on positions lie silently.
+- `internNode` did the opposite: it required identical `start` and `end` to deduplicate, which two
+  different occurrences never satisfy. The same block pasted ten times gave **0% dedup and 100%
+  of the scanning cost**.
 
-Ignorar la posición y mentir, o respetarla y no acertar nunca: no hay una tercera opción **mientras
-la posición viva en el nodo verde**. Por eso el arreglo es quitarla.
+Ignoring the position and lying, or respecting it and never hitting: there is no third option **as long as
+the position lives in the green node**. That is why the fix is to remove it.
 
-### El cambio
+### The change
 
 ```
-ANTES                          DESPUÉS
+BEFORE                         AFTER
 GreenNode                      GreenNode
-  range: {start, end}   →        (nada)
-  width                          width          ← derivada, no pasada
+  range: {start, end}   →        (nothing)
+  width                          width          ← derived, not passed
   leadingWidth                   leadingWidth
   trailingWidth                  trailingWidth
 
-RedNode.range → green.range    RedNode.range → acumulada al construir
+RedNode.range → green.range    RedNode.range → accumulated on construction
 ```
 
-Un nodo verde sabe **cuánto ocupa**, no **dónde está**. La posición es una propiedad del *lugar* de
-un nodo en un árbol, así que vive en el nodo rojo, que es el que tiene lugar: `greenToRedNode` la
-teje al bajar (una suma por nodo) y la guarda, de modo que `range` sigue siendo la propiedad O(1)
-que todos los consumidores ya suponían.
+A green node knows **how much it occupies**, not **where it is**. Position is a property of the *place* of
+a node in a tree, so it lives in the red node, which is the one that has a place: `greenToRedNode` weaves it
+in on the way down (one sum per node) and stores it, so that `range` remains the O(1) property
+that all the consumers already assumed.
 
-**Efecto secundario de diseño, y no menor:** la anchura pasa a **derivarse** de los hijos más los
-delimitadores propios, así que la invariante de partición del punto 14 dejó de ser una comprobación
-que un llamante descuidado podía violar y pasó a ser aritmética del constructor. `partition.ts`
-adelgazó: `sibling-gap`, `sibling-overlap`, `leading-mismatch` y `trailing-mismatch` se borraron
-junto con la posibilidad de fallarlos. Quedan los dos que siguen siendo comprobables — que la raíz
-cubra la fuente y que una hoja `text` mida lo que su texto.
+**A design side effect, and not a minor one:** the width is now **derived** from the children plus the
+node's own delimiters, so the partition invariant of point 14 stopped being a check
+that a careless caller could violate and became constructor arithmetic. `partition.ts`
+slimmed down: `sibling-gap`, `sibling-overlap`, `leading-mismatch` and `trailing-mismatch` were deleted
+along with the possibility of failing them. Two remain that are still checkable — that the root
+covers the source and that a `text` leaf measures what its text does.
 
-Y `shiftGreen` desapareció: era una copia profunda de cada hermano posterior a una edición solo para
-renumerarlo, el 14% del coste de un reparse incremental. Ahora un hermano posterior se comparte por
-referencia igual que uno anterior.
+And `shiftGreen` disappeared: it was a deep copy of every sibling after an edit just to
+renumber it, 14% of the cost of an incremental reparse. Now a later sibling is shared by
+reference just like an earlier one.
 
-### Validación
+### Validation
 
-**El interner encendido debe ser indistinguible del apagado.** Sobre 18.016 documentos (2 fixtures
-reales, 14 casos mínimos, 6 semillas × 3.000 aleatorios), en **los dos modos**:
+**The interner turned on must be indistinguishable from turned off.** Over 18,016 documents (2 real
+fixtures, 14 minimal cases, 6 seeds × 3,000 random ones), in **both modes**:
 
 | | `leaves` | `full` |
 |---|---|---|
-| Árbol idéntico | **100%** | **100%** |
-| HTML idéntico | **100%** | **100%** |
-| Export idéntico | **100%** | **100%** |
-| Particiona | **100%** | **100%** |
+| Identical tree | **100%** | **100%** |
+| Identical HTML | **100%** | **100%** |
+| Identical export | **100%** | **100%** |
+| Partitions | **100%** | **100%** |
 | `collisionMisses` | 0 | 0 |
 
-Y el fuzz diferencial del incremental repetido entero con el interner encendido: **22.100 ediciones,
-0 divergencias**, igual que apagado.
+And the incremental differential fuzz repeated in full with the interner on: **22,100 edits,
+0 divergences**, same as off.
 
-**La deduplicación por fin ocurre.** Fixture de 19,6 KB: 1736 nodos alcanzables →
-**702 objetos distintos (59,6% compartido)**. Antes: 0%, con `collisionHits: 0`.
+**Deduplication finally happens.** 19.6 KB fixture: 1736 reachable nodes →
+**702 distinct objects (59.6% shared)**. Before: 0%, with `collisionHits: 0`.
 
-### El coste, medido — y por qué se queda apagado por defecto
+### The cost, measured — and why it stays off by default
 
-Aislando el parseo, el interning es caro; de punta a punta, es casi gratis. Las dos cosas son
-ciertas y la segunda es la que importa:
+Isolating the parse, interning is expensive; end to end, it is almost free. Both things are
+true and the second is the one that matters:
 
-| | parseo aislado | memoria del árbol | **coste por pulsación** |
+| | isolated parse | tree memory | **cost per keystroke** |
 |---|---|---|---|
-| sin interning | 0,518 ms | 258 KB | **1,09 ms** |
-| `leaves` | 0,600 ms (+16%) | 148 KB (−42%) | **1,09 ms** (neutro) |
-| `full` | 1,090 ms (+110%) | 114 KB (−56%) | **1,15 ms** (+6%) |
+| no interning | 0.518 ms | 258 KB | **1.09 ms** |
+| `leaves` | 0.600 ms (+16%) | 148 KB (−42%) | **1.09 ms** (neutral) |
+| `full` | 1.090 ms (+110%) | 114 KB (−56%) | **1.15 ms** (+6%) |
 
-*(Coste por pulsación: mediana de 4 tandas, 43 pulsaciones de texto normal dentro de un `[notice]`
-del fixture, comparando `interning` a `true` y a `false` — la misma ruta de código en ambos.)*
+*(Cost per keystroke: median of 4 batches, 43 keystrokes of normal text inside a `[notice]`
+of the fixture, comparing `interning` set to `true` and to `false` — the same code path in both.)*
 
-**Decisión: correcto, disponible, y apagado por defecto.** El presupuesto declarado de este motor es
-de latencia, no de memoria, y ningún consumidor tenía problema de memoria; encenderlo no compra nada
-que haga falta hoy. `BBCodeDocumentModelOptions.interning` lo activa para quien tenga muchos
-documentos vivos a la vez, y `'leaves'` es el modo por defecto del pool porque compra tres cuartas
-partes del ahorro por un séptimo del coste: interning de un nodo interno obliga a hashear su
-subárbol entero, mientras que una hoja cuesta una clave de string y un `Map.get` — y la duplicación
-está en las hojas (930 hojas, 122 distintas).
+**Decision: correct, available, and off by default.** The declared budget of this engine is
+latency, not memory, and no consumer had a memory problem; turning it on buys nothing
+that is needed today. `BBCodeDocumentModelOptions.interning` turns it on for anyone with many
+documents alive at once, and `'leaves'` is the pool's default mode because it buys three quarters
+of the saving for a seventh of the cost: interning an inner node forces hashing its
+whole subtree, while a leaf costs a string key and a `Map.get` — and the duplication
+is in the leaves (930 leaves, 122 distinct).
 
-> Nota metodológica: la primera medición de memoria dio que el interner gastaba **más**. Era ruido:
-> `global.gc` no estaba disponible bajo `npx tsx`, así que nada se recogía entre tandas. Con
-> `node --expose-gc --import .../tsx/dist/loader.mjs` el signo se invirtió. Ver §8, regla 8.
+> Methodological note: the first memory measurement said the interner spent **more**. It was noise:
+> `global.gc` was not available under `npx tsx`, so nothing was collected between batches. With
+> `node --expose-gc --import .../tsx/dist/loader.mjs` the sign flipped. See §8, rule 8.
 
-### Ficheros tocados
+### Files touched
 
-- `src/Syntax/GreenNode.ts` — fuera `range`; `width` derivada; `walkWithOffset`, `childOffsets`.
-- `src/Syntax/RedNode.ts` — `_range` propio, acumulado al construir; `innerStart`/`innerEnd`.
-- `src/Syntax/GreenNodePool.ts` — clave estructural correcta, `InterningMode`.
-- `src/Syntax/greenEdit.ts` — `shiftGreen` borrado; `spliceGreen`/`withChildren` sin delta.
-- `src/Syntax/partition.ts` — reescrito: solo lo que sigue siendo comprobable.
-- `src/BBCode/Parser.ts`, `BBCodeToGreenNode.ts`, `BBCodeDocumentModel.ts` — construcción por
-  anchuras, threading del offset, opción `interning`.
-- `src/Incremental/IncrementalParser.ts` — desciende por el árbol rojo, que es quien tiene posiciones.
-- 4 analyzers, 4 transforms, 4 transformers, `StudioEffects` (47 sitios), `treeTransformers`,
+- `src/Syntax/GreenNode.ts` — `range` removed; `width` derived; `walkWithOffset`, `childOffsets`.
+- `src/Syntax/RedNode.ts` — own `_range`, accumulated on construction; `innerStart`/`innerEnd`.
+- `src/Syntax/GreenNodePool.ts` — correct structural key, `InterningMode`.
+- `src/Syntax/greenEdit.ts` — `shiftGreen` deleted; `spliceGreen`/`withChildren` without delta.
+- `src/Syntax/partition.ts` — rewritten: only what is still checkable.
+- `src/BBCode/Parser.ts`, `BBCodeToGreenNode.ts`, `BBCodeDocumentModel.ts` — construction by
+  widths, offset threading, `interning` option.
+- `src/Incremental/IncrementalParser.ts` — descends through the red tree, which is the one that has positions.
+- 4 analyzers, 4 transforms, 4 transformers, `StudioEffects` (47 places), `treeTransformers`,
   `ASTOptimizer`, `TreeBuilder`, `NodeFactory`, `HTMLToGreenNode`, `MarkdownToGreenNode`,
-  `UIBlocksToRedTree`, `Transaction` — 67 sitios de `green.range` en total.
-- Tests: `Partition.test.ts` y `GreenNodePool.test.ts` reescritos.
+  `UIBlocksToRedTree`, `Transaction` — 67 `green.range` places in total.
+- Tests: `Partition.test.ts` and `GreenNodePool.test.ts` rewritten.
 
-> **Hallazgo lateral:** `ASTOptimizer` construía nodos verdes *vacíos* como cáscara y les colgaba
-> hijos rojos después, así que su `range` no describía nada. Con la anchura derivada eso se volvió
-> visible (ancho 0) y se arregló construyendo el verde a partir de los hijos que va a tener.
+> **Side finding:** `ASTOptimizer` built *empty* green nodes as a shell and hung red
+> children on them afterwards, so its `range` described nothing. With the derived width that became
+> visible (width 0) and was fixed by building the green from the children it is going to have.
 
 ---
 
-## 7-quater. Semana 6 — El lexer
+## 7-quater. Week 6 — The lexer
 
-Tras las semanas 4 y 5, el lexer era la fase más cara de un parseo completo (0,74 ms de
-~1,5 ms). Solo se le había arreglado el cuadrático de la semana 1; el caso normal nunca se
-tocó.
+After weeks 4 and 5, the lexer was the most expensive phase of a full parse (0.74 ms of
+~1.5 ms). Only the quadratic behavior from Week 1 had been fixed; the normal case was never
+touched.
 
-### Perfilado por ablación, no por intuición
+### Profiling by ablation, not by intuition
 
-Cada variante quita **un** coste, para medir su contribución en vez de suponerla. De 0,625 ms:
+Each variant removes **one** cost, to measure its contribution instead of assuming it. Out of 0.625 ms:
 
-| coste | ms | % |
+| cost | ms | % |
 |---|---|---|
-| regex por carácter en los nombres de etiqueta | 0,127 | 20% |
-| `toLowerCase()` por etiqueta (1608×) | 0,110 | 18% |
-| `TAG_NAME_RE.test` por etiqueta | 0,058 | 9% |
-| memo de corchetes (`Map<number,number>`) | 0,043 | 7% |
-| alojar 2538 objetos token | 0,042 | 7% |
-| `toLowerCase()` del source entero | 0,030 | 5% |
+| per-character regex in tag names | 0.127 | 20% |
+| `toLowerCase()` per tag (1608×) | 0.110 | 18% |
+| `TAG_NAME_RE.test` per tag | 0.058 | 9% |
+| bracket memo (`Map<number,number>`) | 0.043 | 7% |
+| allocating 2538 token objects | 0.042 | 7% |
+| `toLowerCase()` of the whole source | 0.030 | 5% |
 
-Las tres primeras son la misma pregunta hecha tres veces. El lexer buscaba el final del
-nombre con `/[a-zA-Z0-9_*]/.test(inner[i])` **carácter a carácter** —alojando un string de
-un carácter y entrando al motor de regex para resolver lo que responden cuatro
-comparaciones de enteros—, luego cortaba, luego bajaba a minúsculas, y luego **volvía a
-validar** con una segunda regex lo que el escaneo ya había garantizado.
+The first three are the same question asked three times. The lexer looked for the end of the
+name with `/[a-zA-Z0-9_*]/.test(inner[i])` **character by character** —allocating a one-character
+string and entering the regex engine to resolve what four integer
+comparisons answer—, then it sliced, then lowercased, and then **validated again**
+with a second regex what the scan had already guaranteed.
 
-### Lo hecho
+### What was done
 
-- **Un solo escaneo sobre `charCodeAt`** que encuentra el final del nombre, lo valida y
-  detecta si hay mayúsculas, devolviendo longitud y flag empaquetados en un entero. La
-  segunda regex desaparece: todo carácter que el escaneo aceptó es válido por definición.
-- **`toLowerCase()` solo si hace falta.** La mayoría de nombres ya vienen en minúsculas y
-  volvían como copias idénticas.
-- **El `toLowerCase()` del source entero pasa a ser perezoso.** Solo lo usan los bloques
-  `[code]`/`[c]`, y la mayoría de documentos no tiene ninguno — el fixture de referencia
-  pagaba una copia de 19,6 KB para nada.
-- **La ruta de texto plano** hacía tres comparaciones de string por carácter; ahora una de
-  enteros. Es la que cubre casi todo el documento.
-- Borrada ceremonia vestigial en los bloques raw: `rawVal` se calculaba **dos veces**.
+- **A single scan over `charCodeAt`** that finds the end of the name, validates it and
+  detects whether there are uppercase letters, returning length and flag packed into one integer. The
+  second regex disappears: every character the scan accepted is valid by definition.
+- **`toLowerCase()` only if needed.** Most names already come in lowercase and
+  came back as identical copies.
+- **The `toLowerCase()` of the whole source becomes lazy.** Only the `[code]`/`[c]`
+  blocks use it, and most documents have none — the reference fixture
+  paid for a 19.6 KB copy for nothing.
+- **The plain-text path** did three string comparisons per character; now one integer
+  comparison. It is the one that covers almost the whole document.
+- Vestigial ceremony deleted in the raw blocks: `rawVal` was computed **twice**.
 
-### Validación
+### Validation
 
-**El flujo de tokens debe ser idéntico, campo a campo.** Un lexer "equivalente en entrada
-válida" no sirve: su trabajo es decidir sobre basura, y el buffer de un editor es basura
-casi siempre.
+**The token stream must be identical, field by field.** A lexer "equivalent on valid
+input" is not enough: its job is to decide on garbage, and an editor's buffer is garbage
+almost all the time.
 
 | | |
 |---|---|
-| Documentos | **56.049** (2 fixtures, 47 casos mínimos, 7 semillas × 8.000) |
-| Tokens comparados | **776.021** |
-| Divergencias | **0** ✅ |
-| Cobertura de la fuente rota | **0** ✅ |
+| Documents | **56,049** (2 fixtures, 47 minimal cases, 7 seeds × 8,000) |
+| Tokens compared | **776,021** |
+| Divergences | **0** ✅ |
+| Broken source coverage | **0** ✅ |
 
-El alfabeto del fuzz es hostil a propósito: `[`, `]`, `[[`, `[/`, `[]`, `[ ]`,
+The fuzz alphabet is hostile on purpose: `[`, `]`, `[[`, `[/`, `[]`, `[ ]`,
 `[has space]`, `[123+456]`, `[b`, `b]`, `[=]`, `[CODE]`, `[box=[b]t[/b]]`.
 
-### Lo que apareció al escribir los tests
+### What turned up while writing the tests
 
-**El lexer no tenía ni un test propio**, lo cual está del revés: su cometido es decidir
-sobre entrada malformada, y eso no lo cubría nada. Al escribirlos apareció una asimetría
-real que yo mismo había supuesto mal:
+**The lexer did not have a single test of its own**, which is backwards: its job is to decide
+on malformed input, and nothing covered that. Writing them revealed a real asymmetry
+that I myself had assumed wrongly:
 
-- En una **apertura**, el nombre es la tirada inicial de caracteres válidos y **todo lo
-  demás pasa a atributos**: `[has space]` → `open:has(space)`, `[123+456]` →
+- In an **opening** tag, the name is the initial run of valid characters and **everything
+  else goes to attributes**: `[has space]` → `open:has(space)`, `[123+456]` →
   `open:123(+456)`.
-- En un **cierre**, el nombre debe llenar el hueco entero: `[/has space]` → texto literal.
+- In a **closing** tag, the name must fill the whole gap: `[/has space]` → literal text.
 
-No es inofensivo por accidente: el parser convierte las etiquetas desconocidas en nodos
-`text`, así que el usuario ve lo que escribió. Por eso nunca se notó. Queda fijado en
-`src/Tests/Lexer.test.ts` (49 casos) para que un lector futuro no tropiece con ello.
+It is not harmless by accident: the parser turns unknown tags into `text` nodes, so the user sees
+what they typed. That is why it was never noticed. It is pinned in
+`src/Tests/Lexer.test.ts` (49 cases) so that a future reader does not stumble on it.
 
 ---
 
-## 7-quinquies. Semana 7 — Granularidad del incremental
+## 7-quinquies. Week 7 — Incremental granularity
 
-Perfilar la pulsación real (regla 4) dejó ver que el lexer ya no era el problema: era el
-**13,5%** de una pulsación. Los dos costes de verdad eran otros, y resultaron ser el mismo
-problema visto desde dos lados.
+Profiling the real keystroke (rule 4) showed that the lexer was no longer the problem: it was
+**13.5%** of a keystroke. The two real costs were others, and turned out to be the same
+problem seen from two sides.
 
-### El diagnóstico
+### The diagnosis
 
-El incremental razonaba en **contenedores**: buscaba el bloque más profundo que envolviera
-el cambio y reparseaba su interior entero. Dos consecuencias:
+The incremental parser reasoned in **containers**: it looked for the deepest block that wrapped
+the change and reparsed its whole interior. Two consequences:
 
-- Escribir dentro de un `[notice]` de 13 KB relexaba y reparseaba **el 66% del documento en
-  cada pulsación**, porque el contenedor era casi todo.
-- Escribir **al final del post** —la posición de caret más común que existe— no tenía ningún
-  contenedor de bloque que la envolviera, así que caía a rebuild completo: **0 de 43
-  pulsaciones** iban por la ruta rápida.
+- Typing inside a 13 KB `[notice]` relexed and reparsed **66% of the document on
+  every keystroke**, because the container was almost everything.
+- Typing **at the end of the post** —the most common caret position there is— had no
+  block container wrapping it, so it fell back to a full rebuild: **0 of 43
+  keystrokes** took the fast path.
 
-### El cambio
+### The change
 
-La unidad de una edición no es un nodo entero, es un **run de hermanos**. El target pasa a
-ser un rango de hijos `[from, to)` del nodo más profundo que contenga el cambio, y el padre
-puede ser el propio `document` — con lo que el segundo problema desaparece por
-construcción.
+The unit of an edit is not a whole node, it is a **run of siblings**. The target becomes
+a range of children `[from, to)` of the deepest node that contains the change, and the parent
+can be the `document` itself — so the second problem disappears by
+construction.
 
-La ventana se **ensancha en uno por cada lado**. No es margen de seguridad: es lo que
-permite que un borrado **funda** dos nodos. Quitar la línea en blanco entre dos párrafos
-solo toca el nodo de en medio, y sin un vecino a cada lado el reparseo no puede ver que los
-dos supervivientes deben volverse uno.
+The window is **widened by one on each side**. It is not a safety margin: it is what
+lets a deletion **merge** two nodes. Removing the blank line between two paragraphs
+only touches the node in the middle, and without a neighbor on each side the reparse cannot see that the
+two survivors must become one.
 
-### Lo que hay que dejar fuera, y por qué
+### What has to be left out, and why
 
-Cuatro kinds son **opacos** al descenso, cada uno porque sus hijos los produce una regla que
-mira **fuera** de ellos, que es justo lo que una ventana no puede ver:
+Four kinds are **opaque** to the descent, each because its children are produced by a rule that
+looks **outside** of them, which is exactly what a window cannot see:
 
-| kind | por qué |
+| kind | why |
 |---|---|
-| `paragraph` | el agrupado en párrafos es de raíz; una ventana dentro no puede descubrir que una línea en blanco nueva debe **partirlo** |
-| `code`, `inline_code` | bloques raw: su contenido es un token literal porque el **lexer** vio el `[code]`; reparsear ese texto solo lo lexa como BBCode y lo hace añicos |
-| `list_item` | `[*]` auto-cierra el anterior, así que un `[*]` tecleado dentro es **hermano** en un parseo completo y sería **hijo** en uno aislado |
+| `paragraph` | grouping into paragraphs is a root matter; a window inside cannot discover that a new blank line must **split** it |
+| `code`, `inline_code` | raw blocks: their content is a literal token because the **lexer** saw the `[code]`; reparsing that text alone lexes it as BBCode and shatters it |
+| `list_item` | `[*]` auto-closes the previous one, so a `[*]` typed inside is a **sibling** in a full parse and would be a **child** in an isolated one |
 
-Y dos guardas nuevos, ambos encontrados por el fuzz, no por razonamiento previo:
+And two new guards, both found by the fuzz, not by prior reasoning:
 
-- **La ventana no puede empezar a mitad de una tirada de saltos de línea.** El primero de
-  una tirada es `spacing` y los siguientes `empty_line`: cuál es cuál depende de cuántos
-  vinieron antes. Empezar a mitad hace que el primero de dentro se crea el primero de todos.
-  Lo cazó un test propio antes que el fuzz.
-- **Una etiqueta abierta al final de la ventana le roba el cierre a cualquier ANCESTRO de su
-  tipo**, no solo al padre. El fuzz lo encontró con un `[centre]` dentro de un `[list]`
-  dentro de un `[centre]`.
+- **The window cannot start in the middle of a run of line breaks.** The first one of
+  a run is `spacing` and the following ones `empty_line`: which is which depends on how many
+  came before. Starting in the middle makes the first one inside think it is the first of all.
+  A test of our own caught it before the fuzz.
+- **A tag left open at the end of the window steals the closer from any ANCESTOR of its
+  type**, not just from the parent. The fuzz found it with a `[centre]` inside a `[list]`
+  inside a `[centre]`.
 
-### Validación
+### Validation
 
-El fuzz diferencial encontró **192 divergencias** en la primera pasada —todas bloques raw— y
-**2** en la segunda —ambas el robo de cierre a un ancestro—. Tras cerrarlas:
+The differential fuzz found **192 divergences** on the first pass —all raw blocks— and
+**2** on the second —both the stealing of a closer from an ancestor—. After closing them:
 
-| suite | ediciones | desiguales | partición rota |
+| suite | edits | unequal | broken partition |
 |---|---|---|---|
-| documento corto | 10.000 | 0 | 0 |
-| raíz, muchos párrafos | 10.000 | 0 | 0 |
-| con anidamiento | 7.500 | 0 | 0 |
-| con `[code]` | 4.000 | 0 | 0 |
-| fixture real 19,6 KB | 600 | 0 | 0 |
-| **total** | **32.100** | **0** ✅ | **0** ✅ |
+| short document | 10,000 | 0 | 0 |
+| root, many paragraphs | 10,000 | 0 | 0 |
+| with nesting | 7,500 | 0 | 0 |
+| with `[code]` | 4,000 | 0 | 0 |
+| real 19.6 KB fixture | 600 | 0 | 0 |
+| **total** | **32,100** | **0** ✅ | **0** ✅ |
 
-### Resultado, y lo que queda al descubierto
+### Result, and what is left exposed
 
-| caret | incremental | rebuild | aciertos |
+| caret | incremental | rebuild | hits |
 |---|---|---|---|
-| dentro de `[notice]` | **0,742 ms** | 2,04 ms | 43/43 |
-| al final del post | **0,657 ms** | 1,92 ms | 43/43 |
-| al principio del post | 2,13 ms | 2,17 ms | 0/43 |
+| inside `[notice]` | **0.742 ms** | 2.04 ms | 43/43 |
+| at the end of the post | **0.657 ms** | 1.92 ms | 43/43 |
+| at the start of the post | 2.13 ms | 2.17 ms | 0/43 |
 
-Al principio no acierta, y está bien que no lo haga: el primer hijo del documento **es** casi
-todo el documento, así que la ventana dispara `region-too-large` y el rebuild es más barato.
+At the start it does not hit, and it is right that it does not: the first child of the document **is** almost
+the whole document, so the window triggers `region-too-large` and the rebuild is cheaper.
 
-Con `parse` reducido a 0,01 ms, el reparse queda dominado por dos cosas nuevas:
+With `parse` reduced to 0.01 ms, the reparse is dominated by two new things:
 
-1. **`buildRed` — 68-77% de la pulsación.** Reconstruye los 1736 nodos rojos enteros aunque
-   solo cambie una ventana. Es la siguiente optimización grande, y el interning de la semana
-   5 es lo que la hace posible.
-2. **`bracketsCloseBefore` — 22% cuando el caret está al final.** Recorre todo el prefijo en
-   cada pulsación. Se puede cachear, pero el razonamiento de corrección es sutil (una
-   edición puede exponer un `]` que antes estaba tapado) y no merece un bug silencioso a
-   cambio de 0,09 ms.
+1. **`buildRed` — 68-77% of the keystroke.** It rebuilds all 1736 red nodes even though
+   only one window changes. It is the next big optimization, and the interning of Week
+   5 is what makes it possible.
+2. **`bracketsCloseBefore` — 22% when the caret is at the end.** It walks the whole prefix on
+   every keystroke. It can be cached, but the correctness reasoning is subtle (an
+   edit can expose a `]` that was previously covered) and it is not worth a silent bug in
+   exchange for 0.09 ms.
 
 ---
 
-## 7-sexies. Semana 8 — El parser
+## 7-sexies. Week 8 — The parser
 
-Tras la semana 6 el parser era la fase más cara de un parseo completo, el doble que el
-lexer, y no se había perfilado nunca.
+After Week 6 the parser was the most expensive phase of a full parse, twice the
+lexer, and it had never been profiled.
 
-### Ablación
+### Ablation
 
-De 0,49 ms:
+Out of 0.49 ms:
 
-| coste | ms | % |
+| cost | ms | % |
 |---|---|---|
-| `new GreenNode` × 1736 | 0,280 | 57% |
-| └ de eso, `Object.freeze([...hijos])` | 0,148 | **30%** |
-| `tagToNodeKind` (dos llamadas por elemento) | ~0,08 | 17% |
-| objetos de frame de la pila | 0,016 | 3% |
-| normalización en párrafos | 0,002 | 0,5% |
+| `new GreenNode` × 1736 | 0.280 | 57% |
+| └ of which, `Object.freeze([...children])` | 0.148 | **30%** |
+| `tagToNodeKind` (two calls per element) | ~0.08 | 17% |
+| stack frame objects | 0.016 | 3% |
+| normalization into paragraphs | 0.002 | 0.5% |
 
-### Lo hecho
+### What was done
 
-- **Un array vacío congelado compartido** para los nodos sin hijos. Más de la mitad del
-  árbol son hojas (930 de 1736) y cada una alojaba y congelaba su propio array vacío, que
-  no puede diferir de ningún otro. −17% del parser.
-- **`Object.freeze` solo fuera de producción.** Costaba el 30% del parser a cambio de una
-  garantía en runtime contra una mutación que `readonly GreenNode[]` ya rechaza en tiempo de
-  compilación. Fuera de producción la excepción sigue saltando donde se cometen los errores
-  —desarrollo y la suite de tests, ambos verificados— y producción no paga por una
-  comprobación que allí no ha saltado nunca.
-- **`TAG_TO_KIND` pasa de objeto literal a `Map`.** Se escribe como objeto porque así se lee,
-  pero se consulta con nombres de etiqueta que vienen de la fuente, así que V8 ve una clave
-  megamórfica y cae a búsqueda en diccionario. Medido sobre 1608 consultas, el `Map` es el
-  doble de rápido.
-- **El kind se resuelve una vez por elemento**, al abrir, y viaja en el frame de la pila.
-  Se calculaba dos veces: una para descartar `custom`, otra al cerrar.
+- **A shared frozen empty array** for nodes without children. More than half of the
+  tree is leaves (930 of 1736) and each one allocated and froze its own empty array, which
+  cannot differ from any other. −17% of the parser.
+- **`Object.freeze` only outside production.** It cost 30% of the parser in exchange for a
+  runtime guarantee against a mutation that `readonly GreenNode[]` already rejects at
+  compile time. Outside production the exception still fires where the mistakes are made
+  —development and the test suite, both verified— and production does not pay for a
+  check that has never fired there.
+- **`TAG_TO_KIND` goes from an object literal to a `Map`.** It is written as an object because that is how it reads,
+  but it is queried with tag names that come from the source, so V8 sees a
+  megamorphic key and falls back to dictionary lookup. Measured over 1608 lookups, the `Map` is twice
+  as fast.
+- **The kind is resolved once per element**, on opening, and travels in the stack frame.
+  It was computed twice: once to discard `custom`, another on closing.
 
-> Cuidado deliberado: el frame conserva **también** el `tag` literal. El cierre empareja por
-> tag, no por kind, y `[centre]`/`[center]` comparten kind sin cerrarse mutuamente. Es
-> comportamiento existente y no se toca mientras se optimiza.
+> Deliberate caution: the frame **also** keeps the literal `tag`. Closing pairs by
+> tag, not by kind, and `[centre]`/`[center]` share a kind without closing each other. It is
+> existing behavior and is not touched while optimizing.
 
-### Validación
+### Validation
 
 | | |
 |---|---|
-| Documentos | **49.019** (2 fixtures, 17 casos mínimos, 7 semillas × 7.000) |
-| Configuraciones | **4** — estricto y legacy × con y sin normalización de párrafos |
-| Parseos comparados | **196.076** |
-| Nodos comparados | **1.985.691** |
-| Divergencias | **0** ✅ |
+| Documents | **49,019** (2 fixtures, 17 minimal cases, 7 seeds × 7,000) |
+| Configurations | **4** — strict and legacy × with and without paragraph normalization |
+| Parses compared | **196,076** |
+| Nodes compared | **1,985,691** |
+| Divergences | **0** ✅ |
 
-### Una falsa alarma que conviene recordar
+### A false alarm worth remembering
 
-Una medición suelta dio que `greenToRedNode` había pasado de 0,34 a 0,71 ms y que la
-pulsación había **subido**. Era ruido entre procesos: el A/B alternado contra un worktree en
-HEAD, tres tandas, dio `greenToRed` 0,278 → 0,273 ms y la pulsación 0,698 → 0,700 ms. Sin
-regresión. Es la regla 7 de §8 otra vez, y sigue costando la misma disciplina.
+A loose measurement said that `greenToRedNode` had gone from 0.34 to 0.71 ms and that the
+keystroke had **gone up**. It was noise between processes: the alternating A/B against a worktree at
+HEAD, three batches, gave `greenToRed` 0.278 → 0.273 ms and the keystroke 0.698 → 0.700 ms. No
+regression. It is rule 7 of §8 again, and it still costs the same discipline.
 
 ---
 
-## 7-septies. Semana 9 — El diff de `applyTextUpdate`
+## 7-septies. Week 9 — The `applyTextUpdate` diff
 
-Perfilar la pulsación entera —y no solo el reparse, que es lo que el modelo instrumenta—
-dejó ver que **el 39% del coste ocurría fuera del reparse**, en territorio nunca medido.
-Casi todo estaba en una línea.
+Profiling the whole keystroke —and not just the reparse, which is what the model instruments—
+revealed that **39% of the cost happened outside the reparse**, in never-measured territory.
+Almost all of it was on one line.
 
-### El problema
+### The problem
 
-`applyTextUpdate` tenía dos caminos rápidos por delante del caso general, uno para "añadir
-al final" y otro para "borrar al final", ambos con `startsWith`. No eran atajos: los dos son
-el mismo escaneo de prefijo con una respuesta concreta, y llegar a esa respuesta costaba
-comparar el prefijo compartido entero — que el caso general volvía a recorrer desde cero.
+`applyTextUpdate` had two fast paths ahead of the general case, one for "append
+at the end" and another for "delete at the end", both with `startsWith`. They were not shortcuts: both are
+the same prefix scan with a specific answer, and getting to that answer cost
+comparing the entire shared prefix — which the general case then walked again from scratch.
 
-Una edición en medio del documento pagaba el mismo prefijo **dos veces**: una para descartar
-el camino rápido y otra para calcular el diff que iba a calcular de todas formas.
+An edit in the middle of the document paid for the same prefix **twice**: once to discard
+the fast path and again to compute the diff it was going to compute anyway.
 
-### La corrección
+### The fix
 
-Una pasada hacia delante y una hacia atrás, y eso es todo el diff. Los dos casos siguen
-saliendo bien, simplemente dejan de ser especiales: añadir al final deja `start === oldLen` y
-la pasada hacia atrás se detiene en el sitio; borrar al final deja `start === newLen` e
-igual.
+One forward pass and one backward pass, and that is the whole diff. Both cases still
+come out right, they simply stop being special: appending at the end leaves `start === oldLen` and
+the backward pass stops right there; deleting at the end leaves `start === newLen` and
+likewise.
 
-### Validación
+### Validation
 
-253.902 pares de textos (8 semillas × 40.000, con inserciones, borrados, appends, truncados
-y textos completamente distintos, sobre un alfabeto con emoji y acentos): **el `TextChange`
-resultante es idéntico al del algoritmo anterior en el 100%**, y en el 100% aplicar ese
-cambio al texto viejo reconstruye el nuevo.
+253,902 text pairs (8 seeds × 40,000, with insertions, deletions, appends, truncations
+and completely different texts, over an alphabet with emoji and accents): **the resulting
+`TextChange` is identical to the previous algorithm's in 100%**, and in 100% applying that
+change to the old text reconstructs the new one.
 
-### El resultado, y una predicción mía que salió alta
+### The result, and a prediction of mine that came out high
 
-| caret | antes | después |
+| caret | before | after |
 |---|---|---|
-| edición en medio | 0,702 ms | **0,620 ms** (−12%) |
-| añadir al final | 0,617 ms | 0,627 ms (igual) |
+| edit in the middle | 0.702 ms | **0.620 ms** (−12%) |
+| append at the end | 0.617 ms | 0.627 ms (same) |
 
-**Había predicho un 19% y son un 12%.** El error viene de haber medido
-`newSource.startsWith(source)` sobre la cadena completa: en una edición en medio,
-`startsWith` falla en el punto de edición y no recorre el resto, así que el coste real era
-la mitad del medido. La lección es la de siempre — una fase medida aislada no predice su
-peso en la operación real — y esta vez el sesgo fue optimista.
+**I had predicted 19% and it is 12%.** The error comes from having measured
+`newSource.startsWith(source)` over the whole string: in an edit in the middle,
+`startsWith` fails at the edit point and does not walk the rest, so the real cost was
+half of what was measured. The lesson is the usual one — a phase measured in isolation does not predict its
+weight in the real operation — and this time the bias was optimistic.
 
-Que el caso "añadir al final" no mejore es correcto y esperado: ahí el primer `startsWith`
-acertaba a la primera, así que ya era una sola pasada.
+That the "append at the end" case does not improve is correct and expected: there the first `startsWith`
+hit on the first try, so it was already a single pass.
 
 ---
 
-## 7-octies. Semana 10 — `analyze()`
+## 7-octies. Week 10 — `analyze()`
 
-### Ablación
+### Ablation
 
-De 0,620 ms:
+Out of 0.620 ms:
 
-| coste | ms | % |
+| cost | ms | % |
 |---|---|---|
-| pasada extra del árbol + `Map.set` para `allNodes` | 0,140 | **23%** |
-| iterar el `Map` de validadores + `try/catch` por nodo | 0,057 | 9% |
-| los validadores en sí (5 × 1736 llamadas) | ~0,28 | 45% |
-| la pasada base del walk | 0,051 | 8% |
+| extra tree pass + `Map.set` for `allNodes` | 0.140 | **23%** |
+| iterating the validators `Map` + `try/catch` per node | 0.057 | 9% |
+| the validators themselves (5 × 1736 calls) | ~0.28 | 45% |
+| the base walk pass | 0.051 | 8% |
 
-### El hallazgo, que es el de siempre
+### The finding, which is the usual one
 
-`analyze()` recorría el árbol **dos veces**: una para construir un `Map` de 1736 entradas de
-id→nodo, y otra para validar. Ese índice existía para que `DocumentModel` pudiera buscar
-después, por id, el nodo al que colgar cada diagnóstico.
+`analyze()` walked the tree **twice**: once to build a `Map` of 1736 id→node entries, and
+another to validate. That index existed so that `DocumentModel` could later look up, by id, the node
+to hang each diagnostic on.
 
-Pero **cada diagnóstico se produce mientras se está visitando su propio nodo**. El índice, y
-la pasada que lo construía, resolvían un problema creado por haber separado los dos pasos.
-Y `context.allNodes` —el motivo declarado de que exista— **no lo lee ningún validador**, ni
-uno de los cinco integrados ni nada en el repo.
+But **each diagnostic is produced while its own node is being visited**. The index, and
+the pass that built it, solved a problem created by having separated the two steps.
+And `context.allNodes` —the stated reason for it to exist— **is not read by any validator**, not
+one of the five built-in ones nor anything in the repo.
 
-### Lo hecho
+### What was done
 
-- **Una sola pasada.** El validador cuelga el diagnóstico en el nodo que tiene delante.
-- **`allNodes` pasa a ser un getter** en el contexto y en el resultado, así que se construye
-  solo si alguien lo pide. La capacidad sigue disponible para un validador que de verdad
-  necesite referencias cruzadas; el resto deja de pagarla.
-- **Despacho por kind.** Tres de los cinco validadores integrados abren con una prueba de
-  kind y nada más (`custom`, `code`/`inline_code`, `DEPRECATED_KINDS`), así que se llamaban
-  1736 veces cada uno para responder algo que el despachador responde una vez. `Validator`
-  gana un campo `kinds?` opcional — omitirlo mantiene el comportamiento anterior, así que la
-  API no rompe a nadie.
-- **Los validadores se recorren en array**, no iterando un `Map`, que alojaba un iterador y
-  un par desestructurado por nodo. El `try/catch` sigue siendo por validador: uno que falle
-  no debe llevarse por delante el resto del análisis.
+- **A single pass.** The validator hangs the diagnostic on the node it has in front of it.
+- **`allNodes` becomes a getter** in the context and in the result, so it is built
+  only if someone asks for it. The capability is still available for a validator that really
+  needs cross-references; everyone else stops paying for it.
+- **Dispatch by kind.** Three of the five built-in validators open with a kind
+  test and nothing else (`custom`, `code`/`inline_code`, `DEPRECATED_KINDS`), so they were called
+  1736 times each to answer something the dispatcher answers once. `Validator`
+  gains an optional `kinds?` field — omitting it keeps the previous behavior, so the
+  API does not break anyone.
+- **The validators are walked as an array**, not by iterating a `Map`, which allocated an iterator and
+  a destructured pair per node. The `try/catch` stays per validator: one that fails
+  must not take the rest of the analysis down with it.
 
-### Validación
+### Validation
 
-20.002 documentos (2 fixtures reales + 5 semillas × 4.000, con un alfabeto diseñado para
-**disparar** validadores: etiquetas desconocidas, vacías, sin cerrar, obsoletas y `[code]`
-con estructura dentro). **18.929 producen diagnósticos**, y la salida —los diagnósticos
-emitidos y cuál queda colgado de qué nodo— es **byte a byte idéntica** a la anterior.
+20,002 documents (2 real fixtures + 5 seeds × 4,000, with an alphabet designed to
+**trigger** validators: unknown, empty, unclosed and obsolete tags and `[code]`
+with structure inside). **18,929 produce diagnostics**, and the output —the diagnostics
+emitted and which one ends up hung on which node— is **byte for byte identical** to the previous one.
 
-### Una cifra mía que hay que corregir
+### A figure of mine that has to be corrected
 
-Durante varias sesiones se ha citado `analyze()` como **1,7 ms**. Ese número venía de restar
-un `rebuild` con análisis menos uno sin él, lo que le atribuía costes que no eran suyos.
-Medido directamente, eran **0,60 ms** en un documento limpio. El error no cambió ninguna
-decisión —seguía siendo el candidato correcto— pero la cifra estaba inflada casi 3×.
+For several sessions `analyze()` has been cited as **1.7 ms**. That number came from subtracting
+a `rebuild` with analysis minus one without it, which attributed to it costs that were not its own.
+Measured directly, it was **0.60 ms** on a clean document. The error did not change any
+decision —it was still the right candidate— but the figure was inflated almost 3×.
 
 ---
 
-## 7-nonies. Semana 11 — El memo de corchetes del lexer
+## 7-nonies. Week 11 — The lexer's bracket memo
 
-Lo que quedaba del lexer tras la semana 6, medido: el memo de corchetes era el **15%** y
-alojar los 2538 objetos token otro 15%. El segundo no se toca sin cambiar la API. El primero
-resultó ser gratis.
+What was left of the lexer after Week 6, measured: the bracket memo was **15%** and
+allocating the 2538 token objects another 15%. The second cannot be touched without changing the API. The first
+turned out to be free.
 
-### Instrumentar antes de suponer
+### Instrument before assuming
 
-El memo existe para arreglar el `O(n²)` de la semana 1. Contando aciertos de verdad:
+The memo exists to fix the `O(n²)` from Week 1. Counting real hits:
 
-| documento | consultas | aciertos | lecturas útiles |
+| document | queries | hits | useful reads |
 |---|---|---|---|
-| fixture 19,6 KB | 804 | **0** | **0** |
-| `[` × 16.000 | 16.000 | 15.999 | 15.999 |
-| atributos anidados | 400 | **0** | **0** |
+| 19.6 KB fixture | 804 | **0** | **0** |
+| `[` × 16,000 | 16,000 | 15,999 | 15,999 |
+| nested attributes | 400 | **0** | **0** |
 
-Es **imprescindible** en el caso patológico y **completamente inútil** en todo lo demás. La
-razón está en quién escribe cada entrada:
+It is **essential** in the pathological case and **completely useless** in everything else. The
+reason lies in who writes each entry:
 
-- La entrada para la posición consultada (`bracketMatch.set(from, result)`) **no se lee
-  jamás**. El bucle principal nunca pregunta dos veces: si el escaneo acierta salta más allá
-  del `]`, y si falla emite `[` como texto y avanza a `from + 1`. En ninguno de los dos casos
-  vuelve. Eran 804 `set` desperdiciados por documento — y, peor, eran los que impedían que el
-  mapa estuviera vacío, con lo que cada consulta pagaba un fallo de búsqueda.
-- Las entradas de los corchetes encontrados **dentro** del escaneo sí sirven, pero solo
-  cuando ese escaneo fracasa: entonces el bucle principal entra en ellos uno a uno. Es
-  exactamente el caso patológico.
+- The entry for the queried position (`bracketMatch.set(from, result)`) **is never
+  read**. The main loop never asks twice: if the scan hits it jumps past the
+  `]`, and if it fails it emits `[` as text and advances to `from + 1`. In neither case
+  does it come back. That was 804 wasted `set`s per document — and, worse, they were what kept the
+  map from being empty, so every query paid for a lookup miss.
+- The entries of the brackets found **inside** the scan are useful, but only
+  when that scan fails: then the main loop enters them one by one. That is
+  exactly the pathological case.
 
-### Lo hecho
+### What was done
 
-Dejar de registrar la entrada propia, y saltarse la consulta cuando el mapa está vacío —una
-comparación de enteros es más barata que una búsqueda destinada a fallar—. En un documento
-sin corchetes sueltos el mapa no llega a tener nada dentro.
+Stop recording the own entry, and skip the query when the map is empty —an integer
+comparison is cheaper than a lookup destined to fail—. In a document
+without stray brackets the map never gets anything inside.
 
-### Validación
+### Validation
 
-56.012 documentos y 882.752 tokens, con un alfabeto cargado de corchetes (`[[[[`, `[a[b]c]`,
-`[box=[b]t`, `[`×500) porque es lo que ejercita el memo: **flujo de tokens idéntico**.
+56,012 documents and 882,752 tokens, with an alphabet loaded with brackets (`[[[[`, `[a[b]c]`,
+`[box=[b]t`, `[`×500) because it is what exercises the memo: **identical token stream**.
 
-Y el número que de verdad importaba comprobar: `[`×16.000 sigue en **2,0 ms**. El arreglo del
-cuadrático no se ha tocado.
+And the number that really mattered to check: `[`×16,000 stays at **2.0 ms**. The quadratic
+fix has not been touched.
 
 ---
 
-## 8. Metodología de medición
+## 8. Measurement methodology
 
-**Fixture:** `src/problematic_sectionwgradient.milia` (19.6 KB, 2538 tokens, 1736 nodos).
+**Fixture:** `src/problematic_sectionwgradient.milia` (19.6 KB, 2538 tokens, 1736 nodes).
 
-**Harness:** 2 llamadas de warm-up + N iteraciones cronometradas, se reporta la media.
-Para las comparaciones A/B: 7 tandas de 100 iteraciones, se reporta la **mediana** (el JIT hace que
-una sola medición en frío sea inservible — la primera medición de `NodeMatcher` dio 15.5 ms frente
-a 5.14 ms en régimen estacionario).
+**Harness:** 2 warm-up calls + N timed iterations, the mean is reported.
+For A/B comparisons: 7 batches of 100 iterations, the **median** is reported (the JIT makes
+a single cold measurement useless — the first `NodeMatcher` measurement gave 15.5 ms versus 5.14 ms
+at steady state).
 
-**Reproducir:**
+**Reproduce:**
 
 ```bash
 cd packages/quasar
 npm run verify          # typecheck + tests
-QUASAR_FUZZ_SEED=2 npm test   # corpus que reproduce el bug de idempotencia
+QUASAR_FUZZ_SEED=2 npm test   # corpus that reproduces the idempotence bug
 ```
 
-Los scripts de benchmark son de usar y tirar: se escriben en `packages/quasar/*-tmp.ts`, se ejecutan
-con `npx tsx` y se borran. No se versionan para no ensuciar el paquete.
+The benchmark scripts are throwaway: they are written in `packages/quasar/*-tmp.ts`, run
+with `npx tsx` and deleted. They are not versioned so as not to clutter the package.
 
-**Validación de cambios de núcleo:** cualquier cambio al lexer o al parser debe validarse
-*diferencialmente* contra la implementación anterior (la del lexer comparó 149.894 posiciones y
-50.000 documentos aleatorios). No basta con que pasen los tests.
+**Validation of core changes:** any change to the lexer or the parser must be validated
+*differentially* against the previous implementation (the lexer's compared 149,894 positions and
+50,000 random documents). It is not enough for the tests to pass.
 
-**Reglas que costaron tiempo aprender:**
+**Rules that took time to learn:**
 
-7. **Comparar rutas, no APIs distintas.** Medir `applyTextUpdate` (incremental) contra `rebuild`
-   daba que el incremental perdía, pero `applyTextUpdate` arrastra change-tracking y un `setTimeout`
-   de debounce que `rebuild` no tiene. La comparación honesta fue añadir
-   `DocumentModelOptions.incremental` y medir la **misma** llamada con la opción a `true` y a
-   `false`. Cambió el signo del resultado.
-8. **Comprobar que `global.gc` existe antes de medir memoria.** Bajo `npx tsx` no está, así que
-   nada se recogía entre tandas y el interner parecía gastar **más** memoria, no menos. Con
-   `node --expose-gc --import /usr/lib/node_modules/tsx/dist/loader.mjs` el signo se invirtió:
-   de "+68%" a "−49%". Imprimir `typeof global.gc` antes de creerse una cifra de heap.
-9. **Una fase aislada no predice el coste de punta a punta.** El interning es un +110% sobre el
-   parseo medido solo, y un +6% sobre el coste real por pulsación, porque el parseo es una fracción
-   del trabajo. Decidir con la segunda cifra.
+7. **Compare paths, not different APIs.** Measuring `applyTextUpdate` (incremental) against `rebuild`
+   said the incremental lost, but `applyTextUpdate` drags along change-tracking and a debounce `setTimeout`
+   that `rebuild` does not have. The honest comparison was to add
+   `DocumentModelOptions.incremental` and measure the **same** call with the option set to `true` and to
+   `false`. The sign of the result changed.
+8. **Check that `global.gc` exists before measuring memory.** Under `npx tsx` it is not there, so
+   nothing was collected between batches and the interner seemed to spend **more** memory, not less. With
+   `node --expose-gc --import /usr/lib/node_modules/tsx/dist/loader.mjs` the sign flipped:
+   from "+68%" to "−49%". Print `typeof global.gc` before believing a heap figure.
+9. **An isolated phase does not predict the end-to-end cost.** Interning is +110% over the
+   parse measured alone, and +6% over the real cost per keystroke, because parsing is a fraction
+   of the work. Decide with the second figure.
 
 ---
 
-## Anexo — Cosas que la documentación afirma y el código no cumplía
+## Appendix — Things the documentation claims and the code did not meet
 
-| `QUASAR.MD` dice | Realidad medida | Estado |
+| `QUASAR.MD` says | Measured reality | Status |
 |---|---|---|
-| §3 "140 FPS, latencia < 0.2 ms" | 290 ms por pulsación | **1.09 ms** por pulsación tras la semana 4 (ruta incremental, sin análisis) — 266× mejor, aún 5× del objetivo declarado |
-| §13 "Structural Sharing (Deduplicación de Memoria)" | El módulo lanzaba `TypeError` en su primera línea; con él arreglado, 0% de dedup | ✅ **59,6% de dedup real** — punto 5, semana 5. Opt-in: es memoria a cambio de latencia |
-| §14 "Parseo Incremental" | Deja offsets corruptos y desincroniza green/red | ✅ Correcto y validado sobre 22.100 ediciones — punto 9, semana 4 |
-| §3 "Tolerancia a Concurrencia gracias a inmutabilidad estricta" | Flag estático global; el árbol rojo se muta desde 4 sitios | ✅ `QUASAR.MD` corregido — punto 13 |
-| `RedNodeStore.ts:21` "HTMLRenderer cache by canonicalId" | No existe tal caché |
-| §2 "Estado de Ingeniería: Producción Industrial" | 48 errores de `tsc`, 4 tests rojos, fuzzer con 60% de flake |
+| §3 "140 FPS, latency < 0.2 ms" | 290 ms per keystroke | **1.09 ms** per keystroke after week 4 (incremental path, no analysis) — 266× better, still 5× the stated target |
+| §13 "Structural Sharing (Memory Deduplication)" | The module threw `TypeError` on its first line; with it fixed, 0% dedup | ✅ **59.6% real dedup** — point 5, week 5. Opt-in: it is memory in exchange for latency |
+| §14 "Incremental Parsing" | Leaves offsets corrupt and desynchronizes green/red | ✅ Correct and validated over 22,100 edits — point 9, week 4 |
+| §3 "Concurrency Tolerance thanks to strict immutability" | Global static flag; the red tree is mutated from 4 places | ✅ `QUASAR.MD` corrected — point 13 |
+| `RedNodeStore.ts:21` "HTMLRenderer cache by canonicalId" | No such cache exists |
+| §2 "Engineering Status: Industrial Production" | 48 `tsc` errors, 4 red tests, fuzzer with 60% flake |
 
-Actualizar `QUASAR.MD` conforme se vayan cerrando las semanas 2 y 3 es parte del trabajo:
-documentación que miente es peor que no tener documentación.
+Updating `QUASAR.MD` as weeks 2 and 3 get closed is part of the work:
+documentation that lies is worse than having no documentation.
 
 ---
 
-## Post-cierre — Sesión 2026-08-05: coherencia, conectividad e identidad estable
+## Post-closure — Session 2026-08-05: coherence, connectivity and stable identity
 
-La auditoría de rendimiento sigue cerrada; esto es un frente distinto, salido de una revisión
-de conectividad del motor completo. Decisión del usuario: los subsistemas sin consumidores
-(~9.000 LOC: Analysis, Markdown, Commands, Transactions, Transformers, Plugins, Linter,
-Symbols, Queries, Formatter, TreeDiffer, RenderPipeline…) **se conservan** — Quasar es
-plataforma independiente y son su futuro (colaboración en tiempo real, plugins). No amputar.
+The performance audit remains closed; this is a different front, born from a connectivity
+review of the whole engine. User decision: the subsystems without consumers
+(~9,000 LOC: Analysis, Markdown, Commands, Transactions, Transformers, Plugins, Linter,
+Symbols, Queries, Formatter, TreeDiffer, RenderPipeline…) **are kept** — Quasar is an
+independent platform and they are its future (real-time collaboration, plugins). Do not amputate.
 
-### Arreglado (suite: 327 verdes; `ModelCoherence.test.ts` y `StableNodeIds.test.ts` nuevos)
+### Fixed (suite: 327 green; `ModelCoherence.test.ts` and `StableNodeIds.test.ts` new)
 
-1. **Diagnósticos frescos.** `applyChange` difiere `analyze()` (debounce de 10 ms), así que
-   quien leía `model.diagnostics` justo tras `applyTextUpdate` veía los errores del texto
-   ANTERIOR — el panel de errores iba una pulsación por detrás. Nuevo
-   `DocumentModel.ensureAnalyzed()` vacía el trabajo pendiente; `BBCodePipeline` (app) lo
-   llama tras cada edición.
+1. **Fresh diagnostics.** `applyChange` defers `analyze()` (10 ms debounce), so
+   whoever read `model.diagnostics` right after `applyTextUpdate` saw the errors of the
+   PREVIOUS text — the error panel was one keystroke behind. The new
+   `DocumentModel.ensureAnalyzed()` flushes the pending work; `BBCodePipeline` (app)
+   calls it after every edit.
 
-2. **EventBus perezoso.** La app no tiene ni un suscriptor, pero cada `emit` guardaba el
-   evento en un historial de 50 que nadie lee — y los eventos de rebuild/diagnostics llevan
-   la closure del `nodeMatch` perezoso, que fija el árbol rojo+verde viejo entero (~258 KB
-   por evento; megabytes por documento). Ahora: historial opt-in (`recordHistory`, off por
-   defecto) y el modelo no construye eventos sin suscriptores (`hasListeners()`).
+2. **Lazy EventBus.** The app does not have a single subscriber, yet every `emit` stored the
+   event in a history of 50 that nobody reads — and the rebuild/diagnostics events carry
+   the closure of the lazy `nodeMatch`, which pins the whole old red+green tree (~258 KB
+   per event; megabytes per document). Now: opt-in history (`recordHistory`, off by
+   default) and the model does not build events without subscribers (`hasListeners()`).
 
-3. **`transact`/`undo`/`redo` coherentes.** Mutaban `_redRoot` sin tocar `_source` ni
-   `_greenRoot` (el siguiente edit diffeaba contra un source que el árbol ya no cumplía), el
-   `invert()` solo sabía invertir 1 de 6 kinds, y el flag `_applied` hacía del redo un no-op
-   silencioso. Ahora `transact` aplica al rojo → `exportSource()` (override de
-   `BBCodeDocumentModel` vía `BBCodeExporter` target `'miliastry'`) → `rebuild`: las tres
-   representaciones siempre describen el mismo documento. Undo/redo reproducen **snapshots
-   de texto** (`UndoManager` reescrito): texto siempre es reproducible, incluso tras rebuilds
-   que reemplazan todos los ids.
+3. **Coherent `transact`/`undo`/`redo`.** They mutated `_redRoot` without touching `_source` or
+   `_greenRoot` (the next edit diffed against a source that the tree no longer matched),
+   `invert()` only knew how to invert 1 of 6 kinds, and the `_applied` flag made redo a silent
+   no-op. Now `transact` applies to red → `exportSource()` (an override of
+   `BBCodeDocumentModel` via `BBCodeExporter` target `'miliastry'`) → `rebuild`: the three
+   representations always describe the same document. Undo/redo reproduce **snapshots
+   of text** (`UndoManager` rewritten): text is always reproducible, even after rebuilds
+   that replace all the ids.
 
-4. **`"sideEffects": false`** en `package.json` (verificado: ningún módulo tiene efectos en
-   import). Mantener los subsistemas aspiracionales en el repo ya no implica enviarlos al
-   navegador.
+4. **`"sideEffects": false`** in `package.json` (verified: no module has side effects on
+   import). Keeping the aspirational subsystems in the repo no longer implies shipping them to the
+   browser.
 
-### Identidad estable de nodos — el pendiente grande del cierre ✅
+### Stable node identity — the big pending item of the closure ✅
 
-`src/Syntax/preserveNodeIds.ts`, enganchado en `rebuild` y en la ruta incremental de
-`applyChange`. Calca la Fase 0 del `NodeMatcher` (lockstep + recorte de prefijo/sufijo) con
-tres niveles: green ref-igual (el splice incremental comparte subárboles sin tocar — cubre
-casi todo tecleando) → hash igual con verificación estructural y commit atómico (ruta de
-rebuild completo) → mismo kind en la misma posición (el nodo editado conserva su identidad).
-La unicidad sale por construcción: el recorrido es posicional, cada id viejo se adopta como
-mucho una vez.
+`src/Syntax/preserveNodeIds.ts`, hooked into `rebuild` and into the incremental path of
+`applyChange`. It traces Phase 0 of `NodeMatcher` (lockstep + prefix/suffix trimming) with
+three tiers: green ref-equal (the incremental splice shares untouched subtrees — it covers
+almost everything while typing) → equal hash with structural verification and atomic commit (full
+rebuild path) → same kind at the same position (the edited node keeps its identity).
+Uniqueness comes by construction: the walk is positional, each old id is adopted at
+most once.
 
-| Métrica | Valor |
+| Metric | Value |
 |---|---|
-| Ids conservados tecleando en el `[notice]` del fixture | **1736/1736 (100%)** |
-| Coste de `preserveNodeIds` por pulsación | **0,077 ms** |
-| Pulsación completa (¡ahora CON análisis síncrono!) | **~0,95 ms** — dentro de la banda 0,9-1,1 |
-| Bloques `data-node-id` intactos tras morph (test e2e) | identidad DOM preservada, `isEqualNode` dispara |
+| Ids kept while typing in the fixture's `[notice]` | **1736/1736 (100%)** |
+| Cost of `preserveNodeIds` per keystroke | **0.077 ms** |
+| Full keystroke (now WITH synchronous analysis!) | **~0.95 ms** — within the 0.9-1.1 band |
+| `data-node-id` blocks intact after morph (e2e test) | DOM identity preserved, `isEqualNode` fires |
 
-Nota: el renderer ya solo emite `data-node-id` en bloques seleccionables
-(`ID_BEARING_KINDS`), no en cada span — el problema del 38% de HTML en ids estaba mitigado;
-lo que faltaba era que esos ids no cambiaran en cada parseo. Con esto, la Fase 1 del
-`NodeMatcher` (match por id) deja de estar muerta por definición, y la identidad estable
-queda lista como prerrequisito de colaboración.
+Note: the renderer now only emits `data-node-id` on selectable blocks
+(`ID_BEARING_KINDS`), not on every span — the problem of 38% of the HTML being ids was mitigated;
+what was missing was for those ids not to change on every parse. With this, Phase 1 of
+`NodeMatcher` (match by id) stops being dead by definition, and stable identity
+is ready as a prerequisite for collaboration.
 
-### Añadido en la misma sesión: fuera el UUID por diagnóstico ✅
+### Added in the same session: out goes the UUID per diagnostic ✅
 
-`createDiagnostic` acuñaba un `crypto.randomUUID()` (con fallback manual v4 para SSR) por
-diagnóstico, para un campo `id` que **no leía nadie** — ni el motor, ni `ErrorCheckerWindow`
-(usa `key={idx}`), ni `toDocumentErrors`. El campo se borró del tipo; un diagnóstico se
-identifica por lo que dice y dónde: `(code, range, nodeId)`.
+`createDiagnostic` minted a `crypto.randomUUID()` (with a manual v4 fallback for SSR) per
+diagnostic, for an `id` field that **nobody read** — not the engine, not `ErrorCheckerWindow`
+(it uses `key={idx}`), not `toDocumentErrors`. The field was deleted from the type; a diagnostic is
+identified by what it says and where: `(code, range, nodeId)`.
 
-| `analyze()`, 900 diagnósticos | mediana de 7 tandas |
+| `analyze()`, 900 diagnostics | median of 7 batches |
 |---|---|
-| Antes | 1,34 ms |
-| Después | **0,69 ms** (−49%) |
+| Before | 1.34 ms |
+| After | **0.69 ms** (−49%) |
 
-Más de lo que predecía el 14% de la auditoría: el coste real incluía la presión de GC de
-900 UUIDs de 36 caracteres por análisis. Suite: 327 verdes, `tsc` limpio.
+More than the audit's 14% predicted: the real cost included the GC pressure of
+900 UUIDs of 36 characters per analysis. Suite: 327 green, `tsc` clean.
 
-### El plato fuerte: reutilización de subárboles rojos ✅ (2026-08-05)
+### The main course: reuse of red subtrees ✅ (2026-08-05)
 
-`buildRed` reconstruía los ~1736 nodos rojos en cada pulsación aunque solo cambiara una
-ventana — la fase más cara medida (0,30 de 0,94 ms). La observación que lo desbloquea: tras
-las semanas 4-7, el splice incremental comparte por referencia todos los subárboles verdes
-intactos, y la igualdad por referencia del verde es **prueba** de que el subárbol no cambió.
-`greenToRedNodeReusing` (en `BBCodeToGreenNode.ts`) adopta el subárbol rojo viejo entero —
-ids, metadata y diagnósticos incluidos — con el patrón de lockstep + prefijo/sufijo de la
-Fase 0; la adopción cuesta un `parent` (lo pone `initChildren`) y, solo si el subárbol se
-desplazó, un `setStart` que suma un delta a dos enteros por nodo.
+`buildRed` rebuilt all ~1736 red nodes on every keystroke even though only one
+window changed — the most expensive phase measured (0.30 of 0.94 ms). The observation that unblocks it: after
+weeks 4-7, the incremental splice shares all intact green subtrees by reference,
+and green reference equality is **proof** that the subtree did not change.
+`greenToRedNodeReusing` (in `BBCodeToGreenNode.ts`) adopts the whole old red subtree —
+ids, metadata and diagnostics included — with the lockstep + prefix/suffix pattern of
+Phase 0; the adoption costs one `parent` (set by `initChildren`) and, only if the subtree
+shifted, a `setStart` that adds a delta to two integers per node.
 
-**Contrato nuevo, documentado en el código:** el árbol rojo anterior queda CONSUMIDO tras
-un `applyChange` (los subárboles adoptados se reparentan). Verificado que nadie recorre un
-árbol rojo superado: la app ignora `existingAst` y el `IdentityResolver` del docblock de
-`BBCodePipeline` no existe. Kill-switch: `DocumentModelOptions.reuseRed` (default `true`).
+**New contract, documented in the code:** the previous red tree is CONSUMED after
+an `applyChange` (the adopted subtrees are reparented). Verified that nobody walks a
+superseded red tree: the app ignores `existingAst` and the `IdentityResolver` in the docblock of
+`BBCodePipeline` does not exist. Kill-switch: `DocumentModelOptions.reuseRed` (default `true`).
 
-| Métrica | Antes | Después |
+| Metric | Before | After |
 |---|---|---|
-| `buildRed` por pulsación | 0,296-0,339 ms | **0,041-0,057 ms** (~6×) |
-| Pulsación completa (con análisis síncrono) | ~0,95 ms | **~0,80 ms** |
-| Fuzz diferencial contra rebuild completo | — | **120 ediciones, árbol idéntico** (kind, text, range, metadata) + HTML idéntico |
-| Unicidad de ids tras adopción + frescos | — | 40 ediciones, 0 duplicados |
+| `buildRed` per keystroke | 0.296-0.339 ms | **0.041-0.057 ms** (~6×) |
+| Full keystroke (with synchronous analysis) | ~0.95 ms | **~0.80 ms** |
+| Differential fuzz against full rebuild | — | **120 edits, identical tree** (kind, text, range, metadata) + identical HTML |
+| Uniqueness of ids after adoption + fresh ones | — | 40 edits, 0 duplicates |
 
-El test del kill-switch cazó un bug real de cableado: `BBCodeDocumentModel` no reenviaba
-`reuseRed` en el `super()` — el patrón A5 (opciones tragadas en silencio) repitiéndose.
-Además `preserveNodeIds` gana un tier 0 (mismo objeto → nada que copiar), así que su coste
-baja a 0,048 ms y sus stats pasan a contar solo ids copiados entre objetos distintos.
+The kill-switch test caught a real wiring bug: `BBCodeDocumentModel` did not forward
+`reuseRed` in the `super()` — the A5 pattern (options silently swallowed) repeating itself.
+In addition `preserveNodeIds` gains a tier 0 (same object → nothing to copy), so its cost
+drops to 0.048 ms and its stats now count only ids copied between different objects.
 
-Suite: **331 verdes** (`RedReuse.test.ts` nuevo, 4 tests).
+Suite: **331 green** (`RedReuse.test.ts` new, 4 tests).
 
-### Consolidación de los handlers de efectos + kindToTagName ✅ (2026-08-05)
+### Consolidation of the effect handlers + kindToTagName ✅ (2026-08-05)
 
-**Los "dos renderers de gradient" resultaron ser cuatro pares.** Cada efecto (gradient,
-sinewave, grow, rainbow) duplicaba su matemática de segmentos entera entre `toBBCode` y
-`toRenderNode` — misma progresión t, mismo easing/mixing/wave, distinta presentación. Ahora
-hay UNA función `*Segments` por efecto y dos presentadores compartidos
-(`segmentsToBBCode`/`segmentsToRenderNode`). TagRegistry: −101 líneas netas.
+**The "two gradient renderers" turned out to be four pairs.** Each effect (gradient,
+sinewave, grow, rainbow) duplicated its entire segment math between `toBBCode` and
+`toRenderNode` — same progression t, same easing/mixing/wave, different presentation. Now
+there is ONE `*Segments` function per effect and two shared presenters
+(`segmentsToBBCode`/`segmentsToRenderNode`). TagRegistry: −101 net lines.
 
-Validado por snapshot: las salidas de los 8 handlers sobre 9 casos (modo palabra,
-`globalOffset`, texto vacío, un solo color) capturadas ANTES del refactor son **byte a byte
-idénticas** después, y quedan fijadas en `EffectSegments.test.ts` + `.snapshot.json` (9
-tests) para que la próxima mano que toque la matemática no pueda desincronizar los dos
-formatos sin enterarse.
+Validated by snapshot: the outputs of the 8 handlers over 9 cases (word mode,
+`globalOffset`, empty text, a single color) captured BEFORE the refactor are **byte for byte
+identical** afterwards, and are pinned in `EffectSegments.test.ts` + `.snapshot.json` (9
+tests) so that the next hand to touch the math cannot desynchronize the two
+formats without noticing.
 
-Aclaración que importa: `HTMLRenderer.renderGradient` NO es un duplicado de esto — el
-preview pinta un `linear-gradient` CSS suave; estos segmentos reproducen los colores
-DISCRETOS del BBCode exportado. Es una diferencia intencionada, ahora documentada en el
-código en vez de parecer una divergencia accidental.
+A clarification that matters: `HTMLRenderer.renderGradient` is NOT a duplicate of this — the
+preview paints a smooth CSS `linear-gradient`; these segments reproduce the DISCRETE colors
+of the exported BBCode. It is an intentional difference, now documented in the
+code instead of looking like an accidental divergence.
 
-**`kindToTagName`**: el mapa de 30 claves se alojaba DENTRO del método — un objeto nuevo por
-nodo exportado. Ahora es constante de módulo, con nota de por qué NO es intercambiable con
-`nodeKindToTag` de BBCodeToGreenNode (grafía osu!: `centre`, `youtube`).
+**`kindToTagName`**: the 30-key map was allocated INSIDE the method — a new object per
+exported node. It is now a module constant, with a note on why it is NOT interchangeable with
+`nodeKindToTag` from BBCodeToGreenNode (osu! spelling: `centre`, `youtube`).
 
-Suite: **340 verdes**.
+Suite: **340 green**.
 
-### Frente plataforma — colaboración v0/v1 + plugins end-to-end ✅ (2026-08-05, tarde)
+### Platform front — collaboration v0/v1 + plugins end-to-end ✅ (2026-08-05, afternoon)
 
-**Colaboración** (arquitectura completa en `QuasarCollab.MD` — leerlo antes de tocar nada):
-decidido **texto-CRDT**: el texto es la unidad de sincronización, Quasar es función pura
-`texto → vista` en cada cliente, el árbol nunca viaja por la red, el motor queda sin
-dependencias (Yjs irá en la app). Hecho: `src/Collab/positions.ts`
-(`transformOffset`/`transformRange`, sesgos documentados — caret pega a la derecha, los
-rangos preservan exactamente su contenido) y `origin` en `applyChange`/`applyTextUpdate` →
-eventos, para que la capa de sync distinga su propio eco. Propiedad validada con fuzz:
-2.000 documentos × cada posición — el carácter apuntado antes es el apuntado después.
+**Collaboration** (full architecture in `QuasarCollab.MD` — read it before touching anything):
+**text-CRDT** was decided: the text is the unit of synchronization, Quasar is a pure function
+`text → view` on each client, the tree never travels over the network, the engine stays without
+dependencies (Yjs will go in the app). Done: `src/Collab/positions.ts`
+(`transformOffset`/`transformRange`, documented biases — the caret sticks to the right, the
+ranges preserve exactly their content) and `origin` in `applyChange`/`applyTextUpdate` →
+events, so that the sync layer can tell its own echo. Property validated with fuzz:
+2,000 documents × every position — the character pointed to before is the one pointed to after.
 
-**Plugins**: el eslabón que faltaba era el parser — `tagToNodeKind` convertía cualquier tag
-no-builtin en texto literal, así que un tag de plugin renderizaba y exportaba pero nunca
-PARSEABA. Ahora `ParseOptions.extraTags` (mapa nombre→kind) deja nacer el frame;
-`TagRegistry` distingue builtins de registros de plugin (`isBuiltin`, `customTags()`,
-`version` para memoizar) y `BBCodeDocumentModel` lo cablea con coste cero sin plugins (una
-comparación de enteros por parseo). El exporter serializa tags de plugin bajo su nombre
-registrado — estrictamente limitado a NO-builtins: sinewave/rainbow/svg conservan su
-serialización actual, de la que dependen los flujos de Studio. El renderer sin registry ya
-no traga el contenido de kinds desconocidos (renderiza los hijos, omite solo el wrapper).
+**Plugins**: the missing link was the parser — `tagToNodeKind` turned any non-builtin
+tag into literal text, so a plugin tag rendered and exported but never
+PARSED. Now `ParseOptions.extraTags` (a name→kind map) lets the frame be born;
+`TagRegistry` distinguishes builtins from plugin registrations (`isBuiltin`, `customTags()`,
+`version` for memoizing) and `BBCodeDocumentModel` wires it at zero cost without plugins (one
+integer comparison per parse). The exporter serializes plugin tags under their
+registered name — strictly limited to NON-builtins: sinewave/rainbow/svg keep their current
+serialization, which the Studio flows depend on. The renderer without a registry no
+longer swallows the content of unknown kinds (it renders the children, omitting only the wrapper).
 
-Test del ciclo completo (`PluginTags.test.ts`, 6 tests): lex → parse (con anidamiento,
-attrs y partición intacta) → render (con y sin registry) → export (round-trip byte a byte,
-punto fijo) → PluginAPI registra/desregistra → diferencial incremental vs rebuild con tags
-de plugin. La prosa con `[90 misses]` sigue siendo texto visible.
+Test of the full cycle (`PluginTags.test.ts`, 6 tests): lex → parse (with nesting,
+attrs and partition intact) → render (with and without registry) → export (byte for byte round-trip,
+fixed point) → PluginAPI registers/unregisters → incremental vs rebuild differential with plugin
+tags. Prose with `[90 misses]` is still visible text.
 
-Pulsación sin cambios (~0,7-0,8 ms). Suite: **356 verdes**.
+Keystroke unchanged (~0.7-0.8 ms). Suite: **356 green**.
 
-Hallazgo aparcado para el pase de honestidad: `RenderTree.toHTML` ignora `style` en nodos
-`text` — los toRenderNode de efectos pierden sus estilos por ese camino.
+Finding parked for the honesty pass: `RenderTree.toHTML` ignores `style` on `text`
+nodes — the effects' toRenderNode lose their styles through that path.
 
 ---
 
-## Post-cierre — El suelo de ~60 ms del flush de la app (2026-08-05, noche)
+## Post-closure — The ~60 ms floor of the app's flush (2026-08-05, night)
 
-Tras bajar el debounce, la pregunta pasó a ser el **bloqueo del hilo por flush**. Medido en
-build de producción con Playwright + `Performance.getMetrics`, separando el coste de TECLEAR
-(Monaco) del coste del FLUSH (parse + render + morph + React):
+After lowering the debounce, the question became the **thread blocking per flush**. Measured in
+a production build with Playwright + `Performance.getMetrics`, separating the cost of TYPING
+(Monaco) from the cost of the FLUSH (parse + render + morph + React):
 
-| Doc | tecleo (Monaco) | flush (pipeline) |
+| Doc | typing (Monaco) | flush (pipeline) |
 |---|---|---|
-| 19,6 KB | 24,9 ms | **41,8 ms** (script 22,1 · style 4,2 · layout 0,8) |
-| 196 KB | 116,4 ms | **48,2 ms** (script 16,7 · style 13,7 · layout 0,5) |
+| 19.6 KB | 24.9 ms | **41.8 ms** (script 22.1 · style 4.2 · layout 0.8) |
+| 196 KB | 116.4 ms | **48.2 ms** (script 16.7 · style 13.7 · layout 0.5) |
 
-Dos cosas que corrigen creencias previas:
+Two things that correct previous beliefs:
 
-1. **En documentos grandes, el que domina es Monaco** (116 ms de tecleo contra 48 de flush),
-   no nuestro pipeline. Optimizar el flush ahí no mueve la aguja.
-2. **El coste del flush NO era el modo dev.** La auditoría de la app suponía que buena parte
-   de los 57-77 ms de dev eran instrumentación de React; en producción son ~42 ms reales.
+1. **On large documents, the one that dominates is Monaco** (116 ms of typing against 48 of flush),
+   not our pipeline. Optimizing the flush there does not move the needle.
+2. **The cost of the flush was NOT dev mode.** The app audit assumed that a good part
+   of the 57-77 ms in dev was React instrumentation; in production it is ~42 ms real.
 
-### Hipótesis probada y REFUTADA: render incremental por bloques
+### Hypothesis tested and REFUTED: incremental rendering by blocks
 
-Un perfil de CPU de la ventana del flush dio **~30 de los ~42 ms en `(program)`** (trabajo
-nativo) contra ~4 ms de todo nuestro JS junto. Como `morphHTML` hace
-`template.innerHTML = htmlCompleto` antes de poder comparar, la lectura fue: *estamos
-re-parseando 90 KB y 5.500 nodos por pulsación*. Se implementó `IncrementalPreview` — solo
-re-renderiza y re-parsea el bloque de primer nivel que cambió, usando la identidad por
-referencia que da la reutilización de subárboles rojos — con 9 tests y fuzz diferencial.
+A CPU profile of the flush window gave **~30 of the ~42 ms in `(program)`** (native
+work) against ~4 ms for all of our JS together. Since `morphHTML` does
+`template.innerHTML = fullHtml` before it can compare, the reading was: *we are
+re-parsing 90 KB and 5,500 nodes per keystroke*. `IncrementalPreview` was implemented — it only
+re-renders and re-parses the first-level block that changed, using the reference identity that the
+reuse of red subtrees provides — with 9 tests and differential fuzz.
 
-**A/B en producción, ambos caminos en la misma sesión, alternados:**
+**A/B in production, both paths in the same session, alternating:**
 
-| Doc | morph completo (viejo) | por bloques (nuevo) |
+| Doc | full morph (old) | by blocks (new) |
 |---|---|---|
-| 19,6 KB | **43,1 ms** | 103,0 ms (style 4,6 → **34,2**) |
-| 196 KB | **89,9 ms** | 313,3 ms (style 14,5 → **159,8**) |
+| 19.6 KB | **43.1 ms** | 103.0 ms (style 4.6 → **34.2**) |
+| 196 KB | **89.9 ms** | 313.3 ms (style 14.5 → **159.8**) |
 
-**2-3,5× más lento.** La premisa era falsa: `(program)` no es sobre todo parseo de HTML,
-es **style recalc + paint**, y eso lo minimiza justo el morph. Reemplazar el subárbol DOM de
-un bloque toca miles de elementos; el morph toca los que cambiaron. Además el fixture real
-tiene solo **7 bloques de primer nivel** (uno se come el 60% del post), así que la
-granularidad de bloque tampoco acotaba el trabajo. Revertido; `IncrementalPreview` borrado.
+**2-3.5× slower.** The premise was false: `(program)` is not mostly HTML parsing,
+it is **style recalc + paint**, and that is exactly what the morph minimizes. Replacing the DOM subtree of
+a block touches thousands of elements; the morph touches the ones that changed. Besides, the real fixture
+has only **7 first-level blocks** (one eats 60% of the post), so block
+granularity did not bound the work either. Reverted; `IncrementalPreview` deleted.
 
-> Regla que confirma §8: *la fase que un perfil señala como cara no es necesariamente la que
-> se puede evitar*. `(program)` agrega parse + estilo + layout + pintado; atribuirlo entero
-> al parseo costó una implementación completa. Un A/B alternado en la misma sesión lo habría
-> dicho antes — la varianza entre tandas (tecleo 24,9 / 31,1 / 67,0 ms para el mismo
-> documento) hace inútil comparar builds distintos.
+> A rule that confirms §8: *the phase a profile points to as expensive is not necessarily the one that
+> can be avoided*. `(program)` aggregates parse + style + layout + paint; attributing all of it
+> to parsing cost a full implementation. An alternating A/B in the same session would have
+> said so sooner — the variance between batches (typing 24.9 / 31.1 / 67.0 ms for the same
+> document) makes comparing different builds useless.
 
-### Lo que sí salió de aquí: dos bugs reales de identidad ✅
+### What did come out of this: two real identity bugs ✅
 
-El fuzz diferencial del experimento (comparando el DOM incremental contra el completo)
-destapó que `preserveNodeIds` **corrompía ids** en dos casos, y ambos arreglos se quedan:
+The experiment's differential fuzz (comparing the incremental DOM against the full one)
+uncovered that `preserveNodeIds` **corrupted ids** in two cases, and both fixes stay:
 
-1. **Doble mecanismo.** Con reutilización de rojos, un bloque intacto ES el nodo anterior y
-   ya trae su id; correr encima el recorrido de ids lo emparejaba **posicionalmente** con su
-   vecino y le sobrescribía el id — duplicando ids vivos y cambiando el `data-node-id` de
-   bloques que no habían cambiado. Ahora la identidad la lleva **o** la adopción **o** el
-   recorrido, nunca las dos: se decide contando adopciones reales (`reparse` puede hacer un
-   rebuild completo por dentro aunque la reutilización esté activada, y entonces no adopta
-   nada).
-2. **Recorte demasiado laxo.** El trim de prefijo/sufijo avanzaba si los nodos compartían
-   *kind*, lo cual es cierto de dos párrafos cualesquiera: **insertar un bloque hacía que el
-   recorrido marchara por toda la lista emparejando cada superviviente con su vecino**, y
-   renumeraba todo lo posterior a la inserción. Ahora exige evidencia de contenido (misma
-   referencia verde o mismo hash).
+1. **Double mechanism.** With red reuse, an intact block IS the previous node and
+   already carries its id; running the id walk on top paired it **positionally** with
+   its neighbor and overwrote its id — duplicating live ids and changing the `data-node-id` of
+   blocks that had not changed. Now identity is carried by **either** the adoption **or** the
+   walk, never both: it is decided by counting real adoptions (`reparse` can do
+   a full rebuild inside even though reuse is enabled, and then it adopts
+   nothing).
+2. **Trimming too lax.** The prefix/suffix trim advanced if the nodes shared
+   *kind*, which is true of any two paragraphs: **inserting a block made the
+   walk march through the whole list pairing each survivor with its neighbor**, and
+   renumbered everything after the insertion. Now it requires evidence of content (same
+   green reference or same hash).
 
-Efecto colateral bueno: al no cambiar ya el `data-node-id` de los bloques que sobreviven a
-una inserción, el camino rápido del `DOMMorpher` (`isEqualNode`) funciona también al insertar
-y borrar bloques, no solo al teclear dentro de uno. Fijado en `StableNodeIds.test.ts`.
+A good side effect: since the `data-node-id` of the blocks that survive an insertion no longer changes,
+the `DOMMorpher` fast path (`isEqualNode`) also works when inserting
+and deleting blocks, not just when typing inside one. Pinned in `StableNodeIds.test.ts`.
 
-Suite: **357 verdes**.
+Suite: **357 green**.
 
-### Qué queda del suelo, con datos
+### What remains of the floor, with data
 
-El flush son ~42 ms de los que ~30 son nativos (estilo + pintado + parse) sobre un preview
-que refleja **5.500 nodos DOM** (30.000 en un post de 196 KB). El siguiente candidato real
-no es cómo actualizamos el DOM, es **cuánto DOM hay**: el renderer emite un
-`<span class="bb-text">` por cada nodo de texto y **`.bb-text` no tiene ni una regla CSS en
-todo el repo** (el único lector es `HTMLToGreenNode`, que no usa nadie). Quitar ese envoltorio
-recorta ~1 elemento por hoja de texto y ~27% del HTML emitido. No medido todavía: hacerlo con
-A/B alternado, no comparando builds.
+The flush is ~42 ms of which ~30 are native (style + paint + parse) over a preview
+that reflects **5,500 DOM nodes** (30,000 in a 196 KB post). The next real candidate
+is not how we update the DOM, it is **how much DOM there is**: the renderer emits a
+`<span class="bb-text">` for every text node and **`.bb-text` does not have a single CSS rule in
+the whole repo** (the only reader is `HTMLToGreenNode`, which nobody uses). Removing that wrapper
+cuts ~1 element per text leaf and ~27% of the emitted HTML. Not measured yet: do it
+with an alternating A/B, not by comparing builds.
 
-### El envoltorio `<span class="bb-text">`: fuera ✅ (2026-08-05, noche)
+### The `<span class="bb-text">` wrapper: out ✅ (2026-08-05, night)
 
-El candidato que dejó la sección anterior, ahora medido. El renderer envolvía **cada hoja de
-texto** en un `<span class="bb-text">`, y esa clase **no tiene ni una regla CSS en todo el
-repo**: no lleva `data-node-id` (el texto no es un kind con id, así que ni el clic ni el
-resaltado la miraban jamás) y los estilos de una hoja siguen emitiendo su propio
-`<span style="…">`. Era un elemento por hoja a cambio de nada.
+The candidate left by the previous section, now measured. The renderer wrapped **every text
+leaf** in a `<span class="bb-text">`, and that class **does not have a single CSS rule in the whole
+repo**: it carries no `data-node-id` (text is not a kind with an id, so neither the click nor the
+highlighting ever looked at it) and the styles of a leaf still emit their own
+`<span style="…">`. It was one element per leaf in exchange for nothing.
 
-**A/B en producción, estado estacionario, ciclos alternados** (la metodología que la sección
-anterior aprendió a la fuerza):
+**A/B in production, steady state, alternating cycles** (the methodology the previous section
+learned the hard way):
 
-| Doc | CON spans | SIN spans |
+| Doc | WITH spans | WITHOUT spans |
 |---|---|---|
-| 19,6 KB | 41,4 ms · **1.726** elementos | **39,7 ms** · **851** elementos |
-| 196 KB | 55,4 ms · **17.251** elementos | **46,4 ms (−16%)** · **8.510** elementos |
+| 19.6 KB | 41.4 ms · **1,726** elements | **39.7 ms** · **851** elements |
+| 196 KB | 55.4 ms · **17,251** elements | **46.4 ms (−16%)** · **8,510** elements |
 
-**La mitad del DOM del preview**, ~27% menos HTML que serializar y parsear, y un flush
-más barato — modesto en documentos normales, claro en los grandes. Confirmado tras hacerlo
-permanente: 40,3 ms / 851 elementos y 60,8 ms / 8.510 elementos, con el preview mostrando
-el contenido correcto.
+**Half the preview's DOM**, ~27% less HTML to serialize and parse, and a cheaper
+flush — modest on normal documents, clear on large ones. Confirmed after making it
+permanent: 40.3 ms / 851 elements and 60.8 ms / 8,510 elements, with the preview showing
+the correct content.
 
-Comprobado antes de tocar: `osu.css` scopea todo bajo `.bbcode-preview` con selectores de
-etiqueta (sin reglas para `span`, sin selectores de hermanos), `dom-to-svg` recorre
-`TEXT_NODE` explícitamente, y `usePreviewClick`/`useBlockHighlight` resuelven por
-`data-node-id`, que solo llevan los bloques.
+Checked before touching: `osu.css` scopes everything under `.bbcode-preview` with
+tag selectors (no rules for `span`, no sibling selectors), `dom-to-svg` walks
+`TEXT_NODE` explicitly, and `usePreviewClick`/`useBlockHighlight` resolve by
+`data-node-id`, which only the blocks carry.
 
-### De paso: dos tests que no verificaban nada ✅
+### In passing: two tests that verified nothing ✅
 
-Al quitar el span falló un `expect(html).toContain('class="bb-text"')`, y al abrirlo apareció
-el patrón que la auditoría marcó como B5:
+When removing the span, an `expect(html).toContain('class="bb-text"')` failed, and opening it up revealed
+the pattern the audit flagged as B5:
 
-- **`VisualBuilderFidelity.test.ts`** guardaba 6 KB de "HTML esperado" que **nunca se
-  comparaba** con nada, lo escribía a `visual-builder-expected.html` /
-  `visual-builder-actual.html` —ficheros **rastreados por git**, ensuciados en cada
-  ejecución— y solo asertaba dos `toContain`. Reescrito: 15 tags → elemento esperado,
-  atributos, contenido raw de `[code]`, `data-node-id` solo en bloques, prosa final.
-- **`ProblematicSectionHTML.test.ts`** no tenía **ni una aserción**: renderizaba dos
-  variantes y las escribía a `orig.html` / `grad.html`. Reescrito: la capa de gradiente
-  colorea el texto sin inventar ni perder bloques, y el render es determinista salvo ids.
+- **`VisualBuilderFidelity.test.ts`** held 6 KB of "expected HTML" that was **never
+  compared** with anything, wrote it to `visual-builder-expected.html` /
+  `visual-builder-actual.html` —files **tracked by git**, dirtied on every
+  run— and only asserted two `toContain`s. Rewritten: 15 tags → expected element,
+  attributes, raw `[code]` content, `data-node-id` only on blocks, final prose.
+- **`ProblematicSectionHTML.test.ts`** had **not a single assertion**: it rendered two
+  variants and wrote them to `orig.html` / `grad.html`. Rewritten: the gradient layer
+  colors the text without inventing or losing blocks, and the render is deterministic except for ids.
 
-Ya ningún test escribe en el árbol de trabajo. (Los `.html` que aparecen modificados en
-`git status` son los restos de ejecuciones anteriores; se pueden restaurar con `git checkout`.)
+No test writes into the working tree anymore. (The `.html` files that show up modified in
+`git status` are leftovers from earlier runs; they can be restored with `git checkout`.)
 
-Suite: **362 verdes**.
+Suite: **362 green**.
 
 ---
 
-## Post-cierre — El coste de `data-node-id` va con el NÚMERO, no con la longitud (2026-08-05)
+## Post-closure — The cost of `data-node-id` goes with the NUMBER, not the length (2026-08-05)
 
-Con `HTMLRenderer.idMode = 'all'` el atributo lo llevan **808 de los 852 elementos** del
-fixture, y eso se paga: el A/B en la app dio 48 → 56 ms de latencia y p95 72 → 104 ms
-(ver el comentario de `idMode`). La pregunta natural es si se puede abaratar sin perder la
-precisión del clic. La respuesta corta: **acortar el atributo no sirve de casi nada**, y la
-razón es contraintuitiva.
+With `HTMLRenderer.idMode = 'all'` the attribute is carried by **808 of the 852 elements** of the
+fixture, and that has a price: the A/B in the app gave 48 → 56 ms of latency and p95 72 → 104 ms
+(see the `idMode` comment). The natural question is whether it can be made cheaper without losing
+click precision. The short answer: **shortening the attribute is of almost no use**, and the
+reason is counterintuitive.
 
-### Primero, lo que YA no cuesta
+### First, what NO longer costs
 
-| Métrica (fixture 19,6 KB) | `blocks` (9 ids) | `all` (808 ids) |
+| Metric (19.6 KB fixture) | `blocks` (9 ids) | `all` (808 ids) |
 |---|---|---|
-| HTML emitido | 31,4 KB | 47,7 KB (+52%) |
-| `setAttribute` por pulsación (morph de 1 carácter) | 1 | **6** |
-| `render` del documento completo | 0,315 ms | 0,351 ms |
-| `applyTextUpdate` + `render` | 0,497 ms | 0,543 ms |
+| HTML emitted | 31.4 KB | 47.7 KB (+52%) |
+| `setAttribute` per keystroke (1-character morph) | 1 | **6** |
+| `render` of the full document | 0.315 ms | 0.351 ms |
+| `applyTextUpdate` + `render` | 0.497 ms | 0.543 ms |
 
-Los **6 `setAttribute`** son el dato importante: la identidad estable hizo su trabajo y
-**el churn del morpher ya no existe**. Cuando los ids se regeneraban en cada parseo esto
-eran 1665 escrituras sobre 1725 elementos. No queda nada que optimizar por ese lado.
+The **6 `setAttribute`s** are the important figure: stable identity did its job and
+**the morpher churn no longer exists**. When the ids were regenerated on every parse this
+was 1665 writes over 1725 elements. There is nothing left to optimize on that side.
 
-Descartada también la sospecha de que el contador global infle los ids a lo largo de la
-sesión: tras **500 pulsaciones** siguen en 5 dígitos (+522 bytes de HTML, y de esos 500 son
-el texto tecleado). El camino incremental reutiliza subárboles rojos, así que acuña muy
-pocos ids nuevos por tecla.
+Also ruled out was the suspicion that the global counter inflates the ids over the
+session: after **500 keystrokes** they are still 5 digits (+522 bytes of HTML, and of those 500 are
+the typed text). The incremental path reuses red subtrees, so it mints very
+few new ids per key.
 
-### El hallazgo: el parser cobra por atributo, no por byte
+### The finding: the parser charges per attribute, not per byte
 
-Parseo de `template.innerHTML`, jsdom, **mínimo de 10 rondas × 25 parseos, intercalando las
-variantes** para cancelar la deriva. Se emite el id en una fracción de los elementos, en dos
-formatos de longitud muy distinta:
+Parsing of `template.innerHTML`, jsdom, **minimum of 10 rounds × 25 parses, interleaving the
+variants** to cancel drift. The id is emitted on a fraction of the elements, in two
+formats of very different length:
 
-| ids | formato largo (`data-node-id="n12345"`) | formato corto (`n=9ix`) |
+| ids | long format (`data-node-id="n12345"`) | short format (`n=9ix`) |
 |---|---|---|
-| 0 | 31,93 ms · 31,3 KB | — |
-| 202 | 32,64 ms · 35,4 KB | 32,70 ms · 32,3 KB |
-| 404 | 33,58 ms · 39,5 KB | 33,76 ms · 33,4 KB |
-| 808 | 35,14 ms · 47,7 KB | 34,42 ms · 35,5 KB |
+| 0 | 31.93 ms · 31.3 KB | — |
+| 202 | 32.64 ms · 35.4 KB | 32.70 ms · 32.3 KB |
+| 404 | 33.58 ms · 39.5 KB | 33.76 ms · 33.4 KB |
+| 808 | 35.14 ms · 47.7 KB | 34.42 ms · 35.5 KB |
 
-Con 202 ids da igual que el HTML pese 35,4 KB o 32,3 KB: **32,64 contra 32,70 ms**. Con 404,
-igual. El tiempo sigue la **cuenta** de elementos con atributo —lineal, ~3-4 µs por
-elemento— y es casi indiferente a su longitud. El parser paga por crear la entrada del
-atributo, no por leer sus caracteres.
+With 202 ids it makes no difference whether the HTML weighs 35.4 KB or 32.3 KB: **32.64 against 32.70 ms**. With 404,
+the same. The time follows the **count** of elements with an attribute —linear, ~3-4 µs per
+element— and is almost indifferent to its length. The parser pays for creating the attribute
+entry, not for reading its characters.
 
-Consecuencia práctica: **acortar el nombre recorta 12,2 KB de string y recupera 0,7 ms de
-los 3,2** que separan `blocks` de `all`. El 78% restante solo se va bajando la cuenta.
+Practical consequence: **shortening the name cuts 12.2 KB of string and recovers 0.7 ms of
+the 3.2** that separate `blocks` from `all`. The remaining 78% only goes away by lowering the count.
 
-> Regla, hermana de la que dejó el experimento de `IncrementalPreview`: *el tamaño del payload
-> no es una proxy del coste de parsearlo*. Aquí la correlación tamaño↔latencia era real pero
-> espuria — las dos crecían con el número de elementos con id, y solo la segunda causaba.
-> Hizo falta variar las dos cosas por separado para verlo.
+> A rule, sister to the one left by the `IncrementalPreview` experiment: *payload size
+> is not a proxy for the cost of parsing it*. Here the size↔latency correlation was real but
+> spurious — both grew with the number of elements with an id, and only the latter caused it.
+> It took varying the two things separately to see it.
 
-### Formatos medidos, para no repetir el ejercicio
+### Formats measured, so as not to repeat the exercise
 
-Todos validados en jsdom: 808 elementos encontrados, `closest('[attr]')` resuelve, y el DOM
-los **reserializa con comillas**, así que el formato sin comillas solo vive en la cadena que
-emite el renderer (que es justo donde ahorraría). Sin comillas es HTML válido mientras el
-valor no lleve espacios, comillas, `=`, `<`, `>` ni backtick — un base36 cumple.
+All validated in jsdom: 808 elements found, `closest('[attr]')` resolves, and the DOM
+**reserializes them with quotes**, so the unquoted format only lives in the string
+the renderer emits (which is exactly where it would save). Unquoted is valid HTML as long as the
+value carries no spaces, quotes, `=`, `<`, `>` or backtick — a base36 qualifies.
 
-| Formato | Bytes/elemento | HTML total |
+| Format | Bytes/element | Total HTML |
 |---|---|---|
-| `data-node-id="n12345"` (hoy) | 22 | 47,7 KB |
-| `data-i="9ix"` | 13 | 41,1 KB |
-| `ni="9ix"` | 12 | 37,9 KB |
-| `n="9ix"` | 10 | 37,1 KB |
-| `n=9ix` | 8 | 35,5 KB |
+| `data-node-id="n12345"` (today) | 22 | 47.7 KB |
+| `data-i="9ix"` | 13 | 41.1 KB |
+| `ni="9ix"` | 12 | 37.9 KB |
+| `n="9ix"` | 10 | 37.1 KB |
+| `n=9ix` | 8 | 35.5 KB |
 
-Si algún día se hace, que sea **en minúscula**: el parser de HTML baja los nombres de
-atributo a minúsculas, y `SVGRenderer` serializa a XML, donde esa diferencia sí importaría.
-El precio es que un atributo que no es `data-*` no es conforme y pierde `dataset`; hoy da
-igual (no hay ningún sanitizador en el pipeline y solo lo leen `getAttribute`, `closest` y
-`querySelector`, más dos selectores en `MiliastryNovaFeatures/BBCode/styles.css:252` y `:258`).
+If it is ever done, let it be **in lowercase**: the HTML parser lowercases attribute
+names, and `SVGRenderer` serializes to XML, where that difference would matter.
+The price is that an attribute that is not `data-*` is not conformant and loses `dataset`; today it makes
+no difference (there is no sanitizer in the pipeline and it is only read by `getAttribute`, `closest` and
+`querySelector`, plus two selectors in `MiliastryNovaFeatures/BBCode/styles.css:252` and `:258`).
 
-### La única palanca real, y por qué no se tira
+### The only real lever, and why it is not pulled
 
-Bajar la cuenta de 808 a 9 sin perder precisión **es posible**: `closest()` da el bloque,
-`caretPositionFromPoint` da el carácter, y un recorrido del subárbol del bloque acumulando
-longitudes de texto renderizado da el nodo exacto. Preview→Monaco quedaría igual (el clic ya
-resuelve a un `RedNode`, y el evento `miliastry:select-node` viaja con su id).
+Lowering the count from 808 to 9 without losing precision **is possible**: `closest()` gives the block,
+`caretPositionFromPoint` gives the character, and a walk of the block's subtree accumulating
+rendered text lengths gives the exact node. Preview→Monaco would stay the same (the click already
+resolves to a `RedNode`, and the `miliastry:select-node` event travels with its id).
 
-Lo que lo frena no es el rendimiento, es el **contrato de la dirección inversa**:
-`useBlockHighlight` hace `querySelector('[data-node-id="X"]')`, y `EditorWindow` sube desde
-el cursor solo hasta salir de `text`/`spacing`/`empty_line` — así que X puede ser un nodo
-**inline**, que ya no tendría elemento que lo lleve. Habría que resaltar con Range + CSS
-Custom Highlight API, o degradar al bloque.
+What holds it back is not performance, it is the **contract of the reverse direction**:
+`useBlockHighlight` does `querySelector('[data-node-id="X"]')`, and `EditorWindow` climbs from
+the cursor only until it leaves `text`/`spacing`/`empty_line` — so X can be an **inline**
+node, which would no longer have an element to carry it. It would have to highlight with Range + CSS
+Custom Highlight API, or degrade to the block.
 
-**Decisión: no se hace.** 8 ms en la app (3,2 en la sonda) a cambio de rehacer el resaltado,
-en un camino que ya está por debajo del umbral de percepción.
+**Decision: it is not done.** 8 ms in the app (3.2 in the probe) in exchange for redoing the highlighting,
+on a path that is already below the perception threshold.
 
-También medido y descartado: emitir el id solo donde un clic puede aterrizar. Por una
-aproximación conservadora, solo **22 de los 808** son inalcanzables por `closest()`. Medio KB.
+Also measured and discarded: emitting the id only where a click can land. By a
+conservative approximation, only **22 of the 808** are unreachable by `closest()`. Half a KB.
 
-### Aviso de metodología
+### Methodology warning
 
-Todo esto es **jsdom, no Blink**. Las cifras absolutas no trasladan (los ~35 ms de parseo de
-la sonda son un artefacto de jsdom; en producción el flush entero son ~42 ms). Lo que
-traslada es la forma: el A/B de la app midió el mismo salto de 9 a 808 ids como 48 → 56 ms.
-En Blink los bytes pesan algo más que aquí —hay que construir la cadena y transferirla— pero
-la cuenta de atributos sigue dominando. Cualquier cambio en esto se valida con A/B alternado
-en la app, no con esta sonda.
+All of this is **jsdom, not Blink**. The absolute figures do not carry over (the probe's ~35 ms of parsing
+is a jsdom artifact; in production the whole flush is ~42 ms). What
+carries over is the shape: the app's A/B measured the same jump from 9 to 808 ids as 48 → 56 ms.
+In Blink the bytes weigh somewhat more than here —the string has to be built and transferred— but
+the attribute count still dominates. Any change here is validated with an alternating A/B
+in the app, not with this probe.

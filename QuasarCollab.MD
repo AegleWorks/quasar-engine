@@ -1,113 +1,113 @@
-# 🛰️ Quasar — Colaboración en tiempo real: arquitectura
+# 🛰️ Quasar — Real-time collaboration: architecture
 
-> Documento de decisión, escrito el **2026-08-05**, antes de la primera línea de código.
-> Si alguien propone cambiar la arquitectura, primero tiene que refutar este documento.
+> Decision document, written on **2026-08-05**, before the first line of code.
+> If someone proposes changing the architecture, they must first refute this document.
 
-## La decisión: texto-CRDT
+## The decision: text-CRDT
 
-**La unidad de sincronización es el texto fuente, no el árbol.** Cada cliente mantiene el
-source en un CRDT de texto (Yjs/`Y.Text` o equivalente); Quasar actúa en cada cliente como
-función pura `texto → árbol → vista`. Una edición remota entra al motor por el mismo camino
-que una pulsación local: un `TextChange` por `applyChange`.
+**The unit of synchronization is the source text, not the tree.** Each client keeps the
+source in a text CRDT (Yjs/`Y.Text` or equivalent). On each client, Quasar acts as a pure
+function `text → tree → view`. A remote edit enters the engine by the same path as a local
+keystroke: one `TextChange` per `applyChange`.
 
-### Por qué (resumen del razonamiento completo)
+### Why (summary of the full reasoning)
 
-1. **La verdad de Quasar ya es el texto.** El árbol es estado derivado — `transact` exporta
-   a texto y reparsea; todo entra por `parse`. Se sincroniza la verdad, se deriva el resto.
-2. **El parseo total absorbe cualquier fusión.** El parser produce un árbol válido para
-   *cualquier* texto (los tags rotos quedan como texto visible, semana 4). El peor caso de
-   una fusión concurrente fea es markup literal en pantalla, corregible; nunca corrupción
-   estructural.
-3. **El parseo es determinista y barato.** Validado sobre cientos de miles de documentos:
-   mismo texto ⇒ mismo árbol en todos los clientes, sin sincronizar nada más. El
-   incremental (0,8 ms/pulsación) absorbe las ediciones remotas al mismo coste que las
-   locales.
-4. **El precedente correcto es el editor de código**, no el de texto rico: Miliastry es un
-   sitio donde se teclea markup a mano en Monaco. Árbol-como-verdad (ProseMirror) exige una
-   superficie donde no se pueda teclear medio tag — lo contrario de este producto.
+1. **Quasar's truth is already the text.** The tree is derived state: `transact` exports
+   to text and reparses; everything enters through `parse`. We sync the truth and derive the rest.
+2. **Total parsing absorbs any merge.** The parser produces a valid tree for
+   *any* text (broken tags stay as visible text, week 4). The worst case of an
+   ugly concurrent merge is literal markup on screen, which can be fixed; never structural
+   corruption.
+3. **Parsing is deterministic and cheap.** Validated on hundreds of thousands of documents:
+   same text ⇒ same tree on every client, with nothing else to sync. The
+   incremental parser (0.8 ms/keystroke) absorbs remote edits at the same cost as
+   local ones.
+4. **The right precedent is the code editor**, not the rich-text one: Miliastry is a
+   site where people type markup by hand in Monaco. Tree-as-truth (ProseMirror) requires a
+   surface where you cannot type half a tag, which is the opposite of this product.
 
-### Por qué NO árbol-como-verdad (para el futuro lector)
+### Why NOT tree-as-truth (for the future reader)
 
-- Cada pulsación en Monaco habría que traducirla a operaciones de árbol… parseando. Se
-  paga el parseo igual, más la carga de expresarlo como ops.
-- Los estados intermedios (`[b` a medio teclear) no tienen representación de árbol.
-- El árbol pierde información a propósito (`[s]` vs `[strike]`, `centre` vs `center`):
-  `árbol → texto` no es exacto hoy, y hacerlo exacto exige trivia estilo Roslyn en cada
-  nodo.
-- Fusión por pares de operaciones, ids globales, undo reescrito.
+- Every keystroke in Monaco would have to be translated into tree operations… by parsing. You
+  pay for the parse anyway, plus the burden of expressing it as ops.
+- Intermediate states (`[b` half-typed) have no tree representation.
+- The tree loses information on purpose (`[s]` vs `[strike]`, `centre` vs `center`):
+  `tree → text` is not exact today, and making it exact requires Roslyn-style trivia on every
+  node.
+- Pairwise operation merging, global ids, rewritten undo.
 
-Si algún día BBCodeCanvas es LA superficie principal, se revisita. No antes.
+If BBCodeCanvas ever becomes THE main surface, we revisit this. Not before.
 
-## Reparto de responsabilidades
+## Division of responsibilities
 
-| Capa | Responsable de | NO responsable de |
+| Layer | Responsible for | NOT responsible for |
 |---|---|---|
-| **Quasar (motor)** | transformación de posiciones a través de `TextChange`; `origin` en eventos (distinguir local/remoto); parseo determinista e incremental | transporte, awareness, persistencia, resolución de conflictos (la hace el CRDT) |
-| **CRDT (Yjs u otro, capa app)** | convergencia del texto; undo por origen; historial | conocer el árbol |
-| **App (Miliastry)** | transporte (WebSocket/WebRTC), presencia, cursores remotos pintados, permisos | tocar el motor |
+| **Quasar (engine)** | position transformation through `TextChange`; `origin` on events (telling local from remote); deterministic and incremental parsing | transport, awareness, persistence, conflict resolution (the CRDT does that) |
+| **CRDT (Yjs or other, app layer)** | text convergence; per-origin undo; history | knowing about the tree |
+| **App (Miliastry)** | transport (WebSocket/WebRTC), presence, painted remote cursors, permissions | touching the engine |
 
-El motor se mantiene **sin dependencias** (package.json: cero deps). Yjs vive en la app.
+The engine stays **dependency-free** (package.json: zero deps). Yjs lives in the app.
 
-## API del motor para colaboración
+## Engine API for collaboration
 
-### v0 — posiciones (esta sesión) ✅
+### v0 — positions (this session) ✅
 
 `src/Collab/positions.ts`:
 
-- `transformOffset(offset, change, bias?)` — dónde queda una posición tras un
-  `TextChange`. `bias: 'left' | 'right'` decide el lado cuando la edición cae exactamente
-  en la posición (un caret quiere `'right'` para que lo tecleado por otro delante suyo lo
-  empuje; el inicio de un highlight suele querer `'left'`).
-- `transformRange(range, change)` — ambos extremos, sin invertirse jamás.
-- Ambos aceptan una **secuencia** de cambios (composición en orden).
+- `transformOffset(offset, change, bias?)` — where a position ends up after a
+  `TextChange`. `bias: 'left' | 'right'` decides the side when the edit lands exactly
+  on the position (a caret wants `'right'` so that what someone else types in front of it
+  pushes it; the start of a highlight usually wants `'left'`).
+- `transformRange(range, change)` — both ends, never inverted.
+- Both accept a **sequence** of changes (composed in order).
 
-Con esto la app puede mantener carets y selecciones propias y remotas correctos a través
-de cualquier edición, local o remota.
+With this, the app can keep its own and remote carets and selections correct through
+any edit, local or remote.
 
-### v1 — origen de los cambios (esta sesión) ✅
+### v1 — origin of changes (this session) ✅
 
-`applyChange(change, origin?)` / `applyTextUpdate(source, origin?)` — el `origin` viaja en
-los eventos (`document_changed.origin`). Sin él, la capa de sync no puede distinguir el eco
-de sus propios cambios de las ediciones del usuario (bucle infinito clásico). Default:
+`applyChange(change, origin?)` / `applyTextUpdate(source, origin?)` — the `origin` travels in
+the events (`document_changed.origin`). Without it, the sync layer cannot tell the echo
+of its own changes from the user's edits (the classic infinite loop). Default:
 `'local'`.
 
-### v2 — la sesión (hecha, en la app) ✅
+### v2 — the session (done, in the app) ✅
 
-`MiliastryNovaFeatures/BBCode/Collab/CollabSession.ts` — el binding Y.Doc ↔ modelo,
-**agnóstico de transporte** (los tests son el transporte: dos clientes en memoria
-intercambiando updates). Vive en el feature, no en el motor: `yjs@13.6.32` es dependencia
-de la app; el motor sigue con cero. La sesión conoce un **contrato** (`CollabDocument`:
-`source` + `applyTextUpdate`), no `BBCodeDocumentModel` (Ley VII).
+`MiliastryNovaFeatures/BBCode/Collab/CollabSession.ts` — the Y.Doc ↔ model binding,
+**transport-agnostic** (the tests are the transport: two in-memory clients
+exchanging updates). It lives in the feature, not in the engine: `yjs@13.6.32` is a dependency
+of the app; the engine stays at zero. The session knows a **contract** (`CollabDocument`:
+`source` + `applyTextUpdate`), not `BBCodeDocumentModel` (Law VII).
 
-- `updateFromLocal(texto)` → splice mínimo al `Y.Text` (diff prefijo/sufijo — la calidad
-  de fusión del CRDT depende de que las ediciones estén DONDE ocurrieron) + modelo con
-  origin `'local'`. El observer ignora el propio eco por `tx.origin`.
-- Remoto → observer → `applyTextUpdate(texto, 'remote')`.
-- Undo: `Y.UndoManager` con `trackedOrigins = [sesión]` — deshace solo lo propio, jamás lo
-  del compañero. Llega al modelo como `'local-undo'`.
-- Cursores: `createCursor`/`resolveCursor` sobre `Y.RelativePosition` — sobreviven a
-  ediciones remotas apuntando al mismo contenido.
-- Seeding: texto compartido vacío adopta el modelo (crear sesión); no vacío manda sobre el
-  modelo (unirse). Desde ese momento el CRDT es la autoridad.
+- `updateFromLocal(text)` → minimal splice into the `Y.Text` (prefix/suffix diff: the CRDT's
+  merge quality depends on edits being WHERE they happened) + model with
+  origin `'local'`. The observer ignores its own echo by `tx.origin`.
+- Remote → observer → `applyTextUpdate(text, 'remote')`.
+- Undo: `Y.UndoManager` with `trackedOrigins = [session]`. It undoes only your own changes, never
+  your peer's. It reaches the model as `'local-undo'`.
+- Cursors: `createCursor`/`resolveCursor` over `Y.RelativePosition`. They survive
+  remote edits by pointing at the same content.
+- Seeding: an empty shared text adopts the model (creating a session); a non-empty one overrides the
+  model (joining). From that moment on, the CRDT is the authority.
 
-Validado en `CollabSession.test.ts` (7 tests): convergencia de texto+árbol+HTML, ediciones
-concurrentes sin conexión que convergen, undo por cliente, anclaje de cursores, orígenes, y
-`destroy` sin tocar el doc compartido.
+Validated in `CollabSession.test.ts` (7 tests): text+tree+HTML convergence, concurrent
+offline edits that converge, per-client undo, cursor anchoring, origins, and
+`destroy` without touching the shared doc.
 
-### v3 — lo que queda (transporte y presencia, código app)
+### v3 — what remains (transport and presence, app code)
 
-- Provider real (y-websocket/y-webrtc) enchufado a `session.doc` — una línea cuando exista
-  servidor.
-- Presencia: awareness (`y-protocols`) + cursores remotos pintados —
-  `resolveCursor` + `findNodeAtOffset` para resaltar el bloque de cada quien (los ids
-  estables lo hacen barato).
-- Integración con `DocumentInstance`/Monaco: las ediciones del editor entran por
-  `session.updateFromLocal` en vez de directo al pipeline; el evento `'remote'` refresca el
-  buffer de Monaco sin re-disparar el círculo.
+- A real provider (y-websocket/y-webrtc) plugged into `session.doc`: one line once a
+  server exists.
+- Presence: awareness (`y-protocols`) + painted remote cursors —
+  `resolveCursor` + `findNodeAtOffset` to highlight each person's block (stable ids
+  make it cheap).
+- Integration with `DocumentInstance`/Monaco: editor edits enter through
+  `session.updateFromLocal` instead of going straight into the pipeline; the `'remote'` event refreshes the
+  Monaco buffer without re-triggering the loop.
 
-## Qué NO vamos a construir
+## What we are NOT going to build
 
-- **OT propio.** La convergencia es del CRDT. `transformOffset` transforma *posiciones*,
-  no cambios contra cambios.
-- **Sincronización del árbol.** Nunca viaja un nodo por la red.
-- **Servidor.** El motor no sabe que existe una red.
+- **Our own OT.** Convergence belongs to the CRDT. `transformOffset` transforms *positions*,
+  not changes against changes.
+- **Tree synchronization.** A node never travels over the network.
+- **A server.** The engine does not know a network exists.
