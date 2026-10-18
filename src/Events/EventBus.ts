@@ -4,13 +4,18 @@
  * Publish/subscribe event system for document changes.
  * Each DocumentModel has its own EventBus instance.
  *
- * Events include:
- * - document_changed (rebuild, edit, undo/redo)
- * - node_changed (insert, delete, update, move)
- * - diagnostic_updated
- * - transaction_applied
- * - cursor_moved
- * - selection_changed
+ * Events:
+ * - document_changed — every change of source: an edit (incremental or
+ *   rebuilt), a rebuild, undo, redo, a transaction. Carries `origin` and
+ *   `change` whenever an edit caused it, whichever path it took.
+ * - diagnostics_updated — after every analysis the model runs on its own
+ *   (`autoAnalyze`): right after a rebuild, or debounced after an edit.
+ * - transaction_applied, undo_performed, redo_performed — after the
+ *   `document_changed` of that operation.
+ *
+ * The model is a text-snapshot model: it has no per-node change events
+ * (node_inserted/deleted/updated) and no caret, so those types, which nothing
+ * ever emitted, are gone.
  */
 
 import type { DocumentChangeKind, NodeId } from '../Types/core'
@@ -20,15 +25,10 @@ import type { TextChange } from '../Incremental/ChangeTracker'
 
 export type DocumentEventType =
   | 'document_changed'
-  | 'node_inserted'
-  | 'node_deleted'
-  | 'node_updated'
   | 'diagnostics_updated'
   | 'transaction_applied'
   | 'undo_performed'
   | 'redo_performed'
-  | 'cursor_moved'
-  | 'selection_changed'
 
 export interface DocumentEvent {
   type: DocumentEventType
@@ -120,9 +120,7 @@ export class DocumentEventBus {
   onAny(handler: DocumentEventHandler): () => void {
     const unsubscribers: (() => void)[] = []
     const types: DocumentEventType[] = [
-      'document_changed', 'node_inserted', 'node_deleted', 'node_updated',
-      'diagnostics_updated', 'transaction_applied', 'undo_performed', 'redo_performed',
-      'cursor_moved', 'selection_changed',
+      'document_changed', 'diagnostics_updated', 'transaction_applied', 'undo_performed', 'redo_performed',
     ]
     for (const type of types) {
       unsubscribers.push(this.on(type, handler))

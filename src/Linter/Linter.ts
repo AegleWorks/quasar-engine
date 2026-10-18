@@ -11,7 +11,7 @@ import { RedNode } from '../Syntax/RedNode'
 import type { SemanticAnalyzer, Validator } from '../Semantic/SemanticAnalyzer'
 import { openingTagName, closingTagNameRange } from '../Semantic/SemanticAnalyzer'
 import type { Diagnostic, FixOperation } from '../Types/diagnostics'
-import { registerCodeFix, type CodeFixMeta } from '../Fixes/CodeFixRegistry'
+import { defineBuiltinCodeFix, resetCodeFixes, type CodeFixMeta } from '../Fixes/CodeFixRegistry'
 import { applyEditsToSource } from '../Edits/applyEdits'
 import type { SurgicalEdit } from '../Reconciler/SurgicalReconciler'
 
@@ -128,14 +128,27 @@ const LINTER_FIXES: LinterFixDefinition[] = [
   },
 ]
 
+let lintFixesDefined = false
+
 /**
- * Register the Linter providers in the `CodeFixRegistry`. Overwriting the
- * same codes makes repeated calls idempotent.
+ * Make sure the Linter's built-in providers are defined (see
+ * `ensureValidatorFixes`). Never touches a runtime override.
+ */
+export function ensureLinterFixes(): void {
+  if (lintFixesDefined) return
+  lintFixesDefined = true
+  for (const { code, meta, fix } of LINTER_FIXES) {
+    defineBuiltinCodeFix(code, (diagnostic, _context) => fix(diagnostic), meta)
+  }
+}
+
+/**
+ * Put the Linter's built-in providers in force: defined, and not overridden
+ * or hidden by a runtime registration. Idempotent.
  */
 export function registerLinterFixes(): void {
-  for (const { code, meta, fix } of LINTER_FIXES) {
-    registerCodeFix(code, (diagnostic, _context) => fix(diagnostic), meta)
-  }
+  ensureLinterFixes()
+  resetCodeFixes(LINTER_FIXES.map(f => f.code))
 }
 
 export class Linter {
@@ -146,7 +159,7 @@ export class Linter {
   constructor(options?: LinterOptions) {
     this.legacyFixes = options?.legacyFixes ?? true
     this.onLegacyFix = options?.onLegacyFix
-    registerLinterFixes()
+    ensureLinterFixes()
     this.registerBuiltinRules()
   }
 

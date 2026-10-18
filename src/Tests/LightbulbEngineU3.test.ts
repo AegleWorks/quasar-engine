@@ -120,10 +120,11 @@ describe('U3 integration: document Fix-All through the model entry', () => {
     const result = model.fixAll(KEY)
     expect(result.applied).toBe(2)
     expect(result.cycle).toBeUndefined()
-    // Two passes, not one: both closers insert at the same offset and two
-    // zero-width inserts at one offset conflict by the EditConflicts
-    // contract, so each pass takes one and defers the other.
-    expect(result.passes).toBe(2)
+    // One pass: both closers insert at the same offset, and `unclosed-tag`
+    // merges such insertions innermost first (`mergeInsertions`) instead of
+    // letting them conflict — which closed one level per pass and ran out of
+    // passes past ten nested tags.
+    expect(result.passes).toBe(1)
     expect(model.source).toBe('[b]x[i]y[/i][/b]')
     expect(unclosedIn(model)).toHaveLength(0)
     // Each pass pushed exactly one undo entry: unwinding all passes

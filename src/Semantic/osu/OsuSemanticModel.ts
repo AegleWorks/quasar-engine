@@ -18,6 +18,24 @@ import {
   type NewlineRule,
 } from './newlineRules'
 
+/** Walking back to an opener: its `afterOpen` rule, newlines and blank text between. */
+interface OpenState { readonly afterOpen: NewlineRule['afterOpen'] | null; readonly newlines: number; readonly blank: boolean }
+/** Walking forward to a closer: its `beforeClose` rule, and whether blank text came between. */
+interface CloseState { readonly beforeClose: NewlineRule['beforeClose'] | null; readonly blank: boolean }
+/** Walking back over newlines to a closer: its `afterClose` budget and the newlines spent. */
+interface AfterCloseState { readonly afterClose: number | null; readonly newlines: number }
+
+/**
+ * Steps a walk takes before it switches to the memoized one. Runs of a few
+ * newlines are the norm, and a plain walk over them costs less than the
+ * memo's lookups; a long run would cost k² without it.
+ */
+const SHORT_WALK = 16
+
+const NO_OPEN: OpenState = { afterOpen: null, newlines: 0, blank: false }
+const NO_CLOSE: CloseState = { beforeClose: null, blank: false }
+const NO_AFTER_CLOSE: AfterCloseState = { afterClose: null, newlines: 0 }
+
 export class OsuSemanticModel {
   constructor(readonly dialect: BBCodeDialect) {}
 
@@ -203,31 +221,72 @@ export class OsuSemanticModel {
   }
 
 
+  // ── The four scans ──────────────────────────────────────────────────
+  //
+  // Each one walks from a newline over its run of neighbouring newlines (and,
+  // for some, blank text) to whatever ends the run, then reads a rule there.
+  // Walked afresh for every newline, a run of k newlines cost k² — 16 KB of
+  // `\n` took six seconds to render. Every step of a walk is "the answer
+  // here is the answer one node on, plus this node", so the answers are
+  // memoized per node and filled in one pass along the walk: each node is
+  // walked over once per scan, whatever the run's length. The memo is why a
+  // model is valid for one tree snapshot.
+
+  private readonly openMemo = new WeakMap<RedNode, OpenState>()
+  private readonly afterCloseMemo = new WeakMap<RedNode, AfterCloseState>()
+  private readonly closeMemo = new WeakMap<RedNode, CloseState>()
+  private readonly beforeOpenMemo = new WeakMap<RedNode, boolean>()
+
   /** `\[box\]\n*`, `\[quote\]\s*`, `[centre]\n`. */
   private eatenByOpeningTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    let newlinesBetween = 0
-    let blankBetween = false
+    const st = this.openState(node)
+    switch (st.afterOpen) {
+      case 'whitespace': return true
+      // `\n*` matches newlines only: a stray space breaks the run.
+      case 'all': return !st.blank
+      case 'one': return !st.blank && st.newlines === 0
+      default: return false
+    }
+  }
+
+  /** Walking back from `node`: the opener's rule, and what lies between. */
+  private openState(node: RedNode, memoize = false): OpenState {
+    // Short walks, the usual case, are not worth a memo: walk plainly, and
+    // switch to the memoized walk only past `SHORT_WALK` steps.
+    const memo = memoize ? this.openMemo : null
+    const chain: RedNode[] = []
+    const steps: number[] = [] // 1 newline, 2 blank text, 0 climb
+    let cur = node
+    let state: OpenState
     for (;;) {
+      if (memo !== null) {
+        const hit = memo.get(cur)
+        if (hit !== undefined) { state = hit; break }
+      } else if (chain.length > SHORT_WALK) {
+        return this.openState(node, true)
+      }
       const prev = cur.previousSibling
       if (prev) {
-        if (OsuSemanticModel.isNewlineNode(prev)) { newlinesBetween++; cur = prev; continue }
-        if (OsuSemanticModel.isBlankText(prev)) { blankBetween = true; cur = prev; continue }
-        return false
+        if (OsuSemanticModel.isNewlineNode(prev)) { chain.push(cur); steps.push(1); cur = prev; continue }
+        if (OsuSemanticModel.isBlankText(prev)) { chain.push(cur); steps.push(2); cur = prev; continue }
+        state = NO_OPEN
+        memo?.set(cur, state)
+        break
       }
       const parent = cur.parent
-      if (!parent) return false
-      if (WIDTHLESS_OPEN.has(parent.kind)) { cur = parent; continue }
+      if (!parent) { state = NO_OPEN; memo?.set(cur, state); break }
+      if (WIDTHLESS_OPEN.has(parent.kind)) { chain.push(cur); steps.push(0); cur = parent; continue }
       const rule = newlineRule(parent.kind)
-      if (!rule) return false
-      switch (rule.afterOpen) {
-        case 'whitespace': return true
-        // `\n*` matches newlines only: a stray space breaks the run.
-        case 'all': return !blankBetween
-        case 'one': return !blankBetween && newlinesBetween === 0
-        default: return false
-      }
+      state = rule ? { afterOpen: rule.afterOpen, newlines: 0, blank: false } : NO_OPEN
+      memo?.set(cur, state)
+      break
     }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      if (steps[i] === 1) state = { afterOpen: state.afterOpen, newlines: state.newlines + 1, blank: state.blank }
+      else if (steps[i] === 2 && !state.blank) state = { afterOpen: state.afterOpen, newlines: state.newlines, blank: true }
+      memo?.set(chain[i], state)
+    }
+    return state
   }
 
   /**
@@ -245,13 +304,30 @@ export class OsuSemanticModel {
    * openings).
    */
   private eatenByClosingTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    let blankBetween = false
+    const st = this.closeState(node)
+    return st.beforeClose === 'whitespace' || (st.beforeClose === 'all' && !st.blank)
+  }
+
+  /** Walking forward from `node`: the closer's `beforeClose`, and whether blank text came first. */
+  private closeState(node: RedNode, memoize = false): CloseState {
+    // Short walks, the usual case, are not worth a memo: walk plainly, and
+    // switch to the memoized walk only past `SHORT_WALK` steps.
+    const memo = memoize ? this.closeMemo : null
+    const chain: RedNode[] = []
+    const blanks: boolean[] = []
+    let cur = node
+    let state: CloseState
     for (;;) {
+      if (memo !== null) {
+        const hit = memo.get(cur)
+        if (hit !== undefined) { state = hit; break }
+      } else if (chain.length > SHORT_WALK) {
+        return this.closeState(node, true)
+      }
       const next = cur.nextSibling
       if (next) {
-        if (OsuSemanticModel.isNewlineNode(next)) { cur = next; continue }
-        if (OsuSemanticModel.isBlankText(next)) { blankBetween = true; cur = next; continue }
+        if (OsuSemanticModel.isNewlineNode(next)) { chain.push(cur); blanks.push(false); cur = next; continue }
+        if (OsuSemanticModel.isBlankText(next)) { chain.push(cur); blanks.push(true); cur = next; continue }
         // `discarded_box_close` is deliberately NOT paragraph-flushed (see
         // Parser.ts), so it can sit as the FIRST child of a `paragraph` —
         // widthless on this side too — instead of always a direct sibling.
@@ -260,15 +336,15 @@ export class OsuSemanticModel {
         // the same helper is harmless: it is a no-op when `next` is not
         // itself a paragraph/group.
         const boundary = firstNonWidthlessOpenChild(next)
-        if (this.isGhost(boundary)) {
-          const rule = this.closingRule(boundary)
-          return rule?.beforeClose === 'all' ? !blankBetween : rule?.beforeClose === 'whitespace'
-        }
-        return false
+        state = this.isGhost(boundary)
+          ? { beforeClose: this.closingRule(boundary)?.beforeClose ?? null, blank: false }
+          : NO_CLOSE
+        memo?.set(cur, state)
+        break
       }
       const parent = cur.parent
-      if (!parent) return false
-      if (WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
+      if (!parent) { state = NO_CLOSE; memo?.set(cur, state); break }
+      if (WIDTHLESS_CLOSE.has(parent.kind)) { chain.push(cur); blanks.push(false); cur = parent; continue }
       // `pairing: 'osu'` crossing: a `notice`/`center`/`left`/`right` with NO
       // closing delimiter of its own (`trailingWidth === 0`) was closed by
       // an UNRELATED closer's cascade (`Parser.ts`'s `closeDivUnits`), not by
@@ -290,31 +366,51 @@ export class OsuSemanticModel {
       // place, so it has not been observed to change that pairing's output —
       // but it was not written FOR it, only measured not to break it.
       if (CROSSABLE_DIV_KINDS.has(parent.kind) && parent.green.trailingWidth === 0) {
-        cur = parent
-        continue
+        chain.push(cur); blanks.push(false); cur = parent; continue
       }
       const rule = newlineRule(parent.kind)
-      if (!rule) return false
-      switch (rule.beforeClose) {
-        case 'whitespace': return true
-        case 'all': return !blankBetween
-        default: return false
-      }
+      state = rule ? { beforeClose: rule.beforeClose, blank: false } : NO_CLOSE
+      memo?.set(cur, state)
+      break
     }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      if (blanks[i] && !state.blank) state = { beforeClose: state.beforeClose, blank: true }
+      memo?.set(chain[i], state)
+    }
+    return state
   }
 
   /** `\[/box\]\n?`, `\[/list\]\n?\n?`. */
   private eatenAfterClosingTag(node: RedNode): boolean {
-    let cur: RedNode = node
-    let newlinesBetween = 0
+    const st = this.afterCloseState(node)
+    return st.afterClose !== null && st.newlines < st.afterClose
+  }
+
+  /** Walking back from `node` over newlines: the closer's `afterClose` budget, and how much of it they spent. */
+  private afterCloseState(node: RedNode, memoize = false): AfterCloseState {
+    // Short walks, the usual case, are not worth a memo: walk plainly, and
+    // switch to the memoized walk only past `SHORT_WALK` steps.
+    const memo = memoize ? this.afterCloseMemo : null
+    const chain: RedNode[] = []
+    const counts: boolean[] = []
+    let cur = node
+    let state: AfterCloseState
     for (;;) {
+      if (memo !== null) {
+        const hit = memo.get(cur)
+        if (hit !== undefined) { state = hit; break }
+      } else if (chain.length > SHORT_WALK) {
+        return this.afterCloseState(node, true)
+      }
       const prev = cur.previousSibling
       if (!prev) {
         const parent = cur.parent
-        if (parent && WIDTHLESS_OPEN.has(parent.kind)) { cur = parent; continue }
-        return false
+        if (parent && WIDTHLESS_OPEN.has(parent.kind)) { chain.push(cur); counts.push(false); cur = parent; continue }
+        state = NO_AFTER_CLOSE
+        memo?.set(cur, state)
+        break
       }
-      if (OsuSemanticModel.isNewlineNode(prev)) { newlinesBetween++; cur = prev; continue }
+      if (OsuSemanticModel.isNewlineNode(prev)) { chain.push(cur); counts.push(true); cur = prev; continue }
       // Descend to whatever real closing tag sits immediately to our left.
       // `discarded_tag`/`discarded_box_close` are leaves (no children), so
       // this stops on them unchanged — `closingRule` then resolves what they
@@ -324,23 +420,46 @@ export class OsuSemanticModel {
         closer = closer.children[closer.children.length - 1]
       }
       const rule = this.closingRule(closer)
-      return rule !== null && newlinesBetween < rule.afterClose
+      state = rule ? { afterClose: rule.afterClose, newlines: 0 } : NO_AFTER_CLOSE
+      memo?.set(cur, state)
+      break
     }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      if (counts[i]) state = { afterClose: state.afterClose, newlines: state.newlines + 1 }
+      memo?.set(chain[i], state)
+    }
+    return state
   }
 
   /** `\s*\[\*\]` — the only pass that eats whitespace BEFORE an opening tag. */
-  private eatenBeforeOpeningTag(node: RedNode): boolean {
-    let cur: RedNode = node
+  private eatenBeforeOpeningTag(node: RedNode, memoize = false): boolean {
+    const memo = memoize ? this.beforeOpenMemo : null
+    const chain: RedNode[] = []
+    let cur = node
+    let eaten: boolean
     for (;;) {
+      if (memo !== null) {
+        const hit = memo.get(cur)
+        if (hit !== undefined) { eaten = hit; break }
+      } else if (chain.length > SHORT_WALK) {
+        return this.eatenBeforeOpeningTag(node, true)
+      }
       const next = cur.nextSibling
       if (next) {
-        if (OsuSemanticModel.isNewlineNode(next) || OsuSemanticModel.isBlankText(next)) { cur = next; continue }
-        return newlineRule(next.kind)?.beforeOpen === 'whitespace'
+        if (OsuSemanticModel.isNewlineNode(next) || OsuSemanticModel.isBlankText(next)) { chain.push(cur); cur = next; continue }
+        eaten = newlineRule(next.kind)?.beforeOpen === 'whitespace'
+        break
       }
       const parent = cur.parent
-      if (!parent) return false
-      if (WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
-      return false
+      if (!parent) { eaten = false; break }
+      if (WIDTHLESS_CLOSE.has(parent.kind)) { chain.push(cur); cur = parent; continue }
+      eaten = false
+      break
     }
+    if (memo !== null) {
+      memo.set(cur, eaten)
+      for (let i = chain.length - 1; i >= 0; i--) memo.set(chain[i], eaten)
+    }
+    return eaten
   }
 }

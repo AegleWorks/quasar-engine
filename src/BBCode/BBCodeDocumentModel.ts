@@ -128,7 +128,9 @@ export class BBCodeDocumentModel extends DocumentModel {
 
   toHTML(renderer?: HTMLRenderer): string {
     if (!this.redRoot) return ''
-    const r = renderer ?? new HTMLRenderer({ dialect: this._dialect, theme: this._dialect === 'lyne' ? 'lyne' : 'osu' })
+    // With the registry, so a plugin tag renders through its handler
+    // instead of as bare children.
+    const r = renderer ?? new HTMLRenderer({ dialect: this._dialect, theme: this._dialect === 'lyne' ? 'lyne' : 'osu', registry: this.tagRegistry })
     return r.render(this.redRoot)
   }
 
@@ -189,6 +191,7 @@ export class BBCodeDocumentModel extends DocumentModel {
         strictMode: this._strictMode,
         dialect: this._dialect,
         normalizeParagraphs: options?.normalizeParagraphs ?? true,
+        depth: options?.depth,
         interner: this._interner ?? undefined,
         extraTags: this._extraTags ?? undefined,
         pairing: this._pairing,

@@ -81,7 +81,29 @@ export interface ParseOptions {
    * Full-parse only: the incremental parser does not pass this through.
    */
   pairing?: 'quasar' | 'osu';
+  /**
+   * How many tags are already open around the text being parsed — non-zero
+   * only when the incremental parser re-parses the inside of a container.
+   * The nesting limit counts from the document, not from the window.
+   */
+  depth?: number;
 }
+
+/**
+ * The deepest tags nest. An opener past it stays literal text, and so does
+ * the closer that answers it.
+ *
+ * Everything that walks a tree — building red nodes, hashing, rendering,
+ * exporting, analysing — recurses once per level, and the stack runs out
+ * somewhere between 1 600 levels (a cold `HTMLRenderer`) and 3 400 (a cold
+ * parse), less inside an app's own call stack: `'[b]'.repeat(2000)` threw
+ * `Maximum call stack size exceeded` out of an engine that promises never to
+ * throw on input. Real documents nest 8 deep (the 65-document corpus and the
+ * 547 KB fixture); 256 is far past anything written by hand and well inside
+ * every walker's stack. Browsers draw the same kind of line (Blink's HTML
+ * parser stops nesting at 512 elements).
+ */
+export const MAX_NESTING_DEPTH = 256
 
 /** A cursor over a token array, for callers that already hold one. */
 function arrayCursor(tokens: readonly BBCodeToken[]): () => BBCodeToken | null {
@@ -131,6 +153,16 @@ export function parseTokensToGreen(
    * porque entonces el cierre sí es suyo.
    */
   const autoClosed = new Set<string>()
+
+  /** Openers left open from here on would nest past `MAX_NESTING_DEPTH`. */
+  const depthLimit = MAX_NESTING_DEPTH - (options.depth ?? 0)
+  /**
+   * Openers kept as literal text for being too deep, by tag, still waiting
+   * for their closer — which is literal text too, or it would close some
+   * outer tag of the same name and reshape the document around it. Emptied
+   * whenever a frame closes: those openers were inside it.
+   */
+  const overflow = new Map<string, number>()
 
   /**
    * How many anonymous `<div>`s each `pairing: 'osu'` div-emitting tag pushes
@@ -233,6 +265,7 @@ export function parseTokensToGreen(
     },
     trailingWidth: number,
   ): GreenNode {
+    if (overflow.size > 0) overflow.clear()
     const children = frame.bodyClosed && frame.tailChildren && frame.tailChildren.length > 0
       ? [...frame.children, createNode('box_tail', '', frame.tailChildren, 0, 0)]
       : frame.children
@@ -422,6 +455,12 @@ export function parseTokensToGreen(
   // optimise: a cold open measured 24 ms of Turbofan compile before the
   // parser ran optimised at all, against a parse of about 30. Split, the
   // loop is small and each branch is compiled on its own, early.
+  /** An opener past `MAX_NESTING_DEPTH`: its text, and a closer owed as text. */
+  function keepTooDeep(tok: BBCodeOpenToken): void {
+    addToParent(createLeaf('text', source.slice(tok.start, tok.end)))
+    overflow.set(tok.tag, (overflow.get(tok.tag) ?? 0) + 1)
+  }
+
   // ── Opening tag: [tag] or [tag=attrs] ──────────────────
   function onOpen(tok: BBCodeOpenToken): void {
     // Unknown tags (not in the BBCode spec) must be preserved
@@ -447,6 +486,10 @@ export function parseTokensToGreen(
       // one begins and owns no closing delimiter.
       if (stack.length > 0 && stack[stack.length - 1].tag === '*') {
         addToParent(closeFrame(stack.pop()!, 0))
+      }
+      if (stack.length >= depthLimit) {
+        keepTooDeep(tok)
+        return
       }
       autoClosed.delete(tok.tag)
       stack.push({
@@ -475,6 +518,11 @@ export function parseTokensToGreen(
       else if (tok.tag === 'smallcaps') attrs = '=font-variant:small-caps'
     }
 
+    if (stack.length >= depthLimit) {
+      keepTooDeep(tok)
+      return
+    }
+
     // Push onto the stack — children will be added later.
     autoClosed.delete(tok.tag)
     stack.push({
@@ -489,6 +537,15 @@ export function parseTokensToGreen(
   // ── Closing tag: [/tag] ──────────────────────────────────
   function onClose(tok: BBCodeCloseToken): void {
     const closeWidth = tok.end - tok.start
+
+    // The closer of an opener kept as text for being too deep is text too.
+    const owed = overflow.size > 0 ? overflow.get(tok.tag) : undefined
+    if (owed !== undefined) {
+      if (owed > 1) overflow.set(tok.tag, owed - 1)
+      else overflow.delete(tok.tag)
+      addToParent(createLeaf('text', source.slice(tok.start, tok.end)))
+      return
+    }
 
     if (strictMode) {
       if (stack.length > 0 && stack[stack.length - 1].tag === '*' && tok.tag === 'list') {

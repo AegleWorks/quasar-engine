@@ -15,7 +15,8 @@ import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 import { clampFontSizeValue } from '../Utils/FontSizeLimits'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
 import { parseBBCode } from '../BBCode/Parser'
-import { greenToRedNode } from '../BBCode/BBCodeToGreenNode'
+import { greenToRedNode, extractGreenNodeMetadata } from '../BBCode/BBCodeToGreenNode'
+import { stringifyEffectParams, GRADIENT_DEFAULTS, type EffectParams } from '../Utils/EffectMath'
 import { resolveEditConflicts } from '../Edits/EditPlan'
 import { applyEditsToSource } from '../Edits/applyEdits'
 import { FlattenOsuNestingRule } from '../Edits/Rules/flattenOsuNesting'
@@ -145,11 +146,61 @@ const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbo
  * es 'osu', estos tags se DEGRADAN a su contenido plano: mejor perder el
  * efecto que romper la userpage. El target 'miliastry' los conserva.
  */
-export const MILIASTRY_ONLY_TAGS = new Set([
+/**
+ * The metadata the node's own attribute text parses to — what it held when
+ * it came out of the source. Comparing it with the live metadata tells an
+ * attribute an editor changed (write it from the metadata) from one nobody
+ * touched (keep the author's spelling).
+ */
+function attributeAsParsed(node: RedNode): Record<string, unknown> {
+  return extractGreenNodeMetadata(node.green)
+}
+
+/**
+ * Effect metadata as `stringifyEffectParams` should read it. The parser keeps
+ * the colour list twice — `colors`, and `stops` with positions — and the
+ * stops win when written; an editor that sets new `colors` leaves the old
+ * stops behind, so stops that no longer match the colours are dropped.
+ */
+function effectParamsOf(metadata: Record<string, unknown>): EffectParams {
+  const params = metadata as EffectParams
+  const colors = params.colors
+  const stops = params.stops
+  if (!Array.isArray(colors) || !Array.isArray(stops)) return params
+  const same = stops.length === colors.length && stops.every((stop, i) => stop.color === colors[i])
+  if (same) return params
+  const { stops: _stale, ...rest } = params
+  return rest as EffectParams
+}
+
+/**
+ * A set nobody can change at runtime: these tables decide what every export
+ * in the process degrades, so a stray `.delete('font')` anywhere changed osu!
+ * export for everyone. Reading is unchanged (`has`, iteration).
+ */
+class FrozenSet<T> extends Set<T> {
+  private sealed = false
+  constructor(values: Iterable<T>) {
+    super(values)
+    this.sealed = true
+  }
+  override add(value: T): this {
+    if (this.sealed) throw new TypeError('This tag set is read-only')
+    return super.add(value)
+  }
+  override delete(_value: T): boolean {
+    throw new TypeError('This tag set is read-only')
+  }
+  override clear(): void {
+    throw new TypeError('This tag set is read-only')
+  }
+}
+
+export const MILIASTRY_ONLY_TAGS: ReadonlySet<string> = new FrozenSet([
   'font', 'zalgo', 'aesthetic', 'sparkle', 'bubble', 'flower', 'svg', 'group',
 ])
 
-export const LYNE_ONLY_TAGS = new Set([
+export const LYNE_ONLY_TAGS: ReadonlySet<string> = new FrozenSet([
   'boxw', 'wnotice', 'tables', 'table_row', 'table_col', 'table_th', 'gallery', 'columns',
   'separator', 'scroll', 'sup', 'sub', 'abbr', 'mark', 'kbd', 'tooltip', 'flip',
   'raw', 'plain', 'guild', 'map', 'align', 'effect', 'anim', 'container', 'style_tag',
@@ -451,37 +502,49 @@ export class BBCodeExporter extends Visitor<string> {
   /**
    * Export the entire document to BBCode.
    * Optionally override the export target or options for this specific call.
+   *
+   * For THIS call only: the overrides are applied to the instance for the
+   * walk and put back afterwards. They used to stay, so the next plain
+   * `export(root)` on the same exporter quietly ran under the previous call's
+   * target. `setTarget`/`setTokens` are the persistent setters.
    */
   export(
     root: RedNode,
     targetOrOptions?: ExportTarget | BBCodeExportOptions,
     options?: BBCodeExportOptions,
   ): string {
-    if (typeof targetOrOptions === 'string') {
-      this.target = targetOrOptions
-      if (options?.tokens !== undefined) {
-        this.setTokens(options.tokens)
-      }
-      if (options?.resolveTokens !== undefined) {
-        this.explicitResolveTokens = options.resolveTokens
-      }
-    } else if (targetOrOptions && typeof targetOrOptions === 'object') {
-      if (targetOrOptions.target !== undefined) {
-        this.target = targetOrOptions.target
-      }
-      if (targetOrOptions.tokens !== undefined) {
-        this.setTokens(targetOrOptions.tokens)
-      }
-      if (targetOrOptions.resolveTokens !== undefined) {
-        this.explicitResolveTokens = targetOrOptions.resolveTokens
-      }
+    const saved = {
+      target: this.target,
+      tokens: this.tokens,
+      tokenResolver: this.tokenResolver,
+      explicitResolveTokens: this.explicitResolveTokens,
     }
-    const raw = this.visit(root)
-    // osu! cannot nest a tag inside an identical one (see
-    // `Edits/Rules/flattenOsuNesting.ts`'s doc comment and the
-    // `quasar-nested-color-is-supported` memory) — every other target is
-    // untouched, so this can never change what the default preview shows.
-    return this.target === 'osu' ? flattenOsuUnsupportedNesting(raw) : raw
+    const overrideTokens = (tokens: TokenSource | undefined): void => {
+      this.tokens = tokens
+      this.tokenResolver = toTokenResolver(tokens)
+    }
+    try {
+      if (typeof targetOrOptions === 'string') {
+        this.target = targetOrOptions
+        if (options?.tokens !== undefined) overrideTokens(options.tokens)
+        if (options?.resolveTokens !== undefined) this.explicitResolveTokens = options.resolveTokens
+      } else if (targetOrOptions && typeof targetOrOptions === 'object') {
+        if (targetOrOptions.target !== undefined) this.target = targetOrOptions.target
+        if (targetOrOptions.tokens !== undefined) overrideTokens(targetOrOptions.tokens)
+        if (targetOrOptions.resolveTokens !== undefined) this.explicitResolveTokens = targetOrOptions.resolveTokens
+      }
+      const raw = this.visit(root)
+      // osu! cannot nest a tag inside an identical one (see
+      // `Edits/Rules/flattenOsuNesting.ts`'s doc comment and the
+      // `quasar-nested-color-is-supported` memory) — every other target is
+      // untouched, so this can never change what the default preview shows.
+      return this.target === 'osu' ? flattenOsuUnsupportedNesting(raw) : raw
+    } finally {
+      this.target = saved.target
+      this.tokens = saved.tokens
+      this.tokenResolver = saved.tokenResolver
+      this.explicitResolveTokens = saved.explicitResolveTokens
+    }
   }
 
   /**
@@ -766,10 +829,36 @@ export class BBCodeExporter extends Visitor<string> {
         // arrives as exactly that prefix and nothing else — test the address.
         const address = (node.metadata.href as string).replace('mailto:', '')
         return address === '' ? '' : `=${address}`
-      } else if (node.kind === 'quote' && hasAttrValue(node.metadata.source)) {
-        let src = String(node.metadata.source)
-        if (this.expandTokens !== null) src = expandTokenRefs(src, this.expandTokens)
-        return `="${src}"`
+      } else if (node.kind === 'quote') {
+        // `metadata.source` is what an editor changes; the opener's own text
+        // is what the author wrote. Unchanged, the author's spelling stays
+        // (the fallback below); changed, the new source is written — and an
+        // emptied one drops the attribute instead of resurrecting the old.
+        const source = node.metadata.source
+        const changed = source !== undefined && source !== attributeAsParsed(node).source
+        if (hasAttrValue(source) || changed) {
+          if (!hasAttrValue(source)) return ''
+          let src = String(source)
+          if (this.expandTokens !== null) src = expandTokenRefs(src, this.expandTokens)
+          return `="${src}"`
+        }
+      } else if (node.kind === 'list') {
+        // Same rule: `[list=a]`, `[list=i]` and stranger spellings keep their
+        // text unless an editor flipped `ordered`.
+        const ordered = node.metadata.ordered
+        if (typeof ordered === 'boolean' && ordered !== attributeAsParsed(node).ordered) {
+          return ordered ? '=1' : ''
+        }
+      } else if (node.kind === 'gradient') {
+        // Every parameter, not only the colours: `axis`, `easing`, the
+        // `at`/`of` that keep one ramp across per-letter tags… Unchanged
+        // since the parse, the author's own spelling is kept byte for byte.
+        // An effect's output (no attribute text at all) and an edited
+        // gradient are written from their metadata, defaults left out.
+        const written = stringifyEffectParams(effectParamsOf(node.metadata), GRADIENT_DEFAULTS)
+        if (written !== stringifyEffectParams(effectParamsOf(attributeAsParsed(node)), GRADIENT_DEFAULTS)) {
+          return written === '' ? '' : `=${written}`
+        }
       } else if (node.kind === 'box' || node.kind === 'boxw' || node.kind === 'spoilerbox') {
         // `rawTitle` is the source spelling; `title` is the parsed one, which
         // falls back to a synthetic "Box"/"Spoiler" when the tag is bare. Only

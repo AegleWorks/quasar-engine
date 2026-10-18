@@ -39,7 +39,8 @@ describe('SemanticAnalyzer — built-in validators', () => {
     expect(found.map(d => d.code)).toEqual(['deprecated-tag'])
     // Several nodes share offset 0 here (document, paragraph, the tag itself),
     // so an offset-only check reported this three times.
-    expect(found[0].range).toEqual({ start: 0, end: source.length })
+    // The opening tag, not the whole element.
+    expect(found[0].range).toEqual({ start: 0, end: '[strike]'.length })
     expect(found[0].message).toContain('[s]')
   })
 
@@ -164,5 +165,17 @@ describe('SemanticAnalyzer — built-in validators', () => {
     const op = operations[0] as { kind: 'replace_text'; range: { start: number; end: number }; newText: string }
     expect(op.newText).toContain('Hello')
     expect(op.newText).toContain('[gradient=')
+  })
+})
+
+describe('structural findings point at the opening tag', () => {
+  it('an unclosed tag underlines its opener and names where it was closed', () => {
+    const source = '[b]x\n[i]y'
+    const found = diagnose(source).filter(d => d.code === 'unclosed-tag')
+    expect(found.map(d => d.range)).toEqual([{ start: 0, end: 3 }, { start: 5, end: 8 }])
+    expect(found.map(d => d.related?.[0].range)).toEqual([
+      { start: source.length, end: source.length },
+      { start: source.length, end: source.length },
+    ])
   })
 })

@@ -125,6 +125,8 @@ For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](
 | `npm run typecheck` | Type-checks without emitting. |
 | `npm run verify` | Typecheck, then tests. Run it before publishing. |
 | `npm run build` | Builds ESM, CJS, type declarations and the theme stylesheets into `dist/`. |
+| `node scripts/bench/run.mjs [--base <ref>]` | Benchmarks the corpus, the 547 KB fixture and adversarial inputs at growing sizes, each workload in its own process, alternating with `<ref>` when given. Run from the monorepo root. |
+| `node scripts/differential/run.mjs <ref> --corpus <dir>` | Checks that every output (renders, exports, effects, the HTML importer) is byte-identical to `<ref>`'s. |
 
 ## Documentation
 

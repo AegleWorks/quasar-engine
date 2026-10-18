@@ -103,11 +103,20 @@ export class PluginRegistry {
    */
   activate(plugin: Plugin): void {
     if (plugin.active) return
-    try {
-      plugin.contributions.activate?.()
-      plugin.active = true
-    } catch (error) {
+    const fail = (error: unknown): void => {
+      plugin.active = false
       console.warn(`[PluginRegistry] Failed to activate plugin "${plugin.manifest.name}":`, error)
+    }
+    try {
+      const pending = plugin.contributions.activate?.()
+      plugin.active = true
+      // An async `activate` that rejects did not activate: it used to be an
+      // unhandled rejection on a plugin still marked active.
+      if (pending && typeof (pending as Promise<void>).then === 'function') {
+        ;(pending as Promise<void>).then(undefined, fail)
+      }
+    } catch (error) {
+      fail(error)
     }
   }
 

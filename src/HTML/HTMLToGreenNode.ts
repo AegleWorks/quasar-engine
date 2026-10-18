@@ -3,6 +3,7 @@ import { RedNode } from '../Syntax/RedNode';
 import type { NodeKind } from '../Types/core';
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode';
 import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers';
+import { MAX_NESTING_DEPTH } from '../BBCode/Parser';
 
 /**
  * The colour exactly as the author wrote it in the `style` attribute.
@@ -72,6 +73,8 @@ function hasBlockChild(el: Element): boolean {
 
 function domToGreenTree(root: HTMLElement): GreenNode {
   let currentOffset = 0;
+  /** Elements open around the node being converted. */
+  let depth = 0;
 
   function convert(node: globalThis.Node): GreenNode {
     const start = currentOffset;
@@ -388,7 +391,17 @@ function domToGreenTree(root: HTMLElement): GreenNode {
       }
 
       // Convert children recursively unless it's a raw block like pre or imagemap
-      if (tag !== 'pre' && kind !== 'imagemap') {
+      if (tag !== 'pre' && kind !== 'imagemap' && depth >= MAX_NESTING_DEPTH) {
+        // As deep as the BBCode parser lets tags nest (`MAX_NESTING_DEPTH`):
+        // the rest of this element comes in as its text. Every walker over
+        // the tree recurses per level, and `<div>`×2000 made the render throw.
+        const flat = el.textContent ?? ''
+        if (flat !== '') {
+          currentOffset += flat.length
+          children.push(greenLeaf('text', flat))
+        }
+      } else if (tag !== 'pre' && kind !== 'imagemap') {
+        depth++
         for (let i = 0; i < node.childNodes.length; i++) {
           const child = node.childNodes[i];
           if ((child as any).__quasar_extracted) continue;
@@ -401,6 +414,7 @@ function domToGreenTree(root: HTMLElement): GreenNode {
              children.push(parsedChild);
           }
         }
+        depth--
       }
     }
 

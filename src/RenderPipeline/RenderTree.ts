@@ -12,6 +12,22 @@
  */
 
 import type { NodeKind, NodeAttributes } from '../Types/core'
+import { STYLE_PROP_WHITELIST, stripStyleValue, isDangerousStyleValue } from '../Utils/safeStyle'
+
+/**
+ * Render nodes holding HTML the engine itself produced. Only `engineHTML`
+ * adds to it, and it is not on the package's public surface: a plugin cannot
+ * mark a string it built from document text as safe, so nothing but engine
+ * output reaches the page unescaped.
+ */
+const ENGINE_HTML = new WeakSet<RenderNode>()
+
+/** A render node carrying HTML the engine rendered (a child, for a plugin handler). */
+export function engineHTML(html: string): RenderNode {
+  const node: RenderNode = { kind: 'engine_html', text: html, children: [], props: {} }
+  ENGINE_HTML.add(node)
+  return node
+}
 
 export type RenderVariant = 'html' | 'canvas' | 'svg' | 'pdf' | 'react' | 'text'
 
@@ -71,6 +87,7 @@ export class RenderTree {
    * Serialize a render tree to HTML.
    */
   static toHTML(node: RenderNode): string {
+    if (ENGINE_HTML.has(node)) return node.text
     if (node.kind === 'text') return this.escapeHtml(node.text)
 
     const tag = this.kindToTag(node.kind)
@@ -113,16 +130,37 @@ export class RenderTree {
     return map[kind] ?? 'span'
   }
 
+  /**
+   * `class` and `style`, escaped. A plugin handler fills these from the
+   * document (`style: { color: node.text }`), so they were an attribute
+   * injection: `[neon=red" onmouseover="…]` wrote its own attribute. Style
+   * keys are camelCase or kebab-case; only properties in the shared whitelist
+   * get through, and no value that loads or runs anything.
+   */
   private static propsToHtml(node: RenderNode): string {
     const parts: string[] = []
-    if (node.className) parts.push(`class="${node.className}"`)
-    if (node.style && Object.keys(node.style).length > 0) {
-      const styles = Object.entries(node.style)
-        .map(([k, v]) => `${k}:${v}`)
-        .join(';')
-      parts.push(`style="${styles}"`)
+    if (node.className) parts.push(`class="${this.escapeAttr(node.className)}"`)
+    if (node.style) {
+      const styles: string[] = []
+      for (const [key, raw] of Object.entries(node.style)) {
+        const prop = key.replace(/[A-Z]/g, c => '-' + c.toLowerCase()).toLowerCase()
+        if (!STYLE_PROP_WHITELIST.has(prop)) continue
+        const value = stripStyleValue(String(raw))
+        if (!value || isDangerousStyleValue(value)) continue
+        styles.push(`${prop}:${value}`)
+      }
+      if (styles.length > 0) parts.push(`style="${this.escapeAttr(styles.join(';'))}"`)
     }
     return parts.length > 0 ? ' ' + parts.join(' ') : ''
+  }
+
+  private static escapeAttr(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
   }
 
   private static escapeHtml(text: string): string {

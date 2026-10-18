@@ -74,8 +74,10 @@ describe('etiquetas cruzadas', () => {
 
     it('señala la apertura que quedó cerrada antes de tiempo', () => {
       const d = only('[b][i]x[/b][/i]', 'crossed-tags')
-      // `[i]` abre en 3 y el parser lo cerró en 7, donde empieza `[/b]`.
-      expect(d.range).toEqual({ start: 3, end: 7 })
+      // Señala la apertura `[i]` (3–6), no el elemento entero: el subrayado
+      // va donde hay que mirar. El cierre ignorado va en `related`.
+      expect(d.range).toEqual({ start: 3, end: 6 })
+      expect(d.related?.[0].range).toEqual({ start: 11, end: 15 })
     })
 
     it('apunta al cierre ignorado como información relacionada', () => {

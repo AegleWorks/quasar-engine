@@ -19,14 +19,14 @@
 import type { CodeActionKind, Diagnostic } from '../Types/diagnostics'
 import type { RedNode } from '../Syntax/RedNode'
 import type { SurgicalEdit } from '../Reconciler/SurgicalReconciler'
-import { getCodeFix, getCodeFixMeta } from './CodeFixRegistry'
+import { getCodeFix, getCodeFixMeta, isAutomaticFix } from './CodeFixRegistry'
 import { matchRefactorings } from './RefactoringRegistry'
 import { fixToSurgicalEdits } from '../Edits/fixEdits'
 import { applyEditsToSource } from '../Edits/applyEdits'
-import { editsConflict } from '../Edits/EditPlan'
+import { AcceptedEdits, mergeInsertionRuns, type FixCandidate } from './fixSet'
 import { changedRegion, rebaseEditsThrough, rebaseOffset } from '../Edits/rebaseEdits'
-import { registerValidatorFixes } from './validatorFixes'
-import { registerLinterFixes } from '../Linter/Linter'
+import { ensureValidatorFixes } from './validatorFixes'
+import { ensureLinterFixes } from '../Linter/Linter'
 
 export interface LightbulbQuery {
   source: string
@@ -117,11 +117,11 @@ interface ResolvedFix {
 
 export class LightbulbHost {
   constructor() {
-    // Providers are global tables; registering twice is overwriting with the
-    // same values. The host guarantees its own fix sources exist so a bare
-    // `new LightbulbHost()` answers with built-ins and no extra setup.
-    registerValidatorFixes()
-    registerLinterFixes()
+    // The host guarantees its own fix sources exist so a bare
+    // `new LightbulbHost()` answers with built-ins and no extra setup —
+    // without re-registering them over a plugin's override.
+    ensureValidatorFixes()
+    ensureLinterFixes()
   }
 
   query(query: LightbulbQuery): LightbulbAction[] {
@@ -158,7 +158,7 @@ export class LightbulbHost {
       if (!edits) return null
       const meta = getCodeFixMeta(d.code)
       const title = typeof meta?.title === 'function' ? meta.title(d) : (meta?.title ?? d.message)
-      return { title, kind: meta?.kind ?? 'quickfix', isAutomatic: meta?.isAutomatic ?? false, edits }
+      return { title, kind: meta?.kind ?? 'quickfix', isAutomatic: isAutomaticFix(d), edits }
     }
 
     for (const diagnostic of query.diagnostics) {
@@ -221,19 +221,25 @@ export class LightbulbHost {
     const all = query.documentDiagnostics ?? query.diagnostics
     const candidates: LightbulbAction[] = []
     for (const [key, first] of keys) {
-      const merged: SurgicalEdit[] = []
-      let count = 0
+      const fixes: FixCandidate[] = []
       for (const d of all) {
         if (d.equivalenceKey !== key) continue
         const fix = fixFor(d)
         if (!fix || !fix.isAutomatic) continue
-        if (fix.edits.some((edit) => merged.some((kept) => editsConflict(kept, edit)))) continue
-        merged.push(...fix.edits)
-        count++
+        fixes.push({ diagnostic: d, edits: fix.edits, count: 1 })
       }
+      // First in document order wins a conflict; closers missing at one
+      // offset are one insertion, not a conflict (see `mergeInsertionRuns`).
+      const taken = new AcceptedEdits()
+      let count = 0
+      for (const fix of mergeInsertionRuns(fixes)) {
+        if (taken.conflictsAny(fix.edits)) continue
+        taken.add(fix.edits)
+        count += fix.count
+      }
+      const merged = taken.backToFront()
       // One finding is the quick fix already on the menu, under another name.
       if (count < 2) continue
-      merged.sort((a, b) => b.start - a.start || b.end - a.end)
       candidates.push(withLazyPreview(query.source, {
         title: `Fix all '${key}'`,
         kind: 'source.fixAll',

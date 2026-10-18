@@ -18,7 +18,8 @@ import {
 } from '../Syntax/nodeAttr'
 import { Visitor } from './Visitor'
 import type { TagRegistry } from '../Model/TagRegistry'
-import { RenderTree } from '../RenderPipeline/RenderTree'
+import { RenderTree, engineHTML } from '../RenderPipeline/RenderTree'
+import { STYLE_PROP_WHITELIST, stripStyleValue, isDangerousStyleValue } from '../Utils/safeStyle'
 
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
@@ -156,8 +157,17 @@ export class HTMLRenderer extends Visitor<string> {
     this.semantic = new OsuSemanticModel(this.options.dialect)
   }
 
-  /** What the document means under osu!'s rules; see `Semantic/osu/OsuSemanticModel`. */
-  private readonly semantic: OsuSemanticModel
+  /**
+   * What the document means under osu!'s rules; see `Semantic/osu/OsuSemanticModel`.
+   * Its answers are memoized per node, so it is valid for ONE tree snapshot.
+   * `render` picks the model of the document's root green — green nodes are
+   * immutable, so the same root green is the same structure — and makes one
+   * for a green it has not seen: the red tree it is handed next time may be
+   * the same objects with spliced children.
+   */
+  private semantic: OsuSemanticModel
+  /** One model per document snapshot, by root green; dropped with the snapshot. */
+  private readonly semanticBySnapshot = new WeakMap<object, OsuSemanticModel>()
 
   setTokens(tokens?: TokenSource): void {
     this.tokenResolver = toTokenResolver(tokens)
@@ -350,6 +360,13 @@ export class HTMLRenderer extends Visitor<string> {
 
   render(root: RedNode): string {
     this.maxColsStack.length = 0
+    const snapshot = root.root.green
+    let semantic = this.semanticBySnapshot.get(snapshot)
+    if (semantic === undefined) {
+      semantic = new OsuSemanticModel(this.options.dialect)
+      this.semanticBySnapshot.set(snapshot, semantic)
+    }
+    this.semantic = semantic
     return this.renderNode(root)
   }
 
@@ -612,7 +629,9 @@ export class HTMLRenderer extends Visitor<string> {
               node,
               source: '', // We don't have the original source string here, but it's rarely needed for effect tags
               visitChildren: (n) => this.renderChildren(n),
-              renderChild: (n) => RenderTree.text('unsupported'),
+              // The child rendered by the engine, as a node `RenderTree`
+              // passes through unescaped — it used to answer 'unsupported'.
+              renderChild: (n) => engineHTML(this.renderNode(n)),
             })
             return RenderTree.toHTML(renderNode)
           }
@@ -1206,16 +1225,6 @@ export class HTMLRenderer extends Visitor<string> {
     }
   }
 
-  private static readonly STYLE_PROP_WHITELIST = new Set([
-    'width', 'height', 'padding', 'margin', 'display',
-    'background', 'border', 'opacity', 'filter', 'transform',
-    'float', 'clear', 'white-space', 'font-variant', 'text-transform',
-    'text-align', 'gap', 'color', 'font-size', 'font-weight',
-    'padding-left', 'padding-right', 'padding-top', 'padding-bottom',
-    'margin-left', 'margin-right', 'margin-top', 'margin-bottom',
-    'line-height', 'letter-spacing', 'word-spacing',
-  ])
-
   private renderStyleTag(node: RedNode): string {
     const raw = (String(node.metadata?.style ?? '') || nodeAttrValue(node) || '').trim()
     const content = this.renderChildren(node)
@@ -1230,16 +1239,16 @@ export class HTMLRenderer extends Visitor<string> {
       const prop = decl.slice(0, colon).trim().toLowerCase()
       const val = decl.slice(colon + 1).trim()
       if (!prop || !val) continue
-      if (!HTMLRenderer.STYLE_PROP_WHITELIST.has(prop)) continue
+      if (!STYLE_PROP_WHITELIST.has(prop)) continue
       // Los paréntesis son válidos en CSS (rgba(), blur(), rotate(), scale(),
       // color-mix()…) — antes se eliminaban y rompían esos valores. Lo que sí
       // se bloquea son las funciones/fuentes peligrosas (url(), expression(),
       // javascript:), que no tienen uso legítimo en el whitelist de props.
-      let safeVal = val.replace(/["'{}<>]/g, '').slice(0, 100)
+      let safeVal = stripStyleValue(val)
       if (safeVal.startsWith('$') && this.tokenResolver) {
         safeVal = resolveTokenValue(safeVal, this.tokenResolver)
       }
-      if (/url\s*\(|expression\s*\(|javascript\s*:/i.test(safeVal)) continue
+      if (isDangerousStyleValue(safeVal)) continue
       safeStyles.push(`${prop}:${safeVal}`)
     }
 

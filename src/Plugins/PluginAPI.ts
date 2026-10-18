@@ -12,7 +12,7 @@ import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
 import { CommandRegistry, type Command } from '../Commands'
 import { SemanticAnalyzer, type Validator } from '../Semantic/SemanticAnalyzer'
 import { Linter, type LintRule } from '../Linter/Linter'
-import { registerCodeFix, unregisterCodeFix } from '../Fixes/CodeFixRegistry'
+import { registerCodeFix } from '../Fixes/CodeFixRegistry'
 import { registerRefactoring, unregisterRefactoring } from '../Fixes/RefactoringRegistry'
 import { RenderPipeline, type RenderHook } from '../RenderPipeline/RenderPipeline'
 import { PluginRegistry, type PluginManifest, type PluginContribution } from './PluginRegistry'
@@ -25,6 +25,13 @@ export class PluginAPI {
   readonly linter: Linter
   readonly renderer: RenderPipeline
   readonly plugins: PluginRegistry
+  /**
+   * What each plugin's code fixes put in the registry, by plugin name: the
+   * functions that take back exactly those registrations. Unregistering used
+   * to delete the CODE, taking the built-in (or another plugin's override of
+   * the same code) with it.
+   */
+  private readonly codeFixDisposers = new Map<string, (() => void)[]>()
 
   constructor(model: DocumentModel) {
     this.model = model
@@ -51,7 +58,15 @@ export class PluginAPI {
    * ```
    */
   registerPlugin(manifest: PluginManifest, contributions: PluginContribution): void {
+    // A second registration under the same name replaces the first: take the
+    // first one's contributions back before adding the new ones, or they stay
+    // installed with nothing left to remove them.
+    if (this.plugins.get(manifest.name)) this.unregisterPlugin(manifest.name)
     const plugin = this.plugins.register(manifest, contributions)
+    // Declared in the types, honoured nowhere yet: say so instead of
+    // pretending the CSS was injected or the dependency checked.
+    if (contributions.styles?.length) console.warn(`[PluginAPI] "${manifest.name}": styles are not injected by the engine; load them yourself`)
+    if (manifest.dependencies?.length) console.warn(`[PluginAPI] "${manifest.name}": dependencies are not checked by the engine`)
 
     // Apply contributions
     if (contributions.tags) {
@@ -79,9 +94,10 @@ export class PluginAPI {
     }
 
     if (contributions.codeFixes) {
-      for (const fix of contributions.codeFixes) {
-        registerCodeFix(fix.code, fix.provider, fix.meta)
-      }
+      this.codeFixDisposers.set(
+        manifest.name,
+        contributions.codeFixes.map((fix) => registerCodeFix(fix.code, fix.provider, fix.meta)),
+      )
     }
 
     if (contributions.refactorings) {
@@ -127,14 +143,16 @@ export class PluginAPI {
         this.linter.unregister(rule.code)
       }
     }
-    if (plugin.contributions.codeFixes) {
-      for (const fix of plugin.contributions.codeFixes) {
-        unregisterCodeFix(fix.code)
-      }
-    }
+    for (const dispose of this.codeFixDisposers.get(name) ?? []) dispose()
+    this.codeFixDisposers.delete(name)
     if (plugin.contributions.refactorings) {
       for (const refactoring of plugin.contributions.refactorings) {
         unregisterRefactoring(refactoring.id)
+      }
+    }
+    if (plugin.contributions.renderHooks) {
+      for (const hook of plugin.contributions.renderHooks) {
+        this.renderer.unregister(hook)
       }
     }
 

@@ -88,6 +88,16 @@ export class RenderPipeline {
    * Build a RenderNode tree from a RedNode tree.
    */
   private buildRenderTree(node: RedNode, context: RenderContext): RenderNode {
+    let built = this.buildNode(node, context)
+    // `'build'` hooks see every node as it is built (they were declared and
+    // never run).
+    for (const hook of this.hooks) {
+      if (hook.phase === 'build') built = hook.hook(built, context) ?? built
+    }
+    return built
+  }
+
+  private buildNode(node: RedNode, context: RenderContext): RenderNode {
     // Text nodes
     if (node.kind === 'text') {
       return RenderTree.text(node.text)
@@ -105,10 +115,10 @@ export class RenderPipeline {
       return tagDef.toRenderNode({
         node,
         source: context.source,
-        visitChildren: (n) => {
-          const r = this.buildRenderTree(n, context)
-          return RenderTree.toHTML(r)
-        },
+        // The CHILDREN of `n`: the canonical `ctx.visitChildren(ctx.node)`
+        // used to build `n` itself, call this handler again, and recurse
+        // until the stack ran out.
+        visitChildren: (n) => n.children.map(c => RenderTree.toHTML(this.buildRenderTree(c, context))).join(''),
         renderChild: (n) => this.buildRenderTree(n, context),
       })
     }

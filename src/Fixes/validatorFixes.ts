@@ -14,7 +14,8 @@
 
 import type { Diagnostic, FixOperation } from '../Types/diagnostics'
 import {
-  registerCodeFix,
+  defineBuiltinCodeFix,
+  resetCodeFixes,
   type CodeFixMeta,
 } from './CodeFixRegistry'
 
@@ -99,6 +100,9 @@ const BUILTIN_FIXES: BuiltinFix[] = [
     code: 'unclosed-tag',
     meta: {
       isAutomatic: true,
+      // Tags nested in each other and left open together all close at one
+      // offset: one insertion, innermost closer first (`[/i][/b]`).
+      mergeInsertions: 'innermost-first',
       title: (d: Diagnostic) =>
         `Insert [/${(d.data as { name?: string } | undefined)?.name}]`,
     },
@@ -128,7 +132,7 @@ const BUILTIN_FIXES: BuiltinFix[] = [
     meta: { title: 'Prefix the link with https://', isAutomatic: true },
     fix: (data) =>
       typeof data.position === 'number'
-        ? [{ kind: 'insert_text', position: data.position, text: 'https://' }]
+        ? [{ kind: 'insert_text', position: data.position, text: typeof data.text === 'string' ? data.text : 'https://' }]
         : [],
   },
   {
@@ -244,14 +248,20 @@ const BUILTIN_FIXES: BuiltinFix[] = [
   },
 ]
 
+let defined = false
+
 /**
- * Register every built-in validator fix. Overwriting the same codes makes
- * repeated calls idempotent — safe to invoke from the host constructor and
- * from each test file's setup.
+ * Make sure the built-in validator fixes are defined. Cheap after the first
+ * call. Everything that resolves fixes by code on its own (Fix-All, the
+ * lightbulb, `fixForDiagnostic`) calls it, so they work in a process where
+ * nobody registered anything — Fix-All used to answer "nothing to fix" there.
+ * It never touches a runtime override.
  */
-export function registerValidatorFixes(): void {
+export function ensureValidatorFixes(): void {
+  if (defined) return
+  defined = true
   for (const { code, meta, fix } of BUILTIN_FIXES) {
-    registerCodeFix(
+    defineBuiltinCodeFix(
       code,
       (diagnostic) => {
         // One guard here, not per-fix: every `fix` body below dereferences
@@ -264,4 +274,14 @@ export function registerValidatorFixes(): void {
       meta,
     )
   }
+}
+
+/**
+ * Put every built-in validator fix in force: defined, and not overridden or
+ * hidden by a runtime registration. Idempotent — safe from each test file's
+ * setup, where it restores what a test replaced or removed.
+ */
+export function registerValidatorFixes(): void {
+  ensureValidatorFixes()
+  resetCodeFixes(BUILTIN_FIXES.map(f => f.code))
 }

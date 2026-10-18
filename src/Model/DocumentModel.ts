@@ -293,7 +293,25 @@ export class DocumentModel {
    * Used for initial load or when incremental parsing isn't possible.
    */
   rebuild(source: string): void {
+    this.rebuildFor(source)
+  }
+
+  /**
+   * `rebuild`, saying why when an edit led here: an edit the incremental
+   * parser could not splice (or a model built without it) still announces
+   * its `change` and `origin`, so a collaboration layer can tell its own
+   * echo apart whichever path the edit took. `kind` stays `'full_rebuild'`:
+   * the tree was rebuilt, not spliced.
+   */
+  private rebuildFor(source: string, cause?: { change: TextChange; origin: string }): void {
     const oldRoot = this._redRoot
+    // Analysis runs synchronously below; a debounced pass queued by an
+    // earlier edit would only re-announce it.
+    if (this._analyzeTimeout) {
+      clearTimeout(this._analyzeTimeout)
+      this._analyzeTimeout = null
+    }
+    this._pendingAnalyze = null
 
     // Parse via the tree builder (overridable by language-specific parser)
     this._source = source
@@ -333,11 +351,33 @@ export class DocumentModel {
         kind: 'full_rebuild' as const,
         version: this._version,
         source: this._source,
+        ...(cause ? { change: cause.change, origin: cause.origin } : {}),
         timestamp: Date.now(),
       }
       this.defineLazyNodeMatch(event, oldRoot, this._redRoot)
       this.events.emit(event as DocumentEvent)
     }
+    // After `document_changed`, never before: a subscriber hears about the
+    // new document first, then about what the analysis found in it.
+    if (this._options.autoAnalyze) this.emitDiagnosticsUpdated(oldRoot)
+  }
+
+  /** `diagnostics_updated` for the analysis just run, if anyone listens. */
+  private emitDiagnosticsUpdated(oldRoot: RedNode | null): void {
+    if (!this.events.hasListeners('diagnostics_updated') && !this.events.recordHistory) return
+    const diagnosticsEvent = {
+      type: 'diagnostics_updated' as const,
+      version: this._version,
+      source: this._source,
+      diagnostics: this._diagnostics,
+      // How they were arrived at, not what they are: `diagnostics` is the
+      // whole document's on both routes. See `DocumentEvent.analysisScope`.
+      analysisScope: this._lastAnalyzeResult?.scope,
+      analysisWindow: this._lastAnalyzeResult?.window ?? null,
+      timestamp: Date.now()
+    }
+    this.defineLazyNodeMatch(diagnosticsEvent, oldRoot, this._redRoot)
+    this.events.emit(diagnosticsEvent as DocumentEvent)
   }
 
   /**
@@ -550,11 +590,11 @@ export class DocumentModel {
         this.lastReparseTimings = null
         this.lastReparseWindow = null
         // `rebuild` clears the analysis window itself.
-        this.rebuild(this._source)
+        this.rebuildFor(this._source, { change, origin })
         return
       }
     } else {
-      this.rebuild(this._source)
+      this.rebuildFor(this._source, { change, origin })
       return
     }
 
@@ -592,21 +632,7 @@ export class DocumentModel {
 
       // Background Phase 2: Notify UI that semantics are ready — if some UI
       // is listening. `nodeMatch` is lazy here too — see `defineLazyNodeMatch`.
-      if (this.events.hasListeners('diagnostics_updated') || this.events.recordHistory) {
-        const diagnosticsEvent = {
-          type: 'diagnostics_updated' as const,
-          version: this._version,
-          source: this._source,
-          diagnostics: this._diagnostics,
-          // How they were arrived at, not what they are: `diagnostics` is the
-          // whole document's on both routes. See `DocumentEvent.analysisScope`.
-          analysisScope: this._lastAnalyzeResult?.scope,
-          analysisWindow: this._lastAnalyzeResult?.window ?? null,
-          timestamp: Date.now()
-        }
-        this.defineLazyNodeMatch(diagnosticsEvent, oldRoot, this._redRoot)
-        this.events.emit(diagnosticsEvent as DocumentEvent)
-      }
+      this.emitDiagnosticsUpdated(oldRoot)
     }
     this._pendingAnalyze = runPendingAnalyze
     this._analyzeTimeout = setTimeout(runPendingAnalyze, 10)
@@ -688,6 +714,15 @@ export class DocumentModel {
    * `_redRoot` and left `_source`/`_greenRoot` describing the old document,
    * so the next text edit diffed against a source the tree no longer matched.)
    *
+   * Because the result is the EXPORT of the whole tree, the whole document
+   * comes back in canonical BBCode (`[B]` → `[b]`, `\r\n` → `\n`, synthetic
+   * closers), not just the part the operations touched. For edits that must
+   * keep the author's text, write ranges instead (`SurgicalEdit[]` through
+   * `applyTextUpdate`, as `asFixAllTarget` does).
+   *
+   * Only `Transaction.APPLICABLE` kinds are carried out; a transaction with
+   * any other kind is refused whole.
+   *
    * Returns `true` if the document changed.
    */
   transact(operations: Operation[], label?: string): boolean {
@@ -695,8 +730,17 @@ export class DocumentModel {
 
     const before = this._source
     const tx = new Transaction(operations)
+    // All or nothing. A transaction with an operation kind the tree side
+    // does not carry out is refused before anything is touched (it used to
+    // skip it, normalise the document and report success). One that fails
+    // part-way has already changed the live tree, so the tree is rebuilt
+    // from the source it still describes.
+    if (!tx.canApply()) return false
     const applied = tx.apply(this._redRoot)
-    if (!applied) return false
+    if (!applied) {
+      this.rebuild(before)
+      return false
+    }
 
     // The transaction mutated the red tree in place, so even a no-op result
     // must go through export + rebuild to restore red/green coherence.
@@ -705,6 +749,7 @@ export class DocumentModel {
 
     if (after === before) return false
     this.undoManager.push({ before, after }, label ?? tx.getLabel())
+    this.emitSimple('transaction_applied', { operations: tx.operations })
     return true
   }
 
@@ -774,7 +819,14 @@ export class DocumentModel {
     const entry = this.undoManager.undo()
     if (!entry) return false
     this.rebuild(entry.before)
+    this.emitSimple('undo_performed')
     return true
+  }
+
+  /** An event with nothing to it but what happened, if anyone listens. */
+  private emitSimple(type: 'undo_performed' | 'redo_performed' | 'transaction_applied', extra?: object): void {
+    if (!this.events.hasListeners(type) && !this.events.recordHistory) return
+    this.events.emit({ type, version: this._version, source: this._source, ...extra, timestamp: Date.now() } as DocumentEvent)
   }
 
   /**
@@ -784,6 +836,7 @@ export class DocumentModel {
     const entry = this.undoManager.redo()
     if (!entry) return false
     this.rebuild(entry.after)
+    this.emitSimple('redo_performed')
     return true
   }
 

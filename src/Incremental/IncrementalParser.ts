@@ -56,6 +56,7 @@ import { RedNode } from '../Syntax/RedNode'
 import { GreenNode } from '../Syntax/GreenNode'
 import { spliceGreen, withChildrenSpliced, type SpineStep } from '../Syntax/greenEdit'
 import { tagToNodeKind } from '../BBCode/BBCodeToGreenNode'
+import { MAX_NESTING_DEPTH } from '../BBCode/Parser'
 import { BracketDepthIndex } from './BracketIndex'
 import type { TextChange } from './ChangeTracker'
 
@@ -85,6 +86,40 @@ export interface ReparseParseOptions {
    * containers are not, and must not be grouped into paragraphs.
    */
   normalizeParagraphs: boolean
+  /**
+   * How many tags are open around the window — the parser's nesting limit
+   * (`MAX_NESTING_DEPTH`) counts from the document, not from the window.
+   */
+  depth?: number
+}
+
+/** Tags a green node opened (leading delimiter), as opposed to text, newlines and paragraphs. */
+function opensFrame(node: GreenNode): boolean {
+  return node.leadingWidth > 0
+}
+
+/**
+ * Whether tags nest `need` deep anywhere under `nodes` (counting the nodes
+ * themselves). Every nested tag takes at least three characters (`[x]`), so a
+ * subtree narrower than three per level still needed cannot get there and is
+ * never entered: on a real document the walk touches a handful of wide
+ * containers and stops.
+ */
+function nestsAtLeast(nodes: readonly GreenNode[], need: number): boolean {
+  if (need <= 0) return true
+  const stack: [GreenNode, number][] = []
+  for (const n of nodes) stack.push([n, 0])
+  while (stack.length > 0) {
+    const [node, above] = stack.pop()!
+    const depth = above + (opensFrame(node) ? 1 : 0)
+    if (depth >= need) return true
+    const still = need - depth
+    for (const c of node.children) {
+      const child = c as GreenNode
+      if (child.width >= 3 * still) stack.push([child, depth])
+    }
+  }
+  return false
 }
 
 export interface ReparseResult {
@@ -155,6 +190,12 @@ export type FallbackReason =
   | 'document-too-small'
   /** The tree's ranges disagree with the source it is supposed to describe. */
   | 'stale-ranges'
+  /**
+   * The window's tags reach `MAX_NESTING_DEPTH`, before or after the edit.
+   * Past it, openers and their closers are literal text, and which closer
+   * answers which opener can depend on text outside the window.
+   */
+  | 'nesting-limit'
 
 /** Which of `regionIsSelfContained`'s checks turned a window down. */
 export type IsolationFailure =
@@ -1124,8 +1165,24 @@ export class IncrementalParser {
       // Paragraph grouping happens at the root and only there, so the window's
       // content is root content exactly when its parent is the document.
       const isRoot = parent.kind === 'document'
-      const parsedRegion = parseCallback(region, { normalizeParagraphs: isRoot })
+      let depth = opensFrame(parent) ? 1 : 0
+      for (const step of spine) if (opensFrame(step.node)) depth++
+      const parsedRegion = parseCallback(region, { normalizeParagraphs: isRoot, depth })
       tParse += performance.now() - tParse0
+
+      // Near the nesting limit, which closer answers which opener can hang on
+      // text outside the window (see `MAX_NESTING_DEPTH`). Each nested tag
+      // takes at least three characters, so a short window far from the limit
+      // cannot reach it and skips the walk.
+      const headroom = MAX_NESTING_DEPTH - depth
+      if (
+        (windowEnd - windowStart >= 3 * headroom &&
+          nestsAtLeast((parent.children as readonly GreenNode[]).slice(from, to), headroom)) ||
+        (region.length >= 3 * headroom && nestsAtLeast(parsedRegion.children as readonly GreenNode[], headroom))
+      ) {
+        failure ??= { reason: 'nesting-limit' }
+        break
+      }
 
       // Measured on the OLD tree, which is the one the incoming set is a fact
       // about; the guard below is what keeps the answer true of the new one.

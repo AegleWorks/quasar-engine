@@ -1,4 +1,5 @@
 import { MarkdownToken, MarkdownFenceToken, MarkdownContainerToken, scanMarkdown } from './MarkdownLexer';
+import { MAX_NESTING_DEPTH } from '../BBCode/Parser';
 import {
   MarkdownNode,
   MarkdownDocument,
@@ -34,6 +35,8 @@ const BLOCK_BBCODE_TAGS = new Set([
 export class MarkdownParser {
   private tokens: MarkdownToken[];
   private current: number = 0;
+  /** `parseInline` frames on the stack: the inline nesting depth. */
+  private inlineDepth = 0;
 
   constructor(tokens: MarkdownToken[]) {
     this.tokens = tokens;
@@ -518,6 +521,23 @@ export class MarkdownParser {
 
   public parseInline(terminator?: { kind: string, value?: string }): MarkdownNode | null {
     if (this.isAtEnd()) return null;
+    // One `parseInline` frame per level of inline nesting. Past the BBCode
+    // parser's own limit (`MAX_NESTING_DEPTH`), tokens come in as plain text:
+    // every walker over the tree recurses per level, and the recursion here
+    // ran out of stack first — the importer then gave up on the WHOLE
+    // document and kept it as one text leaf.
+    if (this.inlineDepth >= MAX_NESTING_DEPTH) {
+      return { type: 'text', value: this.tokenValue(this.advance()) };
+    }
+    this.inlineDepth++;
+    try {
+      return this.parseInlineAt(terminator);
+    } finally {
+      this.inlineDepth--;
+    }
+  }
+
+  private parseInlineAt(terminator?: { kind: string, value?: string }): MarkdownNode | null {
 
     if (terminator) {
       const peekToken = this.peek();

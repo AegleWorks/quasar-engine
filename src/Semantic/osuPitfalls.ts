@@ -113,19 +113,39 @@ function dist(a: [number, number, number], b: [number, number, number]): number 
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 }
 
-/** The `[color]` siblings around `node` that form one run: only short spacing between them. */
-function colorRun(node: RedNode): RedNode[] {
-  const siblings = node.parent?.children ?? []
-  let current: RedNode[] = []
-  for (const s of siblings) {
-    if (s.kind === 'color') current.push(s)
-    else if (s.kind === 'text' && s.text.length <= 3 && !s.text.includes('\n')) continue
-    else {
-      if (current.includes(node)) return current
-      current = []
-    }
+/** Whether a sibling between two colours keeps them in one run: only short spacing does. */
+function bridgesRun(s: RedNode): boolean {
+  return s.kind === 'text' && s.text.length <= 3 && !s.text.includes('\n')
+}
+
+/**
+ * Up to `reach` members of `node`'s colour run on one side (`step` -1 or +1),
+ * nearest first. The verdict below only ever reads two neighbours each way and
+ * whether the run goes on past them, so it never needs the whole run: reading
+ * it whole, once per member, made a run of k colours cost k² (58% of a full
+ * analysis of the 547 KB fixture).
+ */
+function runSide(node: RedNode, step: -1 | 1, reach: number): RedNode[] {
+  const out: RedNode[] = []
+  const siblings = node.parent?.children
+  if (!siblings) return out
+  for (let j = node.index + step; j >= 0 && j < siblings.length && out.length < reach; j += step) {
+    const s = siblings[j]
+    if (s.kind === 'color') out.push(s)
+    else if (!bridgesRun(s)) break
   }
-  return current.includes(node) ? current : []
+  return out
+}
+
+/**
+ * The colours whose `gradient-outlier` verdict can read `node`: two run
+ * members each way. `node` itself need not be a colour — text typed into a
+ * run splits it, and the colours on either side then see a different run.
+ */
+function runNeighbours(node: RedNode): RedNode[] {
+  const before = runSide(node, -1, 2)
+  const after = runSide(node, 1, 2)
+  return after.length === 0 ? before : before.length === 0 ? after : before.concat(after)
 }
 
 function toHex(c: [number, number, number], like: string): string {
@@ -242,12 +262,18 @@ export function osuPitfallValidators(analyzer: { dialect: BBCodeDialect }): Vali
       code: 'gradient-outlier',
       severity: 'warning',
       kinds: ['color'],
+      neighbours: runNeighbours,
       validate: (node, ctx) => {
-        const run = colorRun(node)
-        if (run.length < 4) return null
-        const i = run.indexOf(node)
+        // The run as far as the verdict reads it: two members each way. The
+        // whole run is at least four long exactly when there is a neighbour on
+        // both sides and a second one on at least one of them.
+        const before = runSide(node, -1, 2)
+        const after = runSide(node, 1, 2)
+        if (before.length === 0 || after.length === 0 || before.length + after.length < 3) return null
+        const run = [...before.reverse(), node, ...after]
+        const i = before.length
         const hex = run.map(hexOf)
-        if (i < 1 || i > run.length - 2 || !hex[i] || !hex[i - 1] || !hex[i + 1]) return null
+        if (!hex[i] || !hex[i - 1] || !hex[i + 1]) return null
         const prev = rgb(hex[i - 1]!)
         const next = rgb(hex[i + 1]!)
         const self = rgb(hex[i]!)

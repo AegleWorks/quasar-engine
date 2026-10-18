@@ -9,21 +9,22 @@
  */
 
 import type { Diagnostic, DiagnosticFix } from '../Types/diagnostics'
-import { getCodeFix, getCodeFixMeta } from './CodeFixRegistry'
-import { registerValidatorFixes } from './validatorFixes'
-import { registerLinterFixes } from '../Linter/Linter'
+import { getCodeFix, getCodeFixMeta, isAutomaticFix } from './CodeFixRegistry'
+import { ensureValidatorFixes } from './validatorFixes'
+import { ensureLinterFixes } from '../Linter/Linter'
 
 /**
  * Resolve the fix for `diagnostic`, or `null` when there is none.
  *
- * Registers the built-in providers first (idempotent), so a caller that never
- * loaded the editor's fix module still gets them. A provider that throws on
+ * Defines the built-in providers first (idempotent, and never over a runtime
+ * override), so a caller that never loaded the editor's fix module still gets
+ * them. A provider that throws on
  * data it does not understand counts as "no fix". Diagnostics from outside the
  * engine that still embed a fix keep working through the fallback.
  */
 export function fixForDiagnostic(diagnostic: Diagnostic): DiagnosticFix | null {
-  registerValidatorFixes()
-  registerLinterFixes()
+  ensureValidatorFixes()
+  ensureLinterFixes()
 
   const provider = getCodeFix(diagnostic.code)
   if (provider) {
@@ -34,7 +35,7 @@ export function fixForDiagnostic(diagnostic: Diagnostic): DiagnosticFix | null {
         const description = typeof meta?.title === 'function'
           ? meta.title(diagnostic)
           : (meta?.title ?? diagnostic.message)
-        return { description, isAutomatic: meta?.isAutomatic ?? false, operations }
+        return { description, isAutomatic: isAutomaticFix(diagnostic), operations }
       }
     } catch {
       // Fall through to the embedded fix, as if there were no provider.

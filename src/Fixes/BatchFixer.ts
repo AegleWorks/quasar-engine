@@ -22,6 +22,8 @@ import type { Diagnostic, FixOperation } from '../Types/diagnostics'
 import type { RedNode } from '../Syntax/RedNode'
 import type { SurgicalEdit } from '../Reconciler/SurgicalReconciler'
 import { getCodeFix } from './CodeFixRegistry'
+import { ensureValidatorFixes } from './validatorFixes'
+import { AcceptedEdits, mergeInsertionRuns, type FixCandidate } from './fixSet'
 import { fixToSurgicalEdits } from '../Edits/fixEdits'
 import { editsConflict } from '../Edits/EditPlan'
 
@@ -47,6 +49,8 @@ export interface BatchResult {
   passes: number
   /** Set when the loop stopped on a cycle or the pass bound */
   cycle?: string
+  /** Set (with `cycle`) when it was the pass bound: fixes were still pending. */
+  passLimit?: true
 }
 
 export interface FixAllOptions {
@@ -87,26 +91,37 @@ function isValidEdit(edit: SurgicalEdit, sourceLength: number): boolean {
 }
 
 /**
- * One pass over the current source: same-key diagnostics through their
- * providers, per-diagnostic atomicity (any internal overlap discards the
- * whole fix), DESC order with cross-fix overlap rejection.
+ * The fixes one pass would apply, as groups: each group is one finding's fix,
+ * or several findings' insertions merged into one (see `mergeInsertionRuns`).
+ * Same-key diagnostics go through their providers, with per-diagnostic
+ * atomicity (any internal overlap discards the whole fix), back to front,
+ * rejecting cross-fix overlaps.
  */
-export function planFixAll(
+export function planFixAllGroups(
   source: string,
-  diagnostics: Diagnostic[],
+  diagnostics: readonly Diagnostic[],
   equivalenceKey: string,
   findNode: (diagnostic: Diagnostic) => RedNode | null = () => null,
-): FixAllPlan {
-  const accepted: SurgicalEdit[] = []
-  let applied = 0
+): { groups: FixCandidate[]; deferred: number } {
+  ensureValidatorFixes()
   let deferred = 0
 
-  const candidates: { edits: SurgicalEdit[]; anchor: number }[] = []
+  const candidates: FixCandidate[] = []
   for (const diagnostic of diagnostics) {
     if (diagnostic.equivalenceKey !== equivalenceKey) continue
     const provider = getCodeFix(diagnostic.code)
     if (!provider) continue
-    const ops = provider(diagnostic, { source, node: findNode(diagnostic) })
+    // `node` resolves only if the provider reads it. No built-in does, and
+    // resolving it eagerly was a tree search per finding.
+    let node: RedNode | null | undefined
+    const context = {
+      source,
+      get node(): RedNode | null {
+        if (node === undefined) node = findNode(diagnostic)
+        return node
+      },
+    }
+    const ops = provider(diagnostic, context)
     if (ops.length === 0) continue
     const edits = toEdits(ops)
     if (!edits.every((edit) => isValidEdit(edit, source.length))) {
@@ -127,21 +142,42 @@ export function planFixAll(
       deferred++
       continue
     }
-    candidates.push({
-      edits,
-      anchor: Math.min(...edits.map((edit) => edit.start)),
-    })
+    candidates.push({ diagnostic, edits, count: 1 })
   }
 
+  const merged = mergeInsertionRuns(candidates)
   // Back-to-front: later offsets win overlaps, earlier ones defer.
-  candidates.sort((a, b) => b.anchor - a.anchor)
-  for (const { edits } of candidates) {
-    if (edits.some((edit) => accepted.some((kept) => editsConflict(kept, edit)))) {
-      deferred++
+  const anchored = merged.map((c) => ({ c, anchor: Math.min(...c.edits.map((edit) => edit.start)) }))
+  anchored.sort((a, b) => b.anchor - a.anchor)
+  const accepted = new AcceptedEdits()
+  const groups: FixCandidate[] = []
+  for (const { c } of anchored) {
+    if (accepted.conflictsAny(c.edits)) {
+      deferred += c.count
       continue
     }
-    accepted.push(...edits)
-    applied++
+    accepted.add(c.edits)
+    groups.push(c)
+  }
+  return { groups, deferred }
+}
+
+/**
+ * One pass over the current source: every fix `planFixAllGroups` accepts,
+ * flattened back-to-front.
+ */
+export function planFixAll(
+  source: string,
+  diagnostics: Diagnostic[],
+  equivalenceKey: string,
+  findNode: (diagnostic: Diagnostic) => RedNode | null = () => null,
+): FixAllPlan {
+  const { groups, deferred } = planFixAllGroups(source, diagnostics, equivalenceKey, findNode)
+  const accepted: SurgicalEdit[] = []
+  let applied = 0
+  for (const g of groups) {
+    accepted.push(...g.edits)
+    applied += g.count
   }
   accepted.sort((a, b) => b.start - a.start || b.end - a.end)
   return { accepted, applied, deferred }
@@ -174,11 +210,8 @@ export function fixAll(
   let cycle: string | undefined
   const seen = new Set<string>([target.getSource()])
 
+  let passLimit = false
   for (;;) {
-    if (passes >= maxPasses) {
-      cycle = `Fix-All stopped after ${maxPasses} passes with fixes still pending`
-      break
-    }
     const source = target.getSource()
     const plan = planFixAll(
       source,
@@ -188,6 +221,13 @@ export function fixAll(
     )
     if (plan.accepted.length === 0) {
       deferred += plan.deferred
+      break
+    }
+    // Checked against a real plan, not before one: a run that finished in
+    // exactly `maxPasses` passes has nothing pending and must not say so.
+    if (passes >= maxPasses) {
+      cycle = `Fix-All stopped after ${maxPasses} passes with fixes still pending`
+      passLimit = true
       break
     }
     target.transact(plan.accepted)
@@ -202,7 +242,8 @@ export function fixAll(
     seen.add(next)
   }
 
-  return cycle === undefined ? { applied, deferred, passes } : { applied, deferred, passes, cycle }
+  if (cycle === undefined) return { applied, deferred, passes }
+  return passLimit ? { applied, deferred, passes, cycle, passLimit: true } : { applied, deferred, passes, cycle }
 }
 
 /**

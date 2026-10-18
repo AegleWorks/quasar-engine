@@ -336,12 +336,13 @@ export function applyOsuPairing(tokens: readonly BBCodeToken[], source: string):
   // everything else — code's protection is already free, see module doc).
   sealImagemapProtecting(tokens, source, caseOk, forced)
 
+  let index: TokenIndex | undefined
   for (const tag of Object.keys(OSU_FAMILY)) {
     const family = OSU_FAMILY[tag]
     switch (family.kind) {
       case 'lazy':
         if (tag === 'imagemap') continue // already handled above
-        sealLazy(tag, family, tokens, source, caseOk, forced)
+        sealLazy(tag, family, tokens, index ??= indexTokens(tokens), caseOk, forced)
         break
       case 'rawBlock':
         sealRawBlock(tag, family.dotall, tokens, source, caseOk, forced)
@@ -382,6 +383,12 @@ function sealImagemapProtecting(
   caseOk: boolean[],
   forced: boolean[],
 ): void {
+  const closers: number[] = []
+  for (let j = 0; j < tokens.length; j++) {
+    const t = tokens[j]
+    if (t.kind === 'close' && t.tag === 'imagemap' && caseOk[j]) closers.push(j)
+  }
+  let nextCloser = 0
   let cursor = 0
   while (cursor < tokens.length) {
     let openIdx = -1
@@ -394,11 +401,10 @@ function sealImagemapProtecting(
     }
     if (openIdx === -1) break
 
-    let closeIdx = -1
-    for (let j = openIdx + 1; j < tokens.length; j++) {
-      const t = tokens[j]
-      if (t.kind === 'close' && t.tag === 'imagemap' && caseOk[j]) { closeIdx = j; break }
-    }
+    // The nearest closer after the opener, by a pointer that only moves
+    // forward (openers come in document order): see `sealLazy`.
+    while (nextCloser < closers.length && closers[nextCloser] <= openIdx) nextCloser++
+    const closeIdx = nextCloser < closers.length ? closers[nextCloser] : -1
     if (closeIdx === -1) { forced[openIdx] = true; cursor = openIdx + 1; continue }
 
     const open = tokens[openIdx]
@@ -414,11 +420,39 @@ function sealImagemapProtecting(
 
 // ─── lazy family ────────────────────────────────────────────────────────
 
+/**
+ * Where each tag's tokens are, and how many newlines precede each token:
+ * built once per pairing and shared by every lazy pass, so a pass costs the
+ * occurrences of its own tag, not a scan of the whole token list per tag.
+ */
+interface TokenIndex {
+  openers: ReadonlyMap<string, readonly number[]>
+  closers: ReadonlyMap<string, readonly number[]>
+  /** Newline tokens before index i (no pass ever demotes a newline). */
+  newlinesBefore: Int32Array
+}
+
+function indexTokens(tokens: readonly BBCodeToken[]): TokenIndex {
+  const openers = new Map<string, number[]>()
+  const closers = new Map<string, number[]>()
+  const newlinesBefore = new Int32Array(tokens.length + 1)
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    newlinesBefore[i + 1] = newlinesBefore[i] + (t.kind === 'newline' ? 1 : 0)
+    if (t.kind !== 'open' && t.kind !== 'close') continue
+    const by = t.kind === 'open' ? openers : closers
+    const list = by.get(t.tag)
+    if (list) list.push(i)
+    else by.set(t.tag, [i])
+  }
+  return { openers, closers, newlinesBefore }
+}
+
 function sealLazy(
   tag: string,
   family: LazyFamily,
   tokens: readonly BBCodeToken[],
-  source: string,
+  index: TokenIndex,
   caseOk: boolean[],
   forced: boolean[],
 ): void {
@@ -429,45 +463,40 @@ function sealLazy(
   // never touched by this tag's pass at all and stays literal — see the
   // sweep below.
   const consumedClose = new Set<number>()
+  const openers = index.openers.get(tag) ?? []
+  const closers = index.closers.get(tag) ?? []
 
-  let cursor = 0
-  while (cursor < tokens.length) {
-    let openIdx = -1
-    for (let i = cursor; i < tokens.length; i++) {
-      const t = tokens[i]
-      if (forced[i] || t.kind !== 'open' || t.tag !== tag) continue
-      if (!caseOk[i]) { forced[i] = true; continue }
-      if (family.valuePattern) {
-        const raw = t.kind === 'open' ? t.attrs : ''
-        const value = raw.startsWith('=') ? raw.slice(1) : raw
-        if (!family.valuePattern.test(value)) { forced[i] = true; continue }
-      }
-      openIdx = i
-      break
-    }
-    if (openIdx === -1) break
-
-    let closeIdx = -1
-    let crossedNewline = false
-    for (let j = openIdx + 1; j < tokens.length; j++) {
-      const t = tokens[j]
-      if (forced[j]) continue
-      if (!family.dotall && t.kind === 'newline') crossedNewline = true
-      if (t.kind === 'close' && t.tag === tag) {
-        if (!caseOk[j]) continue
-        if (!family.dotall && crossedNewline) break
-        closeIdx = j
-        break
-      }
+  // Openers are met in document order and nothing below demotes a closer
+  // before the sweep, so "the nearest closer after this opener" is a pointer
+  // that only moves forward. Scanning ahead for it from every opener instead
+  // made n unclosed openers cost n² — 10 s for 64 000 `[b]`.
+  let nextOpener = 0
+  let nextCloser = 0
+  while (nextOpener < openers.length) {
+    const openIdx = openers[nextOpener++]
+    if (forced[openIdx]) continue
+    const t = tokens[openIdx] as Extract<BBCodeToken, { kind: 'open' }>
+    if (!caseOk[openIdx]) { forced[openIdx] = true; continue }
+    if (family.valuePattern) {
+      const raw = t.attrs
+      const value = raw.startsWith('=') ? raw.slice(1) : raw
+      if (!family.valuePattern.test(value)) { forced[openIdx] = true; continue }
     }
 
-    if (closeIdx === -1) { forced[openIdx] = true; cursor = openIdx + 1; continue }
+    while (
+      nextCloser < closers.length &&
+      (closers[nextCloser] <= openIdx || forced[closers[nextCloser]] || !caseOk[closers[nextCloser]])
+    ) nextCloser++
+    let closeIdx = nextCloser < closers.length ? closers[nextCloser] : -1
+    // Without `/s` the lazy `.*?` stops at the first newline: a closer past
+    // one is out of this opener's reach.
+    if (closeIdx !== -1 && !family.dotall && index.newlinesBefore[closeIdx] > index.newlinesBefore[openIdx + 1]) closeIdx = -1
 
-    const open = tokens[openIdx]
+    if (closeIdx === -1) { forced[openIdx] = true; continue }
+
     const close = tokens[closeIdx]
-    if (!family.allowEmpty && close.start === open.end) {
+    if (!family.allowEmpty && close.start === t.end) {
       forced[openIdx] = true
-      cursor = openIdx + 1
       continue
     }
 
@@ -475,12 +504,9 @@ function sealLazy(
     // itself become a tag (osu! non-nesting). A same-tag CLOSER inside is
     // already an orphan this module now forces to text on its own — see the
     // sweep below and module doc's `lazy` section.
-    for (let k = openIdx + 1; k < closeIdx; k++) {
-      const t = tokens[k]
-      if (t.kind === 'open' && t.tag === tag) forced[k] = true
-    }
+    while (nextOpener < openers.length && openers[nextOpener] < closeIdx) forced[openers[nextOpener++]] = true
     consumedClose.add(closeIdx)
-    cursor = closeIdx + 1
+    nextCloser++
   }
 
   // Sweep: any remaining un-decided close token of this tag — wrong case, OR
@@ -497,11 +523,8 @@ function sealLazy(
   // keeps that decision where the actual sealing contract lives, so every
   // consumer (div-count crossing, the plain literal-text fallback, …) sees
   // the same, correct set of real tokens.
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]
-    if (!forced[i] && t.kind === 'close' && t.tag === tag && (!caseOk[i] || !consumedClose.has(i))) {
-      forced[i] = true
-    }
+  for (const i of closers) {
+    if (!forced[i] && (!caseOk[i] || !consumedClose.has(i))) forced[i] = true
   }
 }
 

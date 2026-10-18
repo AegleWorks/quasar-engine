@@ -11,7 +11,8 @@
  */
 
 import { RedNode, NO_DIAGNOSTICS } from '../Syntax/RedNode'
-import { getBBCodeTagNames, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { getBBCodeTagNames, tagToNodeKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { MAX_NESTING_DEPTH } from '../BBCode/Parser'
 import type { NodeKind } from '../Types/core'
 import type { Range } from '../Types/tokens'
 import type {
@@ -34,6 +35,7 @@ import {
 import { nodeAttrValue } from '../Syntax/nodeAttr'
 import { maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { osuPitfallValidators } from './osuPitfalls'
+import { CROSSABLE_DIV_KINDS } from './osu/newlineRules'
 
 function findTokenReferences(node: RedNode): string[] {
   const tokens = new Set<string>()
@@ -172,6 +174,15 @@ export interface Validator {
    * treated the same way, at runtime.
    */
   scope?: 'node' | 'document'
+  /**
+   * For a `'node'`-scoped verdict that also reads a few SIBLINGS (a colour
+   * between its neighbours in a run): the siblings of `node` whose verdict
+   * may read it. The window pass calls it for the first and the last child
+   * it re-validates under each parent, and re-validates what it returns, so
+   * an edit next to a run still refreshes the verdicts it can reach. Return
+   * siblings only, and only a handful — or declare `'document'` scope.
+   */
+  neighbours?(node: RedNode): Iterable<RedNode>
   /** Validate a node. Return diagnostics or null */
   validate(node: RedNode, context: AnalyzerContext): Diagnostic | Diagnostic[] | null
 }
@@ -354,6 +365,24 @@ export function isUnclosedTag(node: RedNode, source: string): boolean {
   if (NO_CLOSING_TAG_EXPECTED.has(node.kind)) return false
   const range = node.range
   return isUnclosedSpan(range.start, range.end, source)
+}
+
+/**
+ * Whether an unclosed raw block (`[code]`, `[c]`) inside `node` ends where
+ * `node` does — down its last children, the only place one can. Text inserted
+ * at that end lands inside the raw block, as literal code.
+ */
+function unclosedRawEndsWith(node: RedNode, source: string): boolean {
+  const end = node.range.end
+  let cur = node
+  for (;;) {
+    const kids = cur.children
+    if (kids.length === 0) return false
+    const last = kids[kids.length - 1]
+    if (last.range.end !== end) return false
+    if ((last.kind === 'code' || last.kind === 'inline_code') && isUnclosedTag(last, source)) return true
+    cur = last
+  }
 }
 
 /**
@@ -580,6 +609,39 @@ function collectCandidatesAt(
   }
 }
 
+/** Push onto a max-heap of numbers. */
+function heapPush(heap: number[], value: number): void {
+  let i = heap.length
+  heap.push(value)
+  while (i > 0) {
+    const parent = (i - 1) >> 1
+    if (heap[parent] >= value) break
+    heap[i] = heap[parent]
+    i = parent
+  }
+  heap[i] = value
+}
+
+/** Pop the largest number off a max-heap (not empty). */
+function heapPop(heap: number[]): number {
+  const top = heap[0]
+  const last = heap.pop()!
+  if (heap.length > 0) {
+    let i = 0
+    for (;;) {
+      const l = 2 * i + 1
+      if (l >= heap.length) break
+      const r = l + 1
+      const c = r < heap.length && heap[r] > heap[l] ? r : l
+      if (heap[c] <= last) break
+      heap[i] = heap[c]
+      i = c
+    }
+    heap[i] = last
+  }
+  return top
+}
+
 /** Pre-order over the document: by start, outer node first at a tie. */
 function byDocumentOrder(a: { start: number; end: number }, b: { start: number; end: number }): number {
   return a.start - b.start || b.end - a.end
@@ -607,29 +669,39 @@ function pairCrossings(openers: OpenerCandidate[], closers: CloserCandidate[]): 
   const crossings = new Map<string, CrossedTags>()
   if (openers.length === 0 || closers.length === 0) return crossings
 
-  const byTag = new Map<string, OpenerCandidate[]>()
-  for (const opener of openers) {
-    const list = byTag.get(opener.tag)
-    if (list) list.push(opener)
-    else byTag.set(opener.tag, [opener])
+  // Per tag: the openers in pre-order (`order`), the same openers by end
+  // (`byEnd`), and a max-heap of the ones already closed by the closer being
+  // read, keyed by pre-order. A closer claims the latest unclaimed opener
+  // that had closed before it — the heap's top. Searching the pre-order list
+  // backwards for it, as this used to, skipped every opener still open at the
+  // closer, so k crossings of one tag cost k²: a second for 16 000 of them,
+  // on every keystroke's window pass.
+  interface TagPairing { byEnd: number[]; order: OpenerCandidate[]; next: number; heap: number[] }
+  // Only tags some stranded closer names: an auto-closed opener of any other
+  // tag can never be claimed, and there are usually far more of those.
+  const byTag = new Map<string, TagPairing>()
+  for (const closer of closers) {
+    if (!byTag.has(closer.tag)) byTag.set(closer.tag, { byEnd: [], order: [], next: 0, heap: [] })
+  }
+  for (const opener of openers) byTag.get(opener.tag)?.order.push(opener)
+  for (const p of byTag.values()) {
+    p.byEnd = p.order.map((_, i) => i).sort((a, b) => p.order[a].end - p.order[b].end || a - b)
   }
 
   for (const closer of closers) {
-    const candidates = byTag.get(closer.tag)
-    if (candidates === undefined) continue
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const opener = candidates[i]
-      // A closer cannot belong to a frame that was still open when it arrived,
-      // nor to one another closer already claimed.
-      if (opener.end > closer.start) continue
-      if (crossings.has(opener.node.id)) continue
-      crossings.set(opener.node.id, {
-        tag: closer.tag,
-        at: opener.end,
-        closer: { start: closer.start, end: closer.end },
-      })
-      break
+    const p = byTag.get(closer.tag)
+    if (p === undefined) continue
+    // A closer cannot belong to a frame that was still open when it arrived.
+    while (p.next < p.byEnd.length && p.order[p.byEnd[p.next]].end <= closer.start) {
+      heapPush(p.heap, p.byEnd[p.next++])
     }
+    if (p.heap.length === 0) continue
+    const opener = p.order[heapPop(p.heap)]
+    crossings.set(opener.node.id, {
+      tag: closer.tag,
+      at: opener.end,
+      closer: { start: closer.start, end: closer.end },
+    })
   }
 
   return crossings
@@ -897,6 +969,40 @@ const MAX_QUOTE_DEPTH = 3
 /** Formatting kinds whose value (`=90`, `=#fff`) paints nothing without content. */
 const ATTR_ONLY_EMPTY_KINDS = new Set<NodeKind>(['font_size', 'color'])
 
+/**
+ * Kinds that render nothing a reader can see when they hold nothing, so
+ * deleting them empty is render-neutral and safe for Fix-All. Deny by
+ * default: a kind not listed keeps a manual fix. Left out on purpose:
+ * `spoiler` (an empty one is a visible dark chip), the media kinds (an empty
+ * `[img]` shows the broken-media placeholder), every block, container and
+ * `list_item` (header, bullet or line break).
+ */
+const INVISIBLE_WHEN_EMPTY = new Set<NodeKind>([
+  'bold', 'italic', 'underline', 'strikethrough', 'color', 'font_size', 'font', 'url',
+])
+
+function isLineBreakNode(node: RedNode | null): boolean {
+  return node === null || node.kind === 'spacing' || node.kind === 'empty_line'
+}
+
+/**
+ * Whether deleting this empty element leaves the page as it was — what an
+ * automatic `empty-tag` fix promises. Three things must hold:
+ *
+ * - its kind paints nothing when empty (`INVISIBLE_WHEN_EMPTY`);
+ * - it has its own closer: an empty `[size=85]` shut by a crossing
+ *   `[/color]` has a `[/size]` waiting further on, which deleting the opener
+ *   would turn into visible text;
+ * - it is not alone on its line: `\n[size=60][/size]\n` holds a short line
+ *   of its own, and without it the two newlines become a full blank line.
+ *
+ * Both of the last two were found on the real corpus (`docs/ai/examples/3`).
+ */
+function emptyTagDeletesInvisibly(node: RedNode): boolean {
+  if (!INVISIBLE_WHEN_EMPTY.has(node.kind as NodeKind) || node.green.trailingWidth === 0) return false
+  return !(isLineBreakNode(node.previousSibling) && isLineBreakNode(node.nextSibling))
+}
+
 const SELF_NESTING_REDUNDANT = new Set<NodeKind>([
   'bold', 'italic', 'underline', 'strikethrough',
 ])
@@ -953,6 +1059,12 @@ function openingTagRange(node: RedNode, source: string): { start: number; end: n
   const close = source.indexOf(']', node.range.start)
   if (close < 0 || close >= node.range.end) return node.range
   return { start: node.range.start, end: close + 1 }
+}
+
+/** Whether the opener carries a value: `[url=…]`, not `[url]`. */
+function openerHasValue(node: RedNode, source: string): boolean {
+  const lead = node.green.leadingWidth
+  return lead > 0 && source.slice(node.range.start, node.range.start + lead).includes('=')
 }
 
 function hrefRange(node: RedNode, source: string, href: string): { start: number; end: number } {
@@ -1109,11 +1221,66 @@ function shiftRange(range: Range | null, delta: number): Range | null {
 }
 
 /**
+ * Codes whose `data` this module produces, so whose offsets it knows how to
+ * move: source offsets live only under the keys below. A code outside this
+ * set (a plugin validator's) has a `data` shape nobody here knows; its node is
+ * re-validated instead of guessed at (see `analyzeWindow`, step 4).
+ */
+const SHIFTABLE_DATA_CODES: ReadonlySet<string> = new Set([
+  'box-missing-equals', 'collapsible-gradient', 'crossed-tags', 'deprecated-tag', 'empty-link',
+  'empty-tag', 'gradient-outlier', 'invalid-url-protocol', 'max-quote-depth', 'missing-url-protocol', 'nested-structure', 'nested-tags-in-code',
+  'nesting-too-deep', 'orphan-closing-tag', 'osu-nested-alignment', 'osu-titled-spoilerbox',
+  'osu-unsupported-nesting', 'redundant-nesting', 'unclosed-tag', 'unicode-url', 'unknown-tag',
+  'unresolved-token', 'url-markdown-link',
+])
+/** `data` keys holding one source offset. */
+const DATA_OFFSET_KEYS = ['position', 'at'] as const
+/** `data` keys holding a source span `{ start, end }` (or null). */
+const DATA_SPAN_KEYS = ['range', 'openRange', 'closeRange', 'openerName', 'closerName', 'closerRange', 'open', 'close'] as const
+
+function shiftSpan<T extends { start: number; end: number }>(span: T, delta: number): T {
+  return { ...span, start: span.start + delta, end: span.end + delta }
+}
+
+/**
+ * A built-in diagnostic's `data` with every source offset moved by `delta`.
+ *
+ * The fixes are not on the diagnostic: the registry's providers rebuild them
+ * from `data` (`Fixes/validatorFixes.ts`). Moving `range` and leaving `data`
+ * where the last full pass put it made every quick fix and Fix-All after a
+ * window pass edit the offsets of a document that no longer existed.
+ */
+function shiftData(data: unknown, delta: number): unknown {
+  if (data === null || typeof data !== 'object') return data
+  const src = data as Record<string, unknown>
+  const out: Record<string, unknown> = { ...src }
+  for (const key of DATA_OFFSET_KEYS) {
+    if (typeof src[key] === 'number') out[key] = (src[key] as number) + delta
+  }
+  for (const key of DATA_SPAN_KEYS) {
+    const span = src[key] as { start?: unknown; end?: unknown } | null | undefined
+    if (span && typeof span.start === 'number' && typeof span.end === 'number') {
+      out[key] = shiftSpan(span as { start: number; end: number }, delta)
+    }
+  }
+  if (Array.isArray(src.edits)) {
+    out.edits = src.edits.map(e => (e && typeof e.start === 'number' && typeof e.end === 'number' ? shiftSpan(e, delta) : e))
+  }
+  return out
+}
+
+/** Whether `shiftDiagnostic` can move this diagnostic without re-validating its node. */
+function isShiftable(diagnostic: Diagnostic): boolean {
+  return diagnostic.data === undefined || SHIFTABLE_DATA_CODES.has(diagnostic.code)
+}
+
+/**
  * The same diagnostic, `delta` characters further on. A copy, not a
  * mutation: the previous collection may still be in a subscriber's hands.
  */
 function shiftDiagnostic(diagnostic: Diagnostic, delta: number): Diagnostic {
   const shifted: Diagnostic = { ...diagnostic, range: shiftRange(diagnostic.range, delta) }
+  if (diagnostic.data !== undefined) shifted.data = shiftData(diagnostic.data, delta)
   if (diagnostic.related !== undefined) {
     shifted.related = diagnostic.related.map(r => ({ ...r, range: shiftRange(r.range, delta) }))
   }
@@ -1507,6 +1674,29 @@ export class SemanticAnalyzer {
     for (const [node, shift] of affectedGradients) {
       if (!sameGradient(old.gradients.get(node.id), maps.gradients.get(node.id), shift)) revalidate(node)
     }
+    // Sibling-reading verdicts next to the window (see `Validator.neighbours`).
+    const reachers: Validator[] = []
+    for (const validator of this.validators.values()) if (validator.neighbours) reachers.push(validator)
+    if (reachers.length > 0) {
+      // The children of a parent that the window touches are contiguous, and
+      // every one of them is re-validated already; what may change outside
+      // them is within reach of the first or the last. Pre-order meets a
+      // parent's children in index order, so the last one met is the last.
+      const edges = new Map<RedNode, [RedNode, RedNode]>()
+      for (let i = 0; i < visited.length; i++) {
+        const parent = visited[i].parent
+        if (parent === null) continue
+        const edge = edges.get(parent)
+        if (edge) edge[1] = visited[i]
+        else edges.set(parent, [visited[i], visited[i]])
+      }
+      for (const [first, last] of edges.values()) {
+        for (const validator of reachers) {
+          for (const n of validator.neighbours!(first)) revalidate(n)
+          if (last !== first) for (const n of validator.neighbours!(last)) revalidate(n)
+        }
+      }
+    }
 
     // ── 4. Kept diagnostics follow their nodes ──
     const bearing: RedNode[] = []
@@ -1514,6 +1704,12 @@ export class SemanticAnalyzer {
       const node = snapshot.diagNodes[i]
       if (visitedSet.has(node) || extraSet.has(node) || !isAttached(node, root)) continue
       const delta = node.range.start - snapshot.diagStarts[i]
+      if (delta !== 0 && !node.diagnostics.every(isShiftable)) {
+        // A `data` shape this module does not know: validate the node again
+        // rather than move offsets it cannot find.
+        revalidate(node)
+        continue
+      }
       if (delta !== 0) {
         const shifted = new Array<Diagnostic>(node.diagnostics.length)
         for (let k = 0; k < shifted.length; k++) shifted[k] = shiftDiagnostic(node.diagnostics[k], delta)
@@ -1668,6 +1864,9 @@ export class SemanticAnalyzer {
 
         const unknown = ctx.unknownTags.get(node.id)
         if (unknown === undefined) return null
+        // A tag this dialect knows is only literal for being nested too deep;
+        // `nesting-too-deep` says so, and "unknown" would be wrong.
+        if (tagToNodeKind(unknown.tag, this.dialect) !== 'custom') return null
 
         const suggestion = suggestTag(unknown.tag, getBBCodeTagNames(this.dialect))
 
@@ -1785,6 +1984,13 @@ export class SemanticAnalyzer {
         // fix — half a rename leaves an orphan `[/strike]` in the document.
         const openRange = { start: node.range.start + 1, end: node.range.start + 1 + spelling.length }
         const closeRange = closingTagNameRange(node, ctx.source, spelling)
+        // Renaming re-pairs closers when the new name's closer is already
+        // in the body (`[strike]a[/s]b[/strike]`: `[s]` would close at
+        // `[/s]`) or when there is no closer of its own to rename (`[strike]x`
+        // becomes `[s]x`, and an unclosed-tag fix in the same batch writes
+        // `[/strike]`, an orphan). Still offered, never batched.
+        const body = ctx.source.slice(node.range.start, closeRange ? closeRange.start : node.range.end).toLowerCase()
+        const repairs = closeRange !== null && !body.includes(`[/${found.replacement.toLowerCase()}]`)
 
         return createDiagnostic(
           'deprecated-tag',
@@ -1793,7 +1999,7 @@ export class SemanticAnalyzer {
           {
             nodeId: node.id,
             nodeKind: node.kind,
-            range: node.range,
+            range: openingTagRange(node, ctx.source),
             tags: ['deprecated'],
             data: {
               spelling,
@@ -1801,7 +2007,7 @@ export class SemanticAnalyzer {
               openRange,
               closeRange,
             },
-            equivalenceKey: 'deprecated-tag',
+            ...(repairs ? { equivalenceKey: 'deprecated-tag' } : {}),
           },
         )
       },
@@ -1842,11 +2048,12 @@ export class SemanticAnalyzer {
               nodeKind: node.kind,
               range: node.range,
               tags: ['unnecessary'],
-              // An empty tag renders nothing, so deleting it cannot change the
-              // output: the safest automatic repair. The provider deletes this
-              // range.
+              // The provider deletes this range. Automatic (Fix-All) only for
+              // kinds that paint nothing when empty: an empty `[box]` still
+              // shows its header, an empty `[*]` its bullet, an empty
+              // `[centre]` a line break — deleting those changes the page.
               data: { range: { start: node.range.start, end: node.range.end } },
-              equivalenceKey: 'empty-tag',
+              ...(emptyTagDeletesInvisibly(node) ? { equivalenceKey: 'empty-tag' } : {}),
             },
           )
         }
@@ -1875,6 +2082,19 @@ export class SemanticAnalyzer {
         // writes into the source the decision the tree already took. That is
         // why it is safe: it changes no render, it removes the divergence
         // between what the author wrote and what is shown.
+        //
+        // Except while an unclosed raw block (`[code]`, `[c]`) ends at the
+        // same place: anything inserted there lands INSIDE it, as literal
+        // code text. No position then, so no fix; once the raw block's own
+        // closer is in, the next analysis offers this one after it.
+        const blocked = unclosedRawEndsWith(node, ctx.source)
+        // An alignment or notice block shut by an enclosing closer, with a
+        // newline right before that closer: osu! swallows that newline for
+        // the closer that is there, and `[/centre]` written in front of it
+        // swallows differently — the page changes (36 of 624 measured
+        // shapes, and `docs/ai/NyuPenyu.sane.bbcode`). Offered, not batched.
+        const end = node.range.end
+        const neutral = !(CROSSABLE_DIV_KINDS.has(node.kind) && end < ctx.source.length && ctx.source.charCodeAt(end - 1) === 10)
         return createDiagnostic(
           'unclosed-tag',
           `Missing [/${name}] — the tag was closed automatically`,
@@ -1882,10 +2102,47 @@ export class SemanticAnalyzer {
           {
             nodeId: node.id,
             nodeKind: node.kind,
-            range: node.range,
-            data: { name, position: node.range.end },
-            equivalenceKey: 'unclosed-tag',
+            // The opener, not the element: an unclosed tag's element runs to
+            // wherever the parser shut it — 27 915 characters on the corpus —
+            // and an underline that long says nothing about where to look.
+            // Where it was shut is the related span.
+            range: openingTagRange(node, ctx.source),
+            related: [{
+              message: `Closed automatically here`,
+              range: { start: node.range.end, end: node.range.end },
+              nodeId: null,
+            }],
+            data: blocked ? { name } : { name, position: node.range.end },
+            ...(neutral ? { equivalenceKey: 'unclosed-tag' } : {}),
           },
+        )
+      },
+    })
+
+    // Nesting limit validator
+    //
+    // Past `MAX_NESTING_DEPTH` the parser keeps openers, and the closers that
+    // answer them, as literal text (see `Parser.ts`). Nothing else would tell
+    // the author why `[b]` suddenly shows on the page.
+    this.register({
+      code: 'nesting-too-deep',
+      severity: 'warning',
+      kinds: ['text'],
+      validate: (node) => {
+        const text = node.text
+        if (text.length < 3 || text.charCodeAt(0) !== 0x5b /* [ */ || text.charCodeAt(1) === 0x2f /* / */) return null
+        if (text.charCodeAt(text.length - 1) !== 0x5d /* ] */) return null
+        OPENING_TAG_RE.lastIndex = 0
+        const name = OPENING_TAG_RE.exec(text)?.[1]?.toLowerCase()
+        if (!name || tagToNodeKind(name, this.dialect) === 'custom') return null
+        let frames = 0
+        for (let a = node.parent; a !== null; a = a.parent) if (a.green.leadingWidth > 0) frames++
+        if (frames < MAX_NESTING_DEPTH) return null
+        return createDiagnostic(
+          'nesting-too-deep',
+          `Tags nest more than ${MAX_NESTING_DEPTH} deep here: [${name}] and its closer show as text`,
+          'warning',
+          { nodeId: node.id, nodeKind: node.kind, range: node.range },
         )
       },
     })
@@ -1923,7 +2180,7 @@ export class SemanticAnalyzer {
           {
             nodeId: node.id,
             nodeKind: node.kind,
-            range: node.range,
+            range: openingTagRange(node, ctx.source),
             data: {
               tag: crossing.tag,
               at: crossing.at,
@@ -2007,7 +2264,12 @@ export class SemanticAnalyzer {
               // Safe to batch: the provider only ever adds a scheme in front
               // of a destination that has none, so it cannot collide with
               // another finding's range and cannot change how the link renders.
-              data: { position: range.start },
+              // When the address is the label (`[url]www.x[/url]`), prefixing
+              // it would change the visible text: the scheme goes into an
+              // attribute instead, `[url=https://www.x]www.x[/url]`.
+              data: openerHasValue(node, ctx.source)
+                ? { position: range.start }
+                : { position: node.range.start + node.green.leadingWidth - 1, text: `=https://${href}` },
               equivalenceKey: 'missing-url-protocol',
             },
           )

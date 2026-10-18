@@ -184,12 +184,14 @@ export {
   getCodeFix,
   getCodeFixMeta,
   unregisterCodeFix,
+  isAutomaticFix,
   type CodeFixContext,
   type CodeFixProvider,
   type CodeFixMeta,
 } from './Fixes/CodeFixRegistry'
 export {
   planFixAll,
+  planFixAllGroups,
   fixAll,
   fixAllDocuments,
   UnimplementedError,
@@ -215,7 +217,8 @@ export {
   type RefactoringProvider,
 } from './Fixes/RefactoringRegistry'
 export { combineBoldsProvider } from './Fixes/refactorings/combineBolds'
-export { registerValidatorFixes } from './Fixes/validatorFixes'
+export { registerValidatorFixes, ensureValidatorFixes } from './Fixes/validatorFixes'
+export { AcceptedEdits, mergeInsertionRuns, type FixCandidate } from './Fixes/fixSet'
 export { fixForDiagnostic } from './Fixes/fixForDiagnostic'
 
 // ── BBCode Optimizer (edit plan, conflict contract, rules) ──
@@ -224,6 +227,7 @@ export * from './Edits'
 // ── BBCode Bridge ──
 export { BBCodeDocumentModel, renderForumBBCode } from './BBCode/BBCodeDocumentModel'
 export type { BBCodeDocumentModelOptions } from './BBCode/BBCodeDocumentModel'
+export { MAX_NESTING_DEPTH } from './BBCode/Parser'
 export {
   bbBlocksToRedTree,
   bbBlocksToGreenTree,

@@ -8,7 +8,6 @@
  */
 
 import { RedNode } from '../Syntax/RedNode'
-import { GreenNode } from '../Syntax/GreenNode'
 import type { Operation } from '../Types/operations'
 import { createOperationId } from '../Types/operations'
 
@@ -29,11 +28,33 @@ export class Transaction {
   }
 
   /**
+   * The operation kinds `apply` carries out on a red tree. The others
+   * (`set_text`, `update_attributes`, the text-span kinds, `split_node`,
+   * `merge_nodes`) have no tree-side implementation, and a transaction that
+   * holds one is refused whole: it used to skip them and report success.
+   */
+  static readonly APPLICABLE: ReadonlySet<Operation['kind']> = new Set<Operation['kind']>([
+    'insert_node', 'delete_node', 'replace_node', 'move_node',
+  ])
+
+  /** Whether every operation is of a kind `apply` carries out. */
+  canApply(): boolean {
+    return this.operations.every(op => Transaction.APPLICABLE.has(op.kind))
+  }
+
+  /**
    * Apply the transaction to a RedNode tree.
-   * Returns the updated tree or null if application failed.
+   * Returns the updated tree, or null if application failed: an operation
+   * of a kind `apply` does not carry out (nothing is touched then), or one
+   * whose target is missing (the tree may then be partly changed — rebuild
+   * it from its source, as `DocumentModel.transact` does).
    */
   apply(root: RedNode): RedNode | null {
     if (this._applied) return null
+    if (!this.canApply()) {
+      console.warn('[Transaction] Refused: it holds operations apply does not carry out')
+      return null
+    }
     this._applied = true
 
     try {
@@ -107,31 +128,24 @@ export class Transaction {
       case 'move_node':
         this.applyMove(root, operation)
         break
-      case 'update_attributes':
-        // Attributes are stored in metadata; update in place
-        break
-      case 'set_text':
-        this.applySetText(root, operation)
-        break
       default:
-        break
+        throw new Error(`[Transaction] ${operation.kind} is not applied to a tree`)
     }
   }
 
   private applyInsert(root: RedNode, op: Operation & { kind: 'insert_node' }): void {
     const parent = root.findById(op.parentId)
-    if (!parent) return
-    const childNode = new RedNode(
-      new GreenNode(op.node.kind, op.node.text),
-      { kind: op.node.kind },
-    )
-    parent.insertChildAt(Math.min(op.index, parent.children.length), childNode)
+    if (!parent) throw new Error(`[Transaction] insert_node: no parent ${op.parentId}`)
+    // A copy of the whole subtree, metadata included: the node may belong to
+    // another tree, and inserting a bare `new GreenNode(kind, text)` used to
+    // drop its children — `[b]bold[/b]` went in as an empty `[b]`.
+    parent.insertChildAt(Math.min(op.index, parent.children.length), copySubtree(op.node))
   }
 
   private applyDelete(root: RedNode, op: Operation & { kind: 'delete_node' }): void {
     const parent = root.findById(op.parentId)
-    if (!parent) return
-    parent.removeChild(op.nodeId)
+    if (!parent) throw new Error(`[Transaction] delete_node: no parent ${op.parentId}`)
+    if (!parent.removeChild(op.nodeId)) throw new Error(`[Transaction] delete_node: no child ${op.nodeId}`)
   }
 
   private applyReplace(root: RedNode, op: Operation & { kind: 'replace_node' }): void {
@@ -150,7 +164,7 @@ export class Transaction {
     }
 
     const parent = root.findById(op.nodeId)?.parent
-    if (!parent) return
+    if (!parent) throw new Error(`[Transaction] replace_node: no node ${op.nodeId}`)
     
     parent.replaceChild(op.nodeId, newNode)
   }
@@ -158,19 +172,19 @@ export class Transaction {
   private applyMove(root: RedNode, op: Operation & { kind: 'move_node' }): void {
     const fromParent = root.findById(op.fromParentId)
     const toParent = root.findById(op.toParentId)
-    if (!fromParent || !toParent) return
+    if (!fromParent || !toParent) throw new Error('[Transaction] move_node: missing parent')
 
     const node = fromParent.removeChild(op.nodeId)
-    if (node) {
-      toParent.insertChildAt(Math.min(op.toIndex, toParent.children.length), node)
-    }
+    if (!node) throw new Error(`[Transaction] move_node: no child ${op.nodeId}`)
+    toParent.insertChildAt(Math.min(op.toIndex, toParent.children.length), node)
   }
+}
 
-  private applySetText(root: RedNode, op: Operation & { kind: 'set_text' }): void {
-    const node = root.findById(op.nodeId)
-    if (!node) return
-    // Text is stored in GreenNode which is immutable.
-    // For mutable text, we should use the RedNode's text or metadata.
-    node.bumpVersion()
+/** A detached copy of `node` and everything under it, with fresh ids. */
+function copySubtree(node: RedNode): RedNode {
+  const copy = new RedNode(node.green, { kind: node.kind, metadata: node.metadata })
+  if (node.children.length > 0) {
+    copy.initChildren(node.children.map(copySubtree))
   }
+  return copy
 }

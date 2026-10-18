@@ -51,6 +51,29 @@ skipped), but every other invariant holds for them too.
 | Effect transforms return a new tree and leave their input untouched and valid. | `TreeTransformersPurity.test.ts`. |
 | Publishing never depends on presentation: the exporter and the edit rules reach no renderer, directly or through any chain of imports. What osu! swallows or hides comes from one `OsuSemanticModel`, shared by render and export. | `Architecture.test.ts` (transitive import graph). |
 
+## Input limits
+
+| Guarantee | Enforced by |
+|---|---|
+| No input throws: every walker over a tree recurses once per level, so tags nest at most `MAX_NESTING_DEPTH` (256) deep. Past it an opener, and the closer that answers it, stay literal text, with a `nesting-too-deep` warning. Real documents nest 8 deep. The HTML and Markdown importers stop at the same depth. | `Tests/NestingLimit.test.ts` (20 000 levels in seven shapes, every phase; importers). |
+| An incremental reparse near the limit equals a full parse: a window whose tags reach the limit, before or after the edit, is declined (`nesting-limit`). | `Tests/NestingLimit.test.ts` (fuzzed edits around depth 256). |
+| No phase is quadratic in the input on the measured shapes: runs of newlines (render), unclosed tags (osu! pairing), crossed tags (analysis), colour runs (analysis), Fix-All conflicts. | `Tests/OsuNewlineRuns.test.ts`, `Tests/OsuPairingScaling.test.ts`, `scripts/bench` (`scale.*`, log-log exponent). |
+
+## Diagnostics and fixes
+
+| Guarantee | Enforced by |
+|---|---|
+| A window analysis yields what a full analysis would, `data` included — the offsets the fix providers apply. | `Tests/Chars500kAnalysis.test.ts` (fingerprint includes `data`), `Tests/WindowFixData.test.ts`, `Tests/GradientOutlierWindow.test.ts`. |
+| An automatic fix (`isAutomaticFix`: automatic provider AND an `equivalenceKey`) does not change what the reader sees. A finding whose usual repair would — an empty `[box]`, an empty tag alone on its line, a rename that re-pairs closers, a closer written before a newline osu! swallows — keeps a manual fix and stays out of Fix-All. `url-markdown-link` and `unicode-url` change the link on purpose. | `Tests/AutomaticFixesRenderNeutral.test.ts` (every automatic finding on the corpus, plus the shapes that broke it). |
+| Built-in fixes are always defined; a runtime override (`registerCodeFix`, a plugin) sits on top and comes off without disturbing the built-in or another override. | `Tests/AutomaticFixesRenderNeutral.test.ts` (registry). |
+
+## Events and transactions
+
+| Guarantee | Enforced by |
+|---|---|
+| Every edit's `document_changed` carries its `origin` and `change`, spliced or rebuilt; every analysis the model runs on its own is followed by `diagnostics_updated`. | `Tests/EventContract.test.ts`. |
+| `transact` is all or nothing: an operation kind `Transaction` does not carry out is refused untouched, and a failure part-way leaves the document as it was. | `Tests/TransactContract.test.ts`. |
+
 ## Anchors (`src/Anchors/`, docs/11-Anchors-Plan.md)
 
 | Guarantee | Enforced by |

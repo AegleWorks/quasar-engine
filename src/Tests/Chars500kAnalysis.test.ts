@@ -55,6 +55,9 @@ function fingerprint(d: Diagnostic): string {
     range: d.range,
     related: d.related?.map(r => ({ message: r.message, range: r.range })),
     fixes: d.fixes?.map(f => ({ description: f.description, operations: f.operations })),
+    // The registry's fix providers read their offsets from here, so a window
+    // pass that moves `range` but not `data` hands them a stale document.
+    data: d.data,
   })
 }
 
