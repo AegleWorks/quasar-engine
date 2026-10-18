@@ -57,7 +57,7 @@ export type BBCodeExportOptions = {
  * regular ahí dentro construye un `RegExp` por nodo. Había además tres copias
  * idénticas del mismo patrón repartidas por el fichero.
  */
-const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
+const TOKEN_REF_RE = /\$([\p{L}_][\p{L}\p{M}\p{N}_-]*)/gu
 
 /** Sustituye cada `$token` por su valor; deja intacto el que no resuelva. */
 function expandTokenRefs(text: string, resolve: TokenResolverFn): string {

@@ -123,7 +123,7 @@ const OSU_TRAILING_EDGE_RE = new RegExp(`${OSU_EDGE}[\\t ]*$`)
 const BLANK_LINE_RE = /^[\t ]*$/
 
 /** Referencia a un token de diseño dentro de un texto: `$nombre`. */
-const TOKEN_REF_RE = /\$([a-zA-Z_][a-zA-Z0-9_-]*)/g
+const TOKEN_REF_RE = /\$([\p{L}_][\p{L}\p{M}\p{N}_-]*)/gu
 
 export class HTMLRenderer extends Visitor<string> {
   private tokenResolver?: TokenResolverFn
@@ -1398,7 +1398,7 @@ export class HTMLRenderer extends Visitor<string> {
     }
     let title = String(node.metadata?.title ?? nodeAttrValue(node) ?? fallback)
     if (this.tokenResolver) {
-      title = title.replace(/\$([a-zA-Z_][a-zA-Z0-9_-]*)/g, (match, name) => {
+      title = title.replace(/\$([\p{L}_][\p{L}\p{M}\p{N}_-]*)/gu, (match, name) => {
         const resolved = this.tokenResolver!(name) ?? this.tokenResolver!(match)
         return resolved !== undefined ? resolved : match
       })
