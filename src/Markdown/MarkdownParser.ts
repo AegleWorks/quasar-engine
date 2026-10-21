@@ -22,6 +22,32 @@ interface BBCodeTagInfo {
   tokenEndIndex: number;
 }
 
+/**
+ * BBCode tags with no body. `[separator]` is a rule, not a container; waiting
+ * for a `[/separator]` that will never come used to consume the rest of the
+ * document as its children, and an exporter that ignores those children then
+ * deleted everything after the tag.
+ */
+const SELF_CLOSING_BBCODE_TAGS = new Set(['separator', 'br', 'hr'])
+
+/**
+ * Spelling aliases, folded so `[/bold]` answers `[b]` and `[/center]` answers
+ * `[centre]`. Same equivalence `isMatchingCloseTag` applies while parsing.
+ */
+function canonicalBBCodeTag(name: string): string {
+  switch (name.toLowerCase()) {
+    case 'bold': return 'b'
+    case 'italic': return 'i'
+    case 'underline': return 'u'
+    case 'strike':
+    case 'strikethrough': return 's'
+    case 'center': return 'centre'
+    case 'boxw': return 'box'
+    case 'colour': return 'color'
+    default: return name.toLowerCase()
+  }
+}
+
 const BLOCK_BBCODE_TAGS = new Set([
   'box', 'boxw', 'spoilerbox', 'centre', 'center', 'right', 'left', 'align', 'quote', 'notice', 'wnotice', 'code',
   'columns', 'tables', 'row', 'th', 'col', 'glass', 'card', 'neon-box', 'scroll', 'separator', 'list', 'group', 'svg', 'imagemap', 'image',
@@ -36,7 +62,9 @@ export class MarkdownParser {
   private tokens: MarkdownToken[];
   private current: number = 0;
   /** `parseInline` frames on the stack: the inline nesting depth. */
-  private inlineDepth = 0;
+  private inlineDepth = 0
+  /** Last index of each closing tag, built once; see `hasClosingTagAfter`. */
+  private closeIndexByTag: Map<string, number> | null = null;
 
   constructor(tokens: MarkdownToken[]) {
     this.tokens = tokens;
@@ -974,6 +1002,24 @@ export class MarkdownParser {
       return { type: 'code_block', lang: '', value: raw };
     }
 
+    // A tag with no body, or one whose closer the author never wrote, must
+    // not claim the rest of the document. `[separator]` is a rule; an
+    // unmatched `[box]` is a typo. Both become a literal/leaf node and the
+    // parser continues after the opener, so later content survives.
+    const selfClosing = SELF_CLOSING_BBCODE_TAGS.has(t)
+    const hasClose = this.hasClosingTagAfter(t, openTag.tokenEndIndex + 1)
+    if (selfClosing || !hasClose) {
+      const literal = this.literalOpener(openTag)
+      this.current = openTag.tokenEndIndex + 1
+      if (selfClosing) {
+        return this.createBBCodeNode(openTag.tagName, openTag.attrValue, [])
+      }
+      return {
+        type: 'paragraph',
+        children: [{ type: 'text', value: literal }],
+      }
+    }
+
     this.current = openTag.tokenEndIndex + 1;
     this.match('newline');
 
@@ -1046,6 +1092,19 @@ export class MarkdownParser {
       return { type: 'bbcode_tag', tagName: t === 'noparse' ? 'raw' : t, attrValue: openTag.attrValue, children: [{ type: 'text', value: raw }] };
     }
 
+    // Same recovery as the block path: an inline tag with no closer in the
+    // rest of the document is literal text, not a container that eats the
+    // remainder of the document.
+    const selfClosing = SELF_CLOSING_BBCODE_TAGS.has(t)
+    if (selfClosing || !this.hasClosingTagAfter(t, openTag.tokenEndIndex + 1)) {
+      const literal = this.literalOpener(openTag)
+      this.current = openTag.tokenEndIndex + 1
+      if (selfClosing) {
+        return this.createBBCodeNode(openTag.tagName, openTag.attrValue, [])
+      }
+      return { type: 'text', value: literal }
+    }
+
     this.current = openTag.tokenEndIndex + 1;
     const children: MarkdownNode[] = [];
 
@@ -1069,6 +1128,35 @@ export class MarkdownParser {
     }
 
     return this.createBBCodeNode(openTag.tagName, openTag.attrValue, children);
+  }
+
+  /** The opener exactly as the source spelled it, from its tokens. */
+  private literalOpener(openTag: BBCodeTagInfo): string {
+    let raw = ''
+    for (let i = this.current; i <= openTag.tokenEndIndex && i < this.tokens.length; i++) {
+      raw += this.tokenValue(this.tokens[i])
+    }
+    return raw
+  }
+
+  /**
+   * Whether a closer for `tagName` exists after `fromIndex`.
+   *
+   * One index pass for the whole document, then O(1) per opener. A linear
+   * scan per opener is quadratic on a document made of unmatched tags —
+   * exactly the malformed input this check exists to handle.
+   */
+  private hasClosingTagAfter(tagName: string, fromIndex: number): boolean {
+    if (this.closeIndexByTag === null) {
+      const map = new Map<string, number>()
+      for (let i = 0; i < this.tokens.length; i++) {
+        if (this.tokens[i].kind !== 'bracket_open') continue
+        const close = this.peekBBCodeCloseTag(i)
+        if (close) map.set(canonicalBBCodeTag(close.tagName), i)
+      }
+      this.closeIndexByTag = map
+    }
+    return (this.closeIndexByTag.get(canonicalBBCodeTag(tagName)) ?? -1) > fromIndex
   }
 
   private createBBCodeNode(tagName: string, attrValue: string | undefined, children: MarkdownNode[]): MarkdownNode {

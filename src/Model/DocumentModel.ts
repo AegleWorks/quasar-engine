@@ -43,6 +43,8 @@ import { TreeBuilder } from '../Syntax/TreeBuilder'
 import { ArrayTokenStream } from '../Types/tokens'
 import { QueryEngine } from '../Queries/QueryEngine'
 import type { Query, QueryResult } from '../Types/queries'
+import { SourceText } from '../Source/SourceText'
+import type { LineAndCharacter, SourceLine } from '../Source/SourceText'
 import type {
   DocumentNode,
   DocumentChangeEvent,
@@ -141,6 +143,8 @@ function unionSpans(a: SourceSpan | null, b: SourceSpan): SourceSpan {
 export class DocumentModel {
   // ── Core State ──
   private _source: string
+  /** Lazy line index for `_source`; see {@link sourceText}. */
+  private _sourceText: SourceText | null = null
   private _language: string
   private _redRoot: RedNode | null = null
   private _greenRoot: GreenNode | null = null
@@ -161,6 +165,14 @@ export class DocumentModel {
   // ── State ──
   private _diagnostics: DiagnosticCollection | null = null
   private _lastAnalyzeResult: AnalyzeResult | null = null
+  /**
+   * The document `version` the last analysis describes.
+   *
+   * Equal to `version` only until the next edit, which is the memo's first
+   * condition (see {@link analyze}). The window flags cover the rest: an edit
+   * always leaves a pending window or marks the analysis broken.
+   */
+  private _analyzedVersion: number = -1
   /**
    * Source range of the last applied edit — see {@link TextChangeRange}.
    * `null` after a full rebuild, which is not an edit.
@@ -247,6 +259,41 @@ export class DocumentModel {
     return this._language
   }
 
+  /**
+   * The current source as a line-indexed snapshot.
+   *
+   * Rebuilt lazily when `source` changes and kept otherwise, so repeated
+   * `positionAt` calls — one per visible diagnostic in an error panel — scan
+   * the document once, not once each. The index is immutable; holding it after
+   * an edit keeps the old text alive but never lies about the new one, because
+   * a different `source` string produces a different `SourceText`.
+   */
+  get sourceText(): SourceText {
+    if (this._sourceText === null || this._sourceText.text !== this._source) {
+      this._sourceText = new SourceText(this._source)
+    }
+    return this._sourceText
+  }
+
+  /**
+   * Absolute offset → 0-based line and character. See {@link SourceText}.
+   * This is the translation a diagnostic panel, an LSP bridge or a "jump to
+   * line" command needs; the engine stores offsets, never positions.
+   */
+  positionAt(offset: number): LineAndCharacter {
+    return this.sourceText.positionAt(offset)
+  }
+
+  /** 0-based line and character → absolute offset, clamped. */
+  offsetAt(line: number, character: number): number {
+    return this.sourceText.offsetAt(line, character)
+  }
+
+  /** The line containing `offset`, with its text and break offsets. */
+  lineAt(offset: number): SourceLine {
+    return this.sourceText.lineAt(offset)
+  }
+
   get version(): number {
     return this._version
   }
@@ -268,6 +315,9 @@ export class DocumentModel {
    * whether it walked the document or only the edit's window, and `window`
    * carries that span when it did. The diagnostics themselves are on
    * {@link diagnostics}, and are the whole document's on either route.
+   *
+   * A repeat `analyze()` with nothing new to analyse returns that same result
+   * object, `duration` included; see {@link analyze}.
    */
   get lastAnalyze(): AnalyzeResult | null {
     return this._lastAnalyzeResult
@@ -856,10 +906,33 @@ export class DocumentModel {
    * previous pass to build on, the validator set or the token source changed
    * under it, or a validator whose verdicts are not a function of one node
    * (see `Validator.scope`).
+   *
+   * Asking again with nothing new to analyse is free. When the model has not
+   * edited since the last pass and nothing that feeds a verdict changed
+   * (validators, tokens, dialect), this returns the previous result — the same
+   * object, with the duration that pass originally took. It is the same
+   * question about the same document, so there is no second answer to compute.
+   * This is what makes `ensureAnalyzed` and repeated diagnostics reads cheap
+   * on a large document: the first call pays, the rest are a version compare.
+   *
+   * "Unchanged" means unchanged THROUGH THE MODEL. `version` is the identity
+   * every consumer already caches against (the editor's tree cache, the
+   * preview's reconcile); a tree mutated behind the model's back is not
+   * observed here either. Mutate by rebuilding or applying the edit through
+   * the model, not by editing the red tree it handed out.
    */
   analyze(): AnalyzeResult {
     if (!this._redRoot) {
       throw new Error('Cannot analyze: no document loaded')
+    }
+    if (
+      this._lastAnalyzeResult !== null &&
+      this._analyzedVersion === this._version &&
+      this._analysisWindow === null &&
+      !this._analysisWindowBroken &&
+      this.semanticAnalyzer.analysisIsCurrent(this._redRoot, this._source)
+    ) {
+      return this._lastAnalyzeResult
     }
     const window = this._analysisWindowBroken ? null : this._analysisWindow
     const result =
@@ -884,6 +957,7 @@ export class DocumentModel {
       scope: result.scope,
       window: result.window,
     }
+    this._analyzedVersion = this._version
 
     // Attaching diagnostics to nodes used to happen here, and needed an id→node
     // Map of the whole document to do it — a second full walk plus 1736

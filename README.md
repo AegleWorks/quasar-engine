@@ -88,6 +88,7 @@ Measured on a 547 KB document and on the 65-document Miliastry corpus. The metho
 | Typing in prose, 547 KB, per keystroke | 0.30 ms |
 | Random keystrokes, 547 KB, p50 / p90 / p99 | 0.89 / 2.02 / 28.6 ms |
 | Full rebuild, 547 KB | about 55 ms |
+| Repeated `analyze()` with no edit, 547 KB | 0 ms (was 65 ms) |
 
 Prefer `applyChange` when your editor gives you the change. `applyTextUpdate` has to diff the whole text first.
 
@@ -136,6 +137,7 @@ For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](
 | Know what the engine promises | [9. Guarantees](./docs/09-Guarantees.md) |
 | Build an editor on the canvas | [13. WYSIWYG canvas](./docs/13-WYSIWYG.md) |
 | Find out where a keystroke's time goes | [12. Incremental performance](./docs/12-Incremental-Performance.md) |
+| Read the latest audit, findings and contracts | [14. Engineering audit](./docs/14-Engineering-Audit-2026-10-21.md) |
 | Attach data to parts of a document | [11. Anchors](./docs/11-Anchors-Plan.md) |
 | See how osu! semantics are modeled | [10. Semantic model](./docs/10-Semantic-Model-Plan.md) |
 | Add real-time collaboration | [QuasarCollab.MD](./QuasarCollab.MD) |

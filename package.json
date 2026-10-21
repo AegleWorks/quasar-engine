@@ -2,6 +2,26 @@
   "name": "@miliastry/quasar",
   "version": "1.2.0",
   "description": "Quasar Document Engine - Advanced BBCode/Markdown/HTML AST Engine",
+  "author": "AegleWorks <aegleworks@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AegleWorks/quasar-engine.git"
+  },
+  "homepage": "https://github.com/AegleWorks/quasar-engine#readme",
+  "bugs": {
+    "url": "https://github.com/AegleWorks/quasar-engine/issues"
+  },
+  "keywords": [
+    "quasar",
+    "document-engine",
+    "bbcode",
+    "ast",
+    "compiler",
+    "parser",
+    "markdown",
+    "osu",
+    "aegleworks"
+  ],
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/types/index.d.ts",

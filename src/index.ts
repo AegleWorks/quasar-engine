@@ -30,6 +30,20 @@ export type { Token, TokenKind, Trivia, TriviaKind } from './Types/tokens'
 // ── Green/Red Tree ──
 export { GreenNode, greenNode, greenLeaf } from './Syntax/GreenNode'
 export { RedNode, NO_DIAGNOSTICS, NO_METADATA } from './Syntax/RedNode'
+
+// ── Source text and locations ──
+//
+// Offsets are the tree's currency; line/column is the reader's. `SourceText`
+// owns the translation (including CRLF, which is where hand-rolled copies
+// drift), and `formatDiagnostic` renders a diagnostic the way a compiler does.
+export {
+  SourceText,
+  formatDiagnostic,
+  formatDiagnostics,
+  type LineAndCharacter,
+  type SourceLine,
+  type FormatDiagnosticOptions,
+} from './Source/SourceText'
 export { checkRedTree, assertRedTree } from './Syntax/redTreeInvariants'
 export type { RedTreeViolation, RedTreeViolationKind, CheckRedTreeOptions } from './Syntax/redTreeInvariants'
 export { RedNodeStore } from './Syntax/RedNodeStore'
@@ -143,8 +157,13 @@ export { insertContent, isBlockContent, type ParseSource } from './Commands/Inse
 export { toggleInlineFormat, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
 // ── Queries ──
+//
+// `query()` compiles the selector string; `QueryEngine` executes it. Both are
+// needed to use the feature, and the builder used to be missing from the
+// barrel, leaving `DocumentModel.query` reachable only through a deep import.
 export { QueryEngine } from './Queries/QueryEngine'
-export type { Query, QueryMatch, QueryResult } from './Types/queries'
+export { query } from './Types/queries'
+export type { Query, QueryMatch, QueryResult, QuerySelector, QueryStep, QueryCombinator } from './Types/queries'
 
 // ── Formatter ──
 export { Formatter, type FormatOptions } from './Formatter/Formatter'

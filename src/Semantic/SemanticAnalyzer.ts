@@ -1105,6 +1105,10 @@ interface DocumentMaps {
 
 interface AnalysisSnapshot {
   root: RedNode
+  /** The text the tree's offsets are in. A tree over other text is not this pass. */
+  source: string
+  /** The dialect the verdicts were worded for; see `analyze`'s suggestion. */
+  dialect: BBCodeDialect
   collection: DiagnosticCollection
   /** Nodes carrying at least one diagnostic, in document order… */
   diagNodes: RedNode[]
@@ -1463,6 +1467,28 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Whether the last pass this analyzer ran still answers for `root`.
+   *
+   * True only when everything a verdict depends on is what it was at that
+   * pass: the same tree object over the same text, the same dialect, the same
+   * registered validators and the same tokens. It deliberately says nothing
+   * about the tree having been MUTATED since: a red node's identity does not
+   * track its content, which is why `DocumentModel.analyze` pairs this with
+   * its own edit bookkeeping instead of trusting it alone.
+   */
+  analysisIsCurrent(root: RedNode, source: string): boolean {
+    const snapshot = this._snapshot
+    return (
+      snapshot !== null &&
+      snapshot.root === root &&
+      snapshot.source === source &&
+      snapshot.dialect === this.dialect &&
+      snapshot.validatorsVersion === this._validatorsVersion &&
+      snapshot.tokensVersion === this._tokensVersion
+    )
+  }
+
+  /**
    * Analyze a Red Tree and produce diagnostics — every node, from scratch.
    *
    * Also the base a later {@link analyzeWindow} builds on: the pass remembers
@@ -1519,6 +1545,8 @@ export class SemanticAnalyzer {
     }
     this._snapshot = {
       root,
+      source,
+      dialect: this.dialect,
       collection: diagnostics,
       diagNodes,
       diagStarts,
@@ -1572,6 +1600,7 @@ export class SemanticAnalyzer {
     const snapshot = this._snapshot
     if (snapshot === null || snapshot.documentScoped) return null
     if (
+      snapshot.dialect !== this.dialect ||
       snapshot.validatorsVersion !== this._validatorsVersion ||
       snapshot.tokensVersion !== this._tokensVersion
     ) return null
@@ -1749,6 +1778,8 @@ export class SemanticAnalyzer {
 
     this._snapshot = {
       root,
+      source,
+      dialect: this.dialect,
       collection: diagnostics,
       diagNodes,
       diagStarts,

@@ -198,6 +198,95 @@ function fixtureEditAnalyze(src: string): Metrics {
   }
 }
 
+/**
+ * `analyze()` asked again with nothing new to analyse — the memo path.
+ *
+ * This is the shape a diagnostics panel, a lightbulb or a revalidate button
+ * produces: the document has not changed since the last pass, so there is
+ * nothing to compute and only the previous answer to hand back. Before the
+ * memo this paid a full pass over the fixture on every call.
+ *
+ * The report also carries the diagnostics count and whether the repeated call
+ * returned the same result object, so a run that got faster by returning
+ * nothing is visible in the numbers rather than hidden by them.
+ */
+function fixtureAnalyzeRepeat(src: string): Metrics {
+  const m = parse(src)
+  const first = m.analyze()
+  const t = median(() => { m.analyze() }, 9, 1)
+  return {
+    'fixture.analyzeRepeat.p50': t,
+    'fixture.analyzeRepeat.diagnostics': m.diagnostics?.items.length ?? 0,
+    'fixture.analyzeRepeat.sameResult': m.analyze() === first ? 1 : 0,
+  }
+}
+
+/**
+ * Editor services on the fixture: source locations, structural queries,
+ * formatting and Markdown export. These are the paths a consumer calls while
+ * a document is open, so they are measured on the real 547 KB document rather
+ * than on a synthetic string.
+ */
+function fixtureEditor(src: string): Metrics {
+  const out: Metrics = {}
+  const t0 = now()
+  const text = new E.SourceText(src)
+  // Force the index, then translate every visible position the way an error
+  // panel or an LSP host does.
+  const lines = text.lineCount
+  out['editor.source.index'] = now() - t0
+  out['editor.source.lines'] = lines
+
+  const lookups = 100_000
+  const t1 = now()
+  let sink = 0
+  for (let i = 0; i < lookups; i++) sink += text.positionAt((i * 7919) % src.length).line
+  out['editor.source.positionAt100k'] = now() - t1
+  out['editor.source.lookupChecksum'] = sink % 97
+
+  const m = parse(src)
+  if (typeof E.query !== 'function' || typeof E.QueryEngine !== 'function') {
+    out['editor.query.all'] = 'unavailable in this engine'
+    return out
+  }
+  const engine = new E.QueryEngine()
+  const all = E.query('*')
+  const colors = E.query('[color]')
+  out['editor.query.all.nodes'] = engine.execute(all, m.redRoot).total
+  out['editor.query.all'] = median(() => engine.execute(all, m.redRoot), 5, 1)
+  out['editor.query.colors.nodes'] = engine.execute(colors, m.redRoot).total
+  out['editor.query.colors'] = median(() => engine.execute(colors, m.redRoot), 5, 1)
+
+  if (typeof E.Formatter === 'function') {
+    const formatter = new E.Formatter()
+    out['editor.format'] = median(() => formatter.format(m.redRoot), 3, 1)
+    out['editor.format.all'] = median(
+      () => formatter.format(m.redRoot, {
+        blockNewlines: true,
+        collapseEmptyLines: true,
+        normalizeInlineWhitespace: true,
+      }),
+      3, 1,
+    )
+  }
+  if (typeof E.MarkdownExporter === 'function') {
+    out['editor.markdown.export'] = median(() => new E.MarkdownExporter().export(m.redRoot), 3, 1)
+  }
+  return out
+}
+
+/** Markdown export of the whole fixture: block separation must stay linear. */
+function fixtureMarkdown(src: string): Metrics {
+  const m = parse(src)
+  const exporter = new E.MarkdownExporter()
+  const text = exporter.export(m.redRoot)
+  return {
+    'fixture.markdown.export': median(() => exporter.export(m.redRoot), 5, 1),
+    'fixture.markdown.bytes': text.length,
+    'fixture.markdown.separators': (text.match(/\n\n/g) ?? []).length,
+  }
+}
+
 // ─── Adversarial scaling ─────────────────────────────────────────────────────
 
 const rep = (s: string, n: number) => s.repeat(n)
@@ -312,7 +401,8 @@ function scaling(gen: string): Metrics {
 
 export const WORKLOADS: string[] = [
   'corpus.parse', 'corpus.parse.osu', 'corpus.analyze', 'corpus.render', 'corpus.export.osu', 'corpus.forum',
-  'fixture.open', 'fixture.phases', 'fixture.keys', 'fixture.typing', 'fixture.editAnalyze',
+  'fixture.open', 'fixture.phases', 'fixture.keys', 'fixture.typing', 'fixture.editAnalyze', 'fixture.analyzeRepeat', 'fixture.editor',
+  'fixture.markdown',
   ...Object.keys(GENERATORS).map(g => `scale.${g}`),
 ]
 
@@ -325,6 +415,9 @@ export function runWorkload(name: string, corpus: string[], fixture: string): Me
     case 'fixture.keys': return fixtureKeystrokes(fixture)
     case 'fixture.typing': return fixtureTyping(fixture)
     case 'fixture.editAnalyze': return fixtureEditAnalyze(fixture)
+    case 'fixture.analyzeRepeat': return fixtureAnalyzeRepeat(fixture)
+    case 'fixture.editor': return fixtureEditor(fixture)
+    case 'fixture.markdown': return fixtureMarkdown(fixture)
   }
   throw new Error(`unknown workload ${name}`)
 }
