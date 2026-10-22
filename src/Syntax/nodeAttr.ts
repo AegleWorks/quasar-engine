@@ -125,6 +125,36 @@ export function sanitizeFontSize(raw: string, resolver?: TokenResolverFn): strin
   return CSS_SIZE_RE.test(v) ? v : null
 }
 
+/**
+ * El mayor tamaño de letra dentro de `node`, relativo al suyo.
+ *
+ * Un degradado se pinta con `background-clip: text`, así que su caja de fondo
+ * sólo mide lo que mide SU tipografía. Un `[size=200]` dentro de él dibuja
+ * glifos del doble de alto, y lo que cae fuera de la caja de fondo se imprime
+ * transparente: el texto aparecía cortado por arriba y por abajo. Quien pinta
+ * el degradado usa este factor para agrandar la caja.
+ *
+ * Los tamaños anidados se multiplican, como en CSS: `[size=150][size=150]`
+ * pinta al 225 %. Se corta en 4 (el 400 % que admite Lyne) para que un
+ * `[size=9999]` no genere un padding absurdo antes de que el renderizador lo
+ * tope.
+ */
+export function maxFontSizeScale(node: RedNode, resolver?: TokenResolverFn): number {
+  let max = 1
+  const visit = (current: RedNode, inherited: number) => {
+    let scale = inherited
+    if (current.kind === 'font_size') {
+      const size = sanitizeFontSize(nodeAttrValue(current, 'size'), resolver)
+      const percent = size ? Number(size) : NaN
+      if (Number.isFinite(percent) && percent > 0) scale *= percent / 100
+    }
+    if (scale > max) max = scale
+    for (const child of current.children) visit(child, scale)
+  }
+  for (const child of node.children) visit(child, 1)
+  return Math.min(4, max)
+}
+
 /** La familia de `[font=…]`, o `null`. */
 export function sanitizeFontFamily(raw: string, resolver?: TokenResolverFn): string | null {
   let v = raw.trim()

@@ -432,6 +432,7 @@ export {
   sanitizeColor,
   sanitizeFontSize,
   sanitizeFontFamily,
+  maxFontSizeScale,
 } from './Syntax/nodeAttr'
 export type { ImgAttr } from './Syntax/nodeAttr'
 

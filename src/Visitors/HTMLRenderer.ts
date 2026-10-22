@@ -15,6 +15,7 @@ import {
   sanitizeColor,
   sanitizeFontFamily,
   sanitizeFontSize,
+  maxFontSizeScale,
 } from '../Syntax/nodeAttr'
 import { Visitor } from './Visitor'
 import type { TagRegistry } from '../Model/TagRegistry'
@@ -1729,7 +1730,18 @@ export class HTMLRenderer extends Visitor<string> {
         : (params.colors ?? ['#FF0000', '#00FF00'])
       const list = stops.length === 1 ? [stops[0], stops[0]] : stops
       const gradientCss = `linear-gradient(to right, ${list.join(', ')})`
-      return `<span${this.idAttr(node)} style="background: ${gradientCss}; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${this.renderChildren(node)}</span>`
+      /*
+       * La caja del fondo mide lo que mide la tipografía del span, no sus
+       * glifos: un `[size]` mayor dentro del degradado se sale por arriba y
+       * por abajo y esas partes se imprimen transparentes (también en un
+       * título de caja, que pinta su HTML con este mismo renderizador). El
+       * padding crece con el tamaño más grande del subárbol; el margen
+       * negativo devuelve el espacio horizontal para que el texto no se mueva.
+       */
+      const paintScale = maxFontSizeScale(node, this.tokenResolver)
+      const paintY = +(0.5 * paintScale).toFixed(3)
+      const paintX = +(0.3 * paintScale).toFixed(3)
+      return `<span${this.idAttr(node)} style="background: ${gradientCss}; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; padding-block: ${paintY}em; padding-inline: ${paintX}em; margin-inline: -${paintX}em;">${this.renderChildren(node)}</span>`
     }
 
     return this.renderEffectSegments(node, 'gradient')

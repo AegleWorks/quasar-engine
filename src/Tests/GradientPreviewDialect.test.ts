@@ -28,6 +28,13 @@ describe('gradient preview', () => {
     })
   }
 
+  it('crece la caja de pintura para cubrir un [size] mayor dentro', () => {
+    const html = render('miliastry', '[gradient=#FF0000,#0000FF][size=200]hola[/size][/gradient]')
+    expect(html).toContain('padding-block: 1em')
+    expect(html).toContain('padding-inline: 0.6em')
+    expect(html).toContain('margin-inline: -0.6em')
+  })
+
   it('keeps line breaks, each with its node id', () => {
     const html = render('miliastry', '[gradient=#FF0000,#0000FF]uno\ndos\n[/gradient]')
     expect(html).toContain('linear-gradient')

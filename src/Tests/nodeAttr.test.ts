@@ -5,6 +5,7 @@ import {
   sanitizeColor,
   sanitizeFontFamily,
   sanitizeFontSize,
+  maxFontSizeScale,
 } from '../Syntax/nodeAttr'
 
 /**
@@ -123,5 +124,26 @@ describe('sanitizeFontFamily', () => {
 
   it.each(['"Arial"', 'Arial;color:red', ''])('rechaza %s', (input) => {
     expect(sanitizeFontFamily(input)).toBeNull()
+  })
+})
+
+describe('maxFontSizeScale', () => {
+  const gradientOf = (source: string) =>
+    firstOfKind(parse(source), 'gradient')
+
+  it('mide el tamaño más grande dentro del degradado', () => {
+    expect(maxFontSizeScale(gradientOf('[gradient=#f00,#0f0]hola[/gradient]'))).toBe(1)
+    expect(maxFontSizeScale(gradientOf('[gradient=#f00,#0f0][size=200]hola[/size][/gradient]'))).toBe(2)
+  })
+
+  it('multiplica tamaños anidados como CSS', () => {
+    const gradient = gradientOf('[gradient=#f00,#0f0][size=150][size=150]hola[/size][/size][/gradient]')
+    expect(maxFontSizeScale(gradient)).toBe(2.25)
+  })
+
+  it('no se deja arrastrar por un tamaño de fuera, y tope en 4', () => {
+    const gradient = gradientOf('[size=200][gradient=#f00,#0f0][size=200]hola[/size][/gradient][/size]')
+    expect(maxFontSizeScale(gradient)).toBe(2)
+    expect(maxFontSizeScale(gradientOf('[gradient=#f00,#0f0][size=400][size=200]hola[/size][/size][/gradient]'))).toBe(4)
   })
 })
