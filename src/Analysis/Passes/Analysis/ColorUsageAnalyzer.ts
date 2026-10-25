@@ -35,7 +35,6 @@ import type { PipelineContext } from '../../Contracts/PipelineContext'
 import type { Contribution } from '../../Contracts/Contribution'
 import { ContributionKind } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
-import { childOffsets } from '../../../Syntax/GreenNode'
 import { extractHex } from '../../Utils/color-utils'
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -57,6 +56,39 @@ export interface ColorUsageModel {
   readonly openEnd: number
 }
 
+/**
+ * The contribution for one colour node at `start`, or `null` when it is not a
+ * parsable six-digit colour tag.
+ *
+ * Module-level so the single-pass restyle analyzer and this pass describe a
+ * colour in exactly one place. Two copies of a contribution shape drift the
+ * moment one of them is edited, and the decision pass reads these fields.
+ */
+export function colorUsageContributionAt(
+  node: GreenNode,
+  start: number,
+): Contribution | null {
+  const hex = extractHex(node)
+  if (hex === null) return null
+
+  const model: ColorUsageModel = {
+    hex,
+    openStart: start,
+    openEnd: start + node.leadingWidth,
+  }
+
+  return {
+    kind: ContributionKind.Semantic,
+    label: 'Color',
+    // A parsed colour tag is a fact, not an inference: unlike a gradient
+    // or a decorative glyph, there is nothing here to be unsure about.
+    confidence: 1,
+    range: { start, end: start + node.width },
+    metadata: { model },
+    description: `Colour ${hex}`,
+  }
+}
+
 // ── Analyzer ──────────────────────────────────────────────────────
 
 export class ColorUsageAnalyzer implements AnalyzerPass {
@@ -71,33 +103,19 @@ export class ColorUsageAnalyzer implements AnalyzerPass {
   // ── Private ─────────────────────────────────────────────────────
 
   private walk(node: GreenNode, sink: Contribution[], start: number): void {
-    const hex = extractHex(node)
-
-    if (hex !== null) {
-      const model: ColorUsageModel = {
-        hex,
-        openStart: start,
-        openEnd: start + node.leadingWidth,
-      }
-
-      sink.push({
-        kind: ContributionKind.Semantic,
-        label: 'Color',
-        // A parsed colour tag is a fact, not an inference: unlike a gradient
-        // or a decorative glyph, there is nothing here to be unsure about.
-        confidence: 1,
-        range: { start, end: start + node.width },
-        metadata: { model },
-        description: `Colour ${hex}`,
-      })
-    }
+    const contribution = colorUsageContributionAt(node, start)
+    if (contribution !== null) sink.push(contribution)
 
     const children = node.children as readonly GreenNode[]
     if (children.length === 0) return
 
-    const offsets = childOffsets(node, start)
+    // Offsets are accumulated here rather than through `childOffsets`, which
+    // allocates one array per element node. A document is mostly element
+    // nodes; the array existed for one addition and was garbage immediately.
+    let offset = start + node.leadingWidth
     for (let i = 0; i < children.length; i++) {
-      this.walk(children[i], sink, offsets[i])
+      this.walk(children[i], sink, offset)
+      offset += children[i].width
     }
   }
 }

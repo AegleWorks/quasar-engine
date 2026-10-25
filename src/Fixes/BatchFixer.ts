@@ -10,8 +10,9 @@
  * Multipass: after each batch the document is re-read and re-analyzed, so a
  * fix that unlocks another is picked up on the next pass. The loop stops when
  * nothing applies, when a source repeats (cycle warning), or after
- * `MAX_FIX_ALL_PASSES` passes (cycle warning). Only `document` scope exists;
- * `project`/`solution` throw `UnimplementedError`.
+ * `MAX_FIX_ALL_PASSES` passes (cycle warning). `fixAll` is document-scoped by
+ * construction; `fixAllDocuments` is the project/solution entry point and runs
+ * the same loop over every target.
  *
  * The target interface keeps the engine headless: the `DocumentModel` entry
  * (transact wiring, re-analyze) lands with the model integration, which feeds
@@ -29,7 +30,10 @@ import { editsConflict } from '../Edits/EditPlan'
 
 export type FixAllScope = 'document' | 'project' | 'solution'
 
-/** Thrown for the `project`/`solution` Fix-All scopes, which are stubbed out. */
+/**
+ * Thrown by `fixAll` for a project/solution scope: one `FixAllTarget` is one
+ * document, so a wider scope must go through `fixAllDocuments` or `Workspace`.
+ */
 export class UnimplementedError extends Error {
   constructor(message: string) {
     super(message)
@@ -183,10 +187,10 @@ export function planFixAll(
   return { accepted, applied, deferred }
 }
 
-function checkScope(scope: FixAllScope): void {
+function checkDocumentScope(scope: FixAllScope): void {
   if (scope !== 'document') {
     throw new UnimplementedError(
-      `Fix-All scope "${scope}" is not implemented — only "document" is supported`,
+      `Fix-All scope "${scope}" needs more than one document — use fixAllDocuments or Workspace`,
     )
   }
 }
@@ -201,7 +205,7 @@ export function fixAll(
   options: FixAllOptions = {},
 ): BatchResult {
   const scope = options.scope ?? 'document'
-  checkScope(scope)
+  checkDocumentScope(scope)
   const maxPasses = options.maxPasses ?? MAX_FIX_ALL_PASSES
 
   let applied = 0
@@ -255,13 +259,19 @@ export function fixAllDocuments(
   equivalenceKey: string,
   options: FixAllOptions = {},
 ): BatchResult {
-  checkScope(options.scope ?? 'document')
+  // A project or solution is a set of documents here (Quasar has no project
+  // file), so both scopes run the same aggregation. An empty target list is a
+  // valid answer: nothing applied, not an error.
   let applied = 0
   let deferred = 0
   let passes = 0
   let cycle: string | undefined
   for (const target of targets) {
-    const result = fixAll(target, equivalenceKey, options)
+    // Each target is one document; the outer scope is what spans them.
+    const result = fixAll(target, equivalenceKey, {
+      maxPasses: options.maxPasses,
+      scope: 'document',
+    })
     applied += result.applied
     deferred += result.deferred
     passes = Math.max(passes, result.passes)

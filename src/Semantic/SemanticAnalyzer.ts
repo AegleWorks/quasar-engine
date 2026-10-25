@@ -201,15 +201,27 @@ export interface AnalyzerContext {
   readonly allNodes: Map<string, RedNode>
   /**
    * Openers whose `[/tag]` does exist but arrived too late, keyed by the
-   * opener's node id.
-   *
-   * A getter for the same reason `allNodes` is one, and asked for even more
-   * rarely: the only way to reach it is through a node that is already known
-   * to be unclosed, which on a healthy document never happens. Both validators
-   * that read it test `isUnclosedTag` first, so a document with no auto-closed
-   * tag never pays for the walk.
+   * opener's node id. The id-keyed form plugins and cross-reference consumers
+   * expect; the built-ins use {@link crossedTags}.
    */
   readonly crossings: ReadonlyMap<string, CrossedTags>
+  /**
+   * Auto-closed openers, keyed by the node itself.
+   *
+   * The walk that finds them already answers "is this tag unclosed?" once per
+   * element, from green widths and the source. `unclosed-tag` and
+   * `crossed-tags` used to ask the same question again for every node, with
+   * their own source scans, and then look the node up by an id that analysis
+   * had no other reason to mint.
+   */
+  readonly openers: ReadonlySet<RedNode>
+  /**
+   * The same crossing map, keyed by the opener node itself. Validators walk
+   * nodes, not ids; looking one up by `node.id` minted a stable id for every
+   * node of the document on the first analysis (38 522 on the fixture) when
+   * only the few hundred with a diagnostic ever needed one.
+   */
+  readonly crossedTags: ReadonlyMap<RedNode, CrossedTags>
   /**
    * Unknown tags that were written as a PAIR, keyed by the opener's node id.
    *
@@ -228,6 +240,8 @@ export interface AnalyzerContext {
   readonly orphanClosers: ReadonlyMap<string, string>
   /** Sequences of [color] tags that form a gradient, keyed by the first node's id */
   readonly collapsibleGradients: ReadonlyMap<string, CollapsibleGradient>
+  /** The same runs, keyed by the first node — see {@link crossedTags}. */
+  readonly gradientsByNode: ReadonlyMap<RedNode, CollapsibleGradient>
   /** Previously collected diagnostics */
   diagnostics: DiagnosticCollection
   /** Source text for position lookups */
@@ -1100,7 +1114,10 @@ function hrefRange(node: RedNode, source: string, href: string): { start: number
 interface DocumentMaps {
   literal: LiteralTagScan
   crossings: Map<string, CrossedTags>
+  openers: Set<RedNode>
+  crossedByNode: Map<RedNode, CrossedTags>
   gradients: Map<string, CollapsibleGradient>
+  gradientsByNode: Map<RedNode, CollapsibleGradient>
 }
 
 interface AnalysisSnapshot {
@@ -1147,11 +1164,26 @@ function depthOf(node: RedNode): number {
 
 function deriveMaps(candidates: Candidates): DocumentMaps {
   const gradients = new Map<string, CollapsibleGradient>()
-  for (const run of candidates.gradients) gradients.set(run.node.id, run.item)
+  const gradientsByNode = new Map<RedNode, CollapsibleGradient>()
+  for (const run of candidates.gradients) {
+    gradients.set(run.node.id, run.item)
+    gradientsByNode.set(run.node, run.item)
+  }
+  const crossings = pairCrossings(candidates.openers, candidates.closers)
+  const openers = new Set<RedNode>()
+  const crossedByNode = new Map<RedNode, CrossedTags>()
+  for (const opener of candidates.openers) {
+    openers.add(opener.node)
+    const crossing = crossings.get(opener.node.id)
+    if (crossing !== undefined) crossedByNode.set(opener.node, crossing)
+  }
   return {
     literal: pairLiteralTags(candidates.literals),
-    crossings: pairCrossings(candidates.openers, candidates.closers),
+    crossings,
+    openers,
+    crossedByNode,
     gradients,
+    gradientsByNode,
   }
 }
 
@@ -1822,9 +1854,12 @@ export class SemanticAnalyzer {
         return allNodesCache
       },
       get crossings(): ReadonlyMap<string, CrossedTags> { return maps.crossings },
+      get openers(): ReadonlySet<RedNode> { return maps.openers },
+      get crossedTags(): ReadonlyMap<RedNode, CrossedTags> { return maps.crossedByNode },
       get unknownTags(): ReadonlyMap<string, UnknownTag> { return maps.literal.paired },
       get orphanClosers(): ReadonlyMap<string, string> { return maps.literal.orphans },
       get collapsibleGradients(): ReadonlyMap<string, CollapsibleGradient> { return maps.gradients },
+      get gradientsByNode(): ReadonlyMap<RedNode, CollapsibleGradient> { return maps.gradientsByNode },
       diagnostics,
       source,
     }
@@ -2055,21 +2090,27 @@ export class SemanticAnalyzer {
       code: 'empty-tag',
       severity: 'hint',
       validate: (node) => {
+        // Cheap gate first. This validator runs on every node, and the
+        // valued-but-empty test reads two lazy range getters and a Set — it
+        // used to do all of that for nodes with children, whose answer was
+        // already no.
+        if (node.children.length !== 0) return null
+        const kind = node.kind
+        if (
+          kind === 'text' ||
+          kind === 'empty_line' ||
+          kind === 'spacing' ||
+          CONTENTLESS_BY_NATURE.has(kind)
+        ) return null
+
         // A value is not content: `[size=90][/size]` carries `=90` as its
         // text and slipped past the `text === ''` test, although it paints
         // nothing. For the formatting kinds, an empty inner span is empty.
         const valuedButEmpty =
-          ATTR_ONLY_EMPTY_KINDS.has(node.kind) &&
+          ATTR_ONLY_EMPTY_KINDS.has(kind) &&
           node.innerStart > node.range.start &&
           node.innerEnd === node.innerStart
-        if (
-          node.children.length === 0 &&
-          (node.text === '' || valuedButEmpty) &&
-          node.kind !== 'text' &&
-          node.kind !== 'empty_line' &&
-          node.kind !== 'spacing' &&
-          !CONTENTLESS_BY_NATURE.has(node.kind)
-        ) {
+        if (node.text === '' || valuedButEmpty) {
           return createDiagnostic(
             'empty-tag',
             `Empty tag: ${node.kind}`,
@@ -2102,10 +2143,12 @@ export class SemanticAnalyzer {
       code: 'unclosed-tag',
       severity: 'warning',
       validate: (node, ctx) => {
-        if (!isUnclosedTag(node, ctx.source)) return null
+        // The full walk already found every unclosed opener; asking the source
+        // again per node was the same scan a second and third time.
+        if (!ctx.openers.has(node)) return null
         // Its closing tag is not missing, it is misplaced. Reported — with a
         // different repair — by `crossed-tags` below.
-        if (ctx.crossings.has(node.id)) return null
+        if (ctx.crossedTags.has(node)) return null
 
         const name = openingTagName(node, ctx.source)
 
@@ -2188,11 +2231,10 @@ export class SemanticAnalyzer {
       code: 'crossed-tags',
       severity: 'warning',
       validate: (node, ctx) => {
-        // Cheap gate first: reaching `ctx.crossings` at all builds the pairing
-        // for the whole document, and only an auto-closed tag can be in it.
-        if (!isUnclosedTag(node, ctx.source)) return null
-
-        const crossing = ctx.crossings.get(node.id)
+        // Only an auto-closed tag can be in the pairing, so the map itself is
+        // the gate. This used to re-derive "is it unclosed?" from the source
+        // before the lookup.
+        const crossing = ctx.crossedTags.get(node)
         if (crossing === undefined) return null
 
         // Deliberately NOT automatic: moving the closer is correct BBCode but
@@ -2437,7 +2479,10 @@ export class SemanticAnalyzer {
       severity: 'info',
       kinds: ['color'],
       validate: (node, ctx) => {
-        const item = ctx.collapsibleGradients.get(node.id)
+        // Most documents have no collapsible run at all; skip the per-colour
+        // lookup when the pass collected none.
+        if (ctx.gradientsByNode.size === 0) return null
+        const item = ctx.gradientsByNode.get(node)
         if (!item) return null
 
         return createDiagnostic(

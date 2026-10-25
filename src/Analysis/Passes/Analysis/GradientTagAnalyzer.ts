@@ -46,7 +46,6 @@ import type { PipelineContext } from '../../Contracts/PipelineContext'
 import type { Contribution } from '../../Contracts/Contribution'
 import { ContributionKind } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
-import { childOffsets } from '../../../Syntax/GreenNode'
 import { parseColorStops } from '../../../Utils/EffectMath'
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -131,10 +130,57 @@ export function locateGradientStops(
   return found
 }
 
-// ── Analyzer ──────────────────────────────────────────────────────
-
 /** The tag name at the head of a delimiter, case as the parser accepts it. */
 const GRADIENT_HEAD = /^\[gradient(?![a-z0-9_])/i
+
+/**
+ * The contribution for a native gradient tag at `start`, or `null`.
+ *
+ * Module-level for the same reason as its colour and symbol siblings: the
+ * single-pass restyle analyzer must not grow a second notion of where a stop
+ * is. `source` is needed because a green node keeps a delimiter's width, not
+ * its bytes.
+ */
+export function gradientTagContributionAt(
+  node: GreenNode,
+  source: string,
+  start: number,
+): Contribution | null {
+  if (node.kind !== 'gradient') return null
+  const delimiter = source.slice(start, start + node.leadingWidth)
+  const head = GRADIENT_HEAD.exec(delimiter)
+  if (!head || !delimiter.endsWith(']')) return null
+
+  const attribute = delimiter.slice(head[0].length, -1)
+  const attributeStart = start + head[0].length
+  const attributeEnd = attributeStart + attribute.length
+
+  const stops = locateGradientStops(attribute).map(stop => ({
+    ...stop,
+    start: attributeStart + stop.start,
+    end: attributeStart + stop.end,
+  }))
+  if (stops.length === 0) return null
+
+  const model: GradientTagModel = {
+    attribute,
+    attributeStart,
+    attributeEnd,
+    stops,
+  }
+
+  return {
+    kind: ContributionKind.Semantic,
+    label: 'GradientTag',
+    // Stated by the tag, not inferred from a run of colours.
+    confidence: 1,
+    range: { start, end: start + node.width },
+    metadata: { model },
+    description: `Gradient tag ${stops.map(s => s.hex).join(', ')}`,
+  }
+}
+
+// ── Analyzer ──────────────────────────────────────────────────────
 
 export class GradientTagAnalyzer implements AnalyzerPass {
   readonly id = 'gradient-tag'
@@ -151,46 +197,16 @@ export class GradientTagAnalyzer implements AnalyzerPass {
   // ── Private ─────────────────────────────────────────────────────
 
   private walk(node: GreenNode, sink: Contribution[], start: number): void {
-    const delimiter = node.kind === 'gradient' ? this.source.slice(start, start + node.leadingWidth) : ''
-    const head = GRADIENT_HEAD.exec(delimiter)
-
-    if (head && delimiter.endsWith(']')) {
-      const attribute = delimiter.slice(head[0].length, -1)
-      const attributeStart = start + head[0].length
-      const attributeEnd = attributeStart + attribute.length
-
-      const stops = locateGradientStops(attribute).map(stop => ({
-        ...stop,
-        start: attributeStart + stop.start,
-        end: attributeStart + stop.end,
-      }))
-
-      if (stops.length > 0) {
-        const model: GradientTagModel = {
-          attribute,
-          attributeStart,
-          attributeEnd,
-          stops,
-        }
-
-        sink.push({
-          kind: ContributionKind.Semantic,
-          label: 'GradientTag',
-          // Stated by the tag, not inferred from a run of colours.
-          confidence: 1,
-          range: { start, end: start + node.width },
-          metadata: { model },
-          description: `Gradient tag ${stops.map(s => s.hex).join(', ')}`,
-        })
-      }
-    }
+    const contribution = gradientTagContributionAt(node, this.source, start)
+    if (contribution !== null) sink.push(contribution)
 
     const children = node.children as readonly GreenNode[]
     if (children.length === 0) return
 
-    const offsets = childOffsets(node, start)
+    let offset = start + node.leadingWidth
     for (let i = 0; i < children.length; i++) {
-      this.walk(children[i], sink, offsets[i])
+      this.walk(children[i], sink, offset)
+      offset += children[i].width
     }
   }
 }

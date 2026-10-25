@@ -32,6 +32,12 @@ export class PluginAPI {
    * the same code) with it.
    */
   private readonly codeFixDisposers = new Map<string, (() => void)[]>()
+  /**
+   * The `<style>` elements this API injected per plugin, so unregistering can
+   * remove exactly its own. A plugin that ships CSS in two registrations would
+   * otherwise leave the first copy in the document forever.
+   */
+  private readonly styleElements = new Map<string, HTMLStyleElement[]>()
 
   constructor(model: DocumentModel) {
     this.model = model
@@ -58,15 +64,31 @@ export class PluginAPI {
    * ```
    */
   registerPlugin(manifest: PluginManifest, contributions: PluginContribution): void {
+    // Dependencies are a promise the manifest makes, so a missing one is a
+    // registration error, not a warning nobody reads until the tag fails to
+    // render. Callers register dependencies first (there is no filesystem to
+    // resolve them from); a cycle would already violate that order.
+    const missing = (manifest.dependencies ?? []).filter(
+      dependency => dependency !== manifest.name && this.plugins.get(dependency) === undefined,
+    )
+    if (missing.length > 0) {
+      throw new Error(
+        `[PluginAPI] "${manifest.name}" requires ${missing.map(name => `"${name}"`).join(', ')} — register the dependency first`,
+      )
+    }
+
     // A second registration under the same name replaces the first: take the
     // first one's contributions back before adding the new ones, or they stay
     // installed with nothing left to remove them.
     if (this.plugins.get(manifest.name)) this.unregisterPlugin(manifest.name)
     const plugin = this.plugins.register(manifest, contributions)
-    // Declared in the types, honoured nowhere yet: say so instead of
-    // pretending the CSS was injected or the dependency checked.
-    if (contributions.styles?.length) console.warn(`[PluginAPI] "${manifest.name}": styles are not injected by the engine; load them yourself`)
-    if (manifest.dependencies?.length) console.warn(`[PluginAPI] "${manifest.name}": dependencies are not checked by the engine`)
+
+    // The manifest declares CSS as part of the contribution; inject it here so
+    // a browser consumer does not have to know plugin internals. Headless
+    // engines (Node, SSR, a worker) simply have no document to inject into.
+    if (contributions.styles?.length) {
+      this.injectStyles(manifest.name, contributions.styles)
+    }
 
     // Apply contributions
     if (contributions.tags) {
@@ -123,6 +145,8 @@ export class PluginAPI {
     const plugin = this.plugins.get(name)
     if (!plugin) return
 
+    this.removeStyles(name)
+
     if (plugin.contributions.tags) {
       for (const tag of plugin.contributions.tags) {
         this.tags.unregister(tag.name)
@@ -157,5 +181,28 @@ export class PluginAPI {
     }
 
     this.plugins.unregister(name)
+  }
+
+  // ── Styles ─────────────────────────────────────────────────────
+
+  private injectStyles(name: string, styles: readonly string[]): void {
+    this.removeStyles(name)
+    if (typeof document === 'undefined') return
+
+    const elements = styles.map(css => {
+      const element = document.createElement('style')
+      element.setAttribute('data-quasar-plugin', name)
+      element.textContent = css
+      document.head.appendChild(element)
+      return element
+    })
+    this.styleElements.set(name, elements)
+  }
+
+  private removeStyles(name: string): void {
+    const elements = this.styleElements.get(name)
+    if (elements === undefined) return
+    for (const element of elements) element.remove()
+    this.styleElements.delete(name)
   }
 }

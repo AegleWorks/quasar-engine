@@ -3,6 +3,8 @@
 //
 //   node scripts/bench/run.mjs [--base <ref>] [--corpus <dir>] [--runs 3]
 //                              [--only <regex>] [--json <file>] [--timeout 120]
+//                              [--budget <file>] [--baseline <file>]
+//                              [--tolerance 0.15] [--check] [--list]
 //
 // Bundles `workloads.ts` with esbuild against this working tree (and, with
 // `--base`, against <base> extracted with `git archive`; the working tree is
@@ -57,6 +59,11 @@ const BASE = flag('base')
 const RUNS = Number(flag('runs', 3))
 const ONLY = flag('only') ? new RegExp(flag('only')) : null
 const JSON_OUT = flag('json')
+const BUDGET = flag('budget')
+const BASELINE = flag('baseline')
+const TOLERANCE = Number(flag('tolerance', 0.15))
+const CHECK = args.includes('--check')
+const LIST = args.includes('--list')
 const TIMEOUT_MS = Number(flag('timeout', 120)) * 1000
 const monorepoCorpus = resolve(REPO, '../../docs/ai')
 const CORPUS = flag('corpus', existsSync(monorepoCorpus) ? monorepoCorpus : null)
@@ -112,6 +119,11 @@ const workloads = WORKLOADS.filter((w) => {
   return true
 })
 
+if (LIST) {
+  console.log(workloads.join('\n'))
+  process.exit(0)
+}
+
 console.log(`quasar bench: ${workloads.length} workloads × ${RUNS} runs × ${engines.length} engine(s); ` +
   `corpus ${sources.length} docs (${(sources.reduce((n, s) => n + s.length, 0) / 1024).toFixed(0)} KB), node ${process.version}`)
 
@@ -166,3 +178,55 @@ for (const k of keys) {
   console.log(line)
 }
 if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify({ engines: engines.map((e) => e.name), runs: RUNS, table }, null, 2))
+
+// ─── Gates ───────────────────────────────────────────────────────────────────
+
+const failures = []
+const headName = engines[engines.length - 1].name
+const head = table
+
+function readJson(file, what) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch (error) {
+    console.error(`\ncannot read ${what} ${file}: ${error.message}`)
+    process.exit(2)
+  }
+}
+
+if (BUDGET) {
+  const budget = readJson(BUDGET, 'budget')
+  console.log('\nbudget:')
+  for (const [metric, spec] of Object.entries(budget)) {
+    const value = head[metric]?.[headName]
+    if (typeof value !== 'number') continue
+    const max = typeof spec === 'number' ? spec : spec?.max
+    if (typeof max !== 'number') continue
+    const ok = value <= max
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${metric.padEnd(width)} ${fmt(value).padStart(10)} / ${fmt(max)}`)
+    if (!ok) failures.push(`budget: ${metric} ${fmt(value)} > ${fmt(max)}`)
+  }
+}
+
+if (BASELINE) {
+  const baseline = readJson(BASELINE, 'baseline')
+  const previous = baseline.table ?? baseline
+  console.log(`\nbaseline (tolerance ${(TOLERANCE * 100).toFixed(0)}%):`)
+  for (const [metric, row] of Object.entries(head)) {
+    const value = row[headName]
+    const before = previous[metric]?.[headName] ?? previous[metric]
+    if (typeof value !== 'number' || typeof before !== 'number' || before <= 0) continue
+    const delta = value / before - 1
+    const ok = delta <= TOLERANCE
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${metric.padEnd(width)} ${fmt(value).padStart(10)} vs ${fmt(before).padStart(10)}  ${(delta * 100).toFixed(1).padStart(7)}%`)
+    if (!ok) failures.push(`baseline: ${metric} +${(delta * 100).toFixed(1)}% (${fmt(value)} vs ${fmt(before)})`)
+  }
+}
+
+if (failures.length > 0) {
+  console.error(`\n${failures.length} gate(s) failed:`)
+  for (const failure of failures) console.error(`  - ${failure}`)
+  if (CHECK) process.exitCode = 1
+} else if (BUDGET || BASELINE) {
+  console.log('\nall gates passed')
+}

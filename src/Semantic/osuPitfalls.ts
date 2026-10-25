@@ -99,18 +99,57 @@ export function styledUrls(text: string, offset: number): { start: number; end: 
 
 // ── gradient-outlier ─────────────────────────────────────────────────────
 
+/** `#RRGGBB`, the spelling a colour node almost always carries. */
+function isHex6At(s: string, at: number): boolean {
+  for (let i = at; i < at + 6; i++) {
+    const c = s.charCodeAt(i)
+    if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66) || (c >= 0x41 && c <= 0x46))) return false
+  }
+  return true
+}
+
+/**
+ * The node's colour as `#RRGGBB`, or null.
+ *
+ * The fast path is the shape the engine emits and what most authors write:
+ * seven characters starting with `#`. It used to go through `replace`, `trim`
+ * and a regex for every colour of every run — 12 360 times on the 547 KB
+ * fixture — although no work was needed. The slow path keeps the original
+ * spelling rules (`=` prefix, surrounding whitespace, case).
+ */
 function hexOf(node: RedNode): string | null {
-  const raw = String(node.metadata?.color ?? node.text ?? '').replace(/^=/, '').trim()
-  return /^#[0-9a-f]{6}$/i.test(raw) ? raw : null
+  const raw = String(node.metadata?.color ?? node.text ?? '')
+  if (raw.length === 7 && raw.charCodeAt(0) === 0x23 /* # */ && isHex6At(raw, 1)) return raw
+
+  let v = raw
+  if (v.charCodeAt(0) === 0x3d /* = */) v = v.slice(1)
+  v = v.trim()
+  return v.length === 7 && v.charCodeAt(0) === 0x23 && isHex6At(v, 1) ? v : null
 }
 
-function rgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.slice(1), 16)
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+/** `0xRRGGBB`. A number, not an array: this runs per colour of every run. */
+type PackedRgb = number
+
+function rgb(hex: string): PackedRgb {
+  let n = 0
+  for (let i = 1; i < 7; i++) {
+    const c = hex.charCodeAt(i)
+    n = (n << 4) | (c <= 0x39 ? c - 0x30 : (c | 32) - 0x57)
+  }
+  return n
 }
 
-function dist(a: [number, number, number], b: [number, number, number]): number {
-  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+function dist(a: PackedRgb, b: PackedRgb): number {
+  return Math.hypot(
+    ((a >> 16) & 255) - ((b >> 16) & 255),
+    ((a >> 8) & 255) - ((b >> 8) & 255),
+    (a & 255) - (b & 255),
+  )
+}
+
+/** Distance from a colour to a (possibly fractional) expected colour. */
+function distTo(r: number, g: number, b: number, a: PackedRgb): number {
+  return Math.hypot(((a >> 16) & 255) - r, ((a >> 8) & 255) - g, (a & 255) - b)
 }
 
 /** Whether a sibling between two colours keeps them in one run: only short spacing does. */
@@ -148,8 +187,8 @@ function runNeighbours(node: RedNode): RedNode[] {
   return after.length === 0 ? before : before.length === 0 ? after : before.concat(after)
 }
 
-function toHex(c: [number, number, number], like: string): string {
-  const hex = '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')
+function toHex(r: number, g: number, b: number, like: string): string {
+  const hex = '#' + [r, g, b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')
   return like === like.toLowerCase() ? hex : hex.toUpperCase()
 }
 
@@ -270,32 +309,50 @@ export function osuPitfallValidators(analyzer: { dialect: BBCodeDialect }): Vali
         const before = runSide(node, -1, 2)
         const after = runSide(node, 1, 2)
         if (before.length === 0 || after.length === 0 || before.length + after.length < 3) return null
-        const run = [...before.reverse(), node, ...after]
-        const i = before.length
-        const hex = run.map(hexOf)
-        if (!hex[i] || !hex[i - 1] || !hex[i + 1]) return null
-        const prev = rgb(hex[i - 1]!)
-        const next = rgb(hex[i + 1]!)
-        const self = rgb(hex[i]!)
-        const expected: [number, number, number] = [(prev[0] + next[0]) / 2, (prev[1] + next[1]) / 2, (prev[2] + next[2]) / 2]
+
+        // `runSide` returns nearest first, so the verdict can index the four
+        // neighbours directly. It used to build a reversed five-node run and
+        // map all of it through `hexOf`; that allocated three arrays per
+        // colour (the run, its hex strings and the `steps` list) for a test
+        // that only ever reads this window.
+        const self = hexOf(node)
+        const left1 = hexOf(before[0])
+        const right1 = hexOf(after[0])
+        if (self === null || left1 === null || right1 === null) return null
+
+        const prev = rgb(left1)
+        const next = rgb(right1)
+        const mid = rgb(self)
+        const expectedR = (((prev >> 16) & 255) + ((next >> 16) & 255)) / 2
+        const expectedG = (((prev >> 8) & 255) + ((next >> 8) & 255)) / 2
+        const expectedB = ((prev & 255) + (next & 255)) / 2
         const span = dist(prev, next)
         // Equal neighbours are an accent between two of the same colour
         // (`♡` in pink between two magentas), not a gradient to break.
         if (span === 0) return null
         // The run around it must itself be smooth — alternating colours
         // (A B A B) are a pattern, not a slip.
-        const steps: number[] = []
-        if (i >= 2 && hex[i - 2]) steps.push(dist(rgb(hex[i - 2]!), prev))
-        if (i + 2 < run.length && hex[i + 2]) steps.push(dist(next, rgb(hex[i + 2]!)))
-        if (steps.length === 0 || Math.max(...steps) > Math.max(span, 12) * 1.5 + 6) return null
-        const off = dist(self, expected)
+        let widestStep = -1
+        if (before.length >= 2) {
+          const left2 = hexOf(before[1])
+          if (left2 !== null) widestStep = dist(rgb(left2), prev)
+        }
+        if (after.length >= 2) {
+          const right2 = hexOf(after[1])
+          if (right2 !== null) {
+            const step = dist(next, rgb(right2))
+            if (step > widestStep) widestStep = step
+          }
+        }
+        if (widestStep < 0 || widestStep > Math.max(span, 12) * 1.5 + 6) return null
+        const off = distTo(expectedR, expectedG, expectedB, mid)
         if (off < 60 || off < 4 * Math.max(span, 8)) return null
         const open = openerRange(node, ctx.source)
-        const valueAt = open ? ctx.source.indexOf(hex[i]!, open.start) : -1
-        const suggested = toHex(expected, hex[i - 1]!)
+        const valueAt = open ? ctx.source.indexOf(self, open.start) : -1
+        const suggested = toHex(expectedR, expectedG, expectedB, left1)
         return createDiagnostic(
           'gradient-outlier',
-          `${hex[i]} breaks the colour run between ${hex[i - 1]} and ${hex[i + 1]} — probably meant ${suggested}`,
+          `${self} breaks the colour run between ${left1} and ${right1} — probably meant ${suggested}`,
           'warning',
           {
             nodeId: node.id,

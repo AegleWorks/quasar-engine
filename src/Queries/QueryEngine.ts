@@ -45,6 +45,13 @@ import type {
   QueryStep,
 } from '../Types/queries'
 
+type NodePredicate = (node: RedNode) => boolean
+
+interface CompiledStep {
+  readonly predicate: NodePredicate
+  readonly combinator: QueryCombinator | 'root'
+}
+
 export class QueryEngine {
   /**
    * Execute a query against a tree.
@@ -52,6 +59,11 @@ export class QueryEngine {
    * An empty query (or one whose every compound failed to parse) matches
    * nothing — not the root. "No selector" and "every node" are different
    * questions, and the explicit form of the second is `*`.
+   *
+   * The first step is answered in one pre-order walk that tests as it goes;
+   * it never materialises the 38 522-node document just to filter it. A
+   * one-step query — the overwhelming majority (`[color]`, `quote bold` is the
+   * exception) — is therefore a single traversal with no intermediate arrays.
    */
   execute(query: Query, root: RedNode): QueryResult {
     const startTime = performance.now()
@@ -60,26 +72,22 @@ export class QueryEngine {
       return { matches: [], total: 0, time: performance.now() - startTime }
     }
 
-    const all = flatten(root)
-    let current: readonly RedNode[] = []
+    const compiled = steps.map(compileStep)
+    let current = collectMatching(root, compiled[0].predicate)
 
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i]
-      const candidates = i === 0 || step.combinator === 'root'
-        ? all
-        : this.follow(current, step.combinator, all)
-
-      if (candidates.length === 0) {
-        current = []
-        break
-      }
-      current = candidates.filter(node => matchesStep(node, step))
+    for (let i = 1; i < compiled.length && current.length > 0; i++) {
+      const step = compiled[i]
+      const candidates = step.combinator === 'root'
+        ? collectMatching(root, step.predicate)
+        : follow(current, step.combinator, root).filter(step.predicate)
+      current = candidates
     }
 
+    const lastStep = steps[steps.length - 1]
     const matches: QueryMatch[] = current.map(node => ({
       node,
       score: 1,
-      matchedSelectors: describeStep(steps[steps.length - 1]),
+      matchedSelectors: describeStep(lastStep),
     }))
     return {
       matches,
@@ -87,121 +95,180 @@ export class QueryEngine {
       time: performance.now() - startTime,
     }
   }
+}
 
-  /** Nodes reached by one combinator from `from`, in document order. */
-  private follow(
-    from: readonly RedNode[],
-    combinator: QueryCombinator,
-    all: readonly RedNode[],
-  ): readonly RedNode[] {
-    const reached = new Set<RedNode>()
+/** Nodes matching one step, in document order, one traversal. */
+function collectMatching(root: RedNode, predicate: NodePredicate): RedNode[] {
+  const out: RedNode[] = []
+  const stack: RedNode[] = [root]
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    if (predicate(node)) out.push(node)
+    const children = node.children
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i])
+  }
+  return out
+}
 
-    for (const node of from) {
-      switch (combinator) {
-        case 'descendant': {
-          const stack = [...node.children]
-          while (stack.length > 0) {
-            const next = stack.pop()!
-            reached.add(next)
-            for (const child of next.children) stack.push(child)
-          }
-          break
+/** Nodes reached by one combinator from `from`, in document order. */
+function follow(
+  from: readonly RedNode[],
+  combinator: QueryCombinator,
+  root: RedNode,
+): readonly RedNode[] {
+  // One source is the common case: its subtree/siblings are already in
+  // document order, so no set and no whole-document filter are needed.
+  if (from.length === 1) {
+    const node = from[0]
+    switch (combinator) {
+      case 'descendant': {
+        const out: RedNode[] = []
+        const stack = node.children.slice().reverse()
+        while (stack.length > 0) {
+          const next = stack.pop()!
+          out.push(next)
+          const children = next.children
+          for (let i = children.length - 1; i >= 0; i--) stack.push(children[i])
         }
-        case 'child':
-          for (const child of node.children) reached.add(child)
-          break
-        case 'adjacent': {
-          const next = node.nextSibling
-          if (next) reached.add(next)
-          break
+        return out
+      }
+      case 'child':
+        return node.children
+      case 'adjacent': {
+        const next = node.nextSibling
+        return next ? [next] : []
+      }
+      case 'sibling':
+        return node.parent === null ? [] : node.parent.children.slice(node.index + 1)
+    }
+  }
+
+  const reached = new Set<RedNode>()
+  for (const node of from) {
+    switch (combinator) {
+      case 'descendant': {
+        const stack = [...node.children]
+        while (stack.length > 0) {
+          const next = stack.pop()!
+          reached.add(next)
+          for (const child of next.children) stack.push(child)
         }
-        case 'sibling': {
-          const parent = node.parent
-          if (!parent) break
-          const siblings = parent.children
-          for (let i = node.index + 1; i < siblings.length; i++) reached.add(siblings[i])
-          break
-        }
+        break
+      }
+      case 'child':
+        for (const child of node.children) reached.add(child)
+        break
+      case 'adjacent': {
+        const next = node.nextSibling
+        if (next) reached.add(next)
+        break
+      }
+      case 'sibling': {
+        const parent = node.parent
+        if (!parent) break
+        const siblings = parent.children
+        for (let i = node.index + 1; i < siblings.length; i++) reached.add(siblings[i])
+        break
       }
     }
-
-    // Filtering the pre-order list both restores document order (a set does
-    // not preserve it across multiple sources) and removes duplicates.
-    return reached.size === 0 ? [] : all.filter(node => reached.has(node))
   }
+
+  // A set does not preserve document order across multiple sources; one
+  // traversal restores it and drops duplicates at the same time.
+  return reached.size === 0 ? [] : collectMatching(root, reached.has.bind(reached))
 }
 
 // ─── Matching ──────────────────────────────────────────────────
 
-function matchesStep(node: RedNode, step: QueryStep): boolean {
-  for (let i = 0; i < step.selector.length; i++) {
-    if (!matchesSelector(node, step.selector[i])) return false
+/** Compile a compound selector once, instead of re-dispatching per node. */
+function compileStep(step: QueryStep): CompiledStep {
+  const predicates = step.selector.map(compileSelector)
+  return {
+    combinator: step.combinator,
+    predicate: predicates.length === 0
+      ? () => true
+      : node => {
+          for (let i = 0; i < predicates.length; i++) {
+            if (!predicates[i](node)) return false
+          }
+          return true
+        },
   }
-  return true
 }
 
-function matchesSelector(node: RedNode, selector: QuerySelector): boolean {
+function compileSelector(selector: QuerySelector): NodePredicate {
   switch (selector.type) {
     case 'kind':
-      return node.kind === selector.kind
+      return node => node.kind === selector.kind
 
     case 'tag': {
-      if (selector.tag === '*') return true
-      if (node.kind === selector.tag || node.metadata?.tagName === selector.tag) return true
-      // A selector names the BBCode TAG (`[b]`), the tree carries the semantic
-      // KIND (`bold`). Both directions are accepted so `b`, `color` and
-      // `centre`/`center` all find what an author expects.
-      return tagToNodeKind(selector.tag) === node.kind || nodeKindToTag(node.kind) === selector.tag
+      if (selector.tag === '*') return ALWAYS
+      const mappedKind = tagToNodeKind(selector.tag)
+      const tag = selector.tag
+      return node =>
+        node.kind === tag ||
+        node.metadata?.tagName === tag ||
+        node.kind === mappedKind ||
+        nodeKindToTag(node.kind) === tag
     }
 
-    case 'attribute': {
-      const value = readAttribute(node, selector.name)
-      if (selector.value === undefined) return value !== undefined
-      return value !== undefined && value === selector.value
-    }
+    case 'attribute':
+      return selector.value === undefined
+        ? node => readAttribute(node, selector.name) !== undefined
+        : node => readAttribute(node, selector.name) === selector.value
 
-    case 'attribute_value': {
+    case 'attribute_value':
       // The BBCode `=value` an author wrote. Read through the shared helper so
       // quoted attributes (`[quote="Ana"]`) compare without their quotes.
-      return nodeAttrValue(node) === selector.value
-    }
+      return node => nodeAttrValue(node) === selector.value
 
     case 'has_attribute':
-      return readAttribute(node, selector.name) !== undefined
+      return node => readAttribute(node, selector.name) !== undefined
 
     case 'text':
-      return (node.text || '').includes(selector.pattern)
+      return node => (node.text || '').includes(selector.pattern)
 
-    case 'has_child':
-      return node.children.some(child => matchesSelector(child, selector.selector))
+    case 'has_child': {
+      const nested = compileSelector(selector.selector)
+      return node => node.children.some(nested)
+    }
 
-    case 'has_descendant':
-      return hasDescendant(node, selector.selector)
+    case 'has_descendant': {
+      const nested = compileSelector(selector.selector)
+      return node => hasDescendant(node, nested)
+    }
 
     case 'first_child':
-      return node.index === 0
+      return node => node.index === 0
 
     case 'last_child':
-      return node.parent !== null && node.index === node.parent.children.length - 1
+      return node => node.parent !== null && node.index === node.parent.children.length - 1
 
     case 'nth_child':
       // CSS counts children from 1.
-      return node.index === selector.n - 1
+      return node => node.index === selector.n - 1
 
     case 'position':
-      if (selector.min !== undefined && node.index < selector.min) return false
-      if (selector.max !== undefined && node.index > selector.max) return false
-      return true
+      return node => {
+        if (selector.min !== undefined && node.index < selector.min) return false
+        if (selector.max !== undefined && node.index > selector.max) return false
+        return true
+      }
 
     case 'depth':
-      if (selector.min !== undefined && node.depth < selector.min) return false
-      if (selector.max !== undefined && node.depth > selector.max) return false
-      return true
+      return node => {
+        if (selector.min !== undefined && node.depth < selector.min) return false
+        if (selector.max !== undefined && node.depth > selector.max) return false
+        return true
+      }
 
     default:
-      return false
+      return NEVER
   }
 }
+
+const ALWAYS: NodePredicate = () => true
+const NEVER: NodePredicate = () => false
 
 /**
  * The value of an attribute, from metadata first and the source attribute
@@ -223,30 +290,17 @@ function readAttribute(node: RedNode, name: string): string | undefined {
   return value === '' ? undefined : value
 }
 
-function hasDescendant(node: RedNode, selector: QuerySelector): boolean {
+function hasDescendant(node: RedNode, predicate: NodePredicate): boolean {
   const stack = [...node.children]
   while (stack.length > 0) {
     const next = stack.pop()!
-    if (matchesSelector(next, selector)) return true
+    if (predicate(next)) return true
     for (const child of next.children) stack.push(child)
   }
   return false
 }
 
 // ─── Ordering and descriptions ─────────────────────────────────
-
-/** Pre-order, root first, iterative. Document order by construction. */
-function flatten(root: RedNode): readonly RedNode[] {
-  const out: RedNode[] = []
-  const stack: RedNode[] = [root]
-  while (stack.length > 0) {
-    const node = stack.pop()!
-    out.push(node)
-    const children = node.children
-    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i])
-  }
-  return out
-}
 
 /** Human-readable parts of a compound, for `QueryMatch.matchedSelectors`. */
 function describeStep(step: QueryStep): string[] {

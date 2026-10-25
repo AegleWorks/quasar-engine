@@ -156,6 +156,32 @@ export { insertLineBreak, joinBackward, joinForward, deleteSelection } from './C
 export { insertContent, isBlockContent, type ParseSource } from './Commands/InsertContent'
 export { toggleInlineFormat, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
+// ── Language service (Roslyn-shaped answers over one model) ──
+//
+// Diagnostics, outline, quick info, navigation, rename, completion, semantic
+// tokens and folding, cached per document version. A Workspace adds the
+// multi-document set and project/solution Fix-All.
+export { LanguageService, Workspace } from './Language/index'
+export type {
+  WorkspaceDocument,
+  WorkspaceOptions,
+  WorkspaceFixAllOptions,
+} from './Language/index'
+export type {
+  LanguageSymbol,
+  QuickInfo,
+  QuickInfoKind,
+  LanguageLocation,
+  RenameResult,
+  CompletionItem,
+  CompletionItemKind,
+  SemanticToken,
+  SemanticTokenType,
+  FoldingRange,
+  LanguageDiagnostics,
+  LanguageServiceStats,
+} from './Types/language'
+
 // ── Queries ──
 //
 // `query()` compiles the selector string; `QueryEngine` executes it. Both are
@@ -377,6 +403,7 @@ export {
   ColorUsageAnalyzer,
   GradientTagAnalyzer,
   locateGradientStops,
+  RestyleAnalyzer,
   DefaultDecision,
   PaletteRemapDecision,
   CollapseGradientTransform,
@@ -416,6 +443,18 @@ export type {
   PaletteRemapOptions,
   RemapAction,
 } from './Analysis/index'
+
+// ── Restyle planner: analysis cached across palette changes ──
+//
+// Restyling has two lifetimes — understanding the document (source only) and
+// deciding what changes (source + palette). The planner keeps the first and
+// reuses it while a theme picker changes the second.
+export {
+  PaletteRemapPlanner,
+  applyRemapActions,
+  type PaletteRemapPlannerOptions,
+  type PaletteRemapPlannerStats,
+} from './Restyle/PaletteRemapPlanner'
 
 // NOTE: `ExportTarget` from Analysis is intentionally omitted to avoid
 // naming collision with the existing `ExportTarget` from Visitors/BBCodeExporter.

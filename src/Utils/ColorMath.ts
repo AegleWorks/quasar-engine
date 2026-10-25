@@ -381,7 +381,7 @@ const SRGB_TO_LINEAR_BYTE: Float64Array = (() => {
  * cleared outright rather than evicted one by one, which keeps the hot path
  * a single `Map.get` with no bookkeeping.
  */
-const OKLAB_CACHE = new Map<string, readonly [number, number, number]>()
+const OKLAB_CACHE = new Map<string, [number, number, number]>()
 const OKLAB_CACHE_LIMIT = 4096
 
 /**
@@ -389,6 +389,30 @@ const OKLAB_CACHE_LIMIT = 4096
  */
 function linearToSrgb(c: number): number {
   return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
+}
+
+/**
+ * The shared OKLab memo, first introduced for the gradient scan and now used
+ * by every analysis hot path.
+ *
+ * Gradient detection converts each colour in a run twice — once to find stops,
+ * once to score the ramp — and a restyle over the 500 KB fixture does that over
+ * the same few dozen hex values thousands of times. The conversion is pure, so
+ * the memo is exact. The cap keeps arbitrary user input (a half-typed colour)
+ * from growing it without bound.
+ *
+ * Internal callers only: the returned triple is shared, so do not mutate it.
+ * `hexToOklab` below remains the allocating, public entry point.
+ */
+export function hexToOklabCached(hex: string): [number, number, number] {
+  const key = hex.charCodeAt(0) === 35 /* # */ ? hex.toUpperCase() : hex
+  const hit = OKLAB_CACHE.get(key)
+  if (hit !== undefined) return hit
+
+  const value = hexToOklab(key)
+  if (OKLAB_CACHE.size >= OKLAB_CACHE_LIMIT) OKLAB_CACHE.clear()
+  OKLAB_CACHE.set(key, value)
+  return value
 }
 
 /**

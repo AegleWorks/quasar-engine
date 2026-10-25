@@ -63,7 +63,8 @@ const html = BBCodeDocumentModel.renderForum(source, { dialect: 'lyne' })
 | **Analysis pipeline** | Pass-based analysis that finds collapsible gradients, mergeable colors and decorative symbol runs, and remaps a document to a palette. | `PipelineBuilder`, `GradientAnalyzer`, `PaletteRemapDecision` |
 | **Anchors** | Ranges that follow the text through edits and survive a reload, for comments, open boxes or ignored warnings. | `AnchorSet`, `toSelector`, `restoreAnchors` |
 | **Collaboration** | Offset and range transforms for a text CRDT (Yjs or similar). Every edit carries an `origin`, so you can tell your own echo apart. | `transformOffset`, `transformRange` |
-| **Editor services** | CSS-like structural queries, a symbol table, tree diffing, transactions with undo, a formatter and nesting repair. | `QueryEngine`, `SymbolTable`, `TreeDiffer`, `Transaction`, `repairNesting` |
+| **Language service** | Diagnostics, outline, quick info, definition, references, rename, completion, semantic tokens, folding and code actions over one document, cached per version. A `Workspace` adds project/solution Fix-All across models. | `LanguageService`, `Workspace` |
+| **Editor services** | CSS-like structural queries, a symbol table (headings + `[url=#fragment]`, plus plugin `id`/`goto`), tree diffing, transactions with undo, a formatter and nesting repair. | `QueryEngine`, `SymbolTable`, `TreeDiffer`, `Transaction`, `repairNesting` |
 | **Extensibility** | One plugin can contribute tags, commands, validators, lint rules, code fixes, refactorings, render hooks and CSS. Design tokens resolve at export time. | `PluginRegistry`, `TagRegistry`, `toTokenResolver` |
 
 Everything listed is exported from the package root. Nothing requires a deep import.
@@ -88,9 +89,16 @@ Measured on a 547 KB document and on the 65-document Miliastry corpus. The metho
 | Typing in prose, 547 KB, per keystroke | 0.30 ms |
 | Random keystrokes, 547 KB, p50 / p90 / p99 | 0.89 / 2.02 / 28.6 ms |
 | Full rebuild, 547 KB | about 55 ms |
+| First full semantic analysis, 547 KB | 62 ms (was 85 ms) |
 | Repeated `analyze()` with no edit, 547 KB | 0 ms (was 65 ms) |
+| Restyle plan, 547 KB | 67 ms (was 131 ms) |
+| Change restyle theme on the same page | 11 ms (was 131 ms) |
+| Apply 16 848 restyle actions, 547 KB | 2.6 ms (was 4–7 s) |
+| Semantic tokens after one edit, 547 KB | 10.6 ms (was 30 ms) |
+| Outline after one edit, 547 KB | 0.9 ms (was 12 ms) |
+| Structural query over every node, 547 KB | 3.1 ms (was 5.1 ms) |
 
-Prefer `applyChange` when your editor gives you the change. `applyTextUpdate` has to diff the whole text first.
+Prefer `applyChange` when your editor gives you the change. `applyTextUpdate` has to diff the whole text first. For restyling, `PaletteRemapPlanner` keeps the parse and analysis across theme changes; `applyRemapActions` rewrites the page in one linear pass.
 
 ## Installation
 
@@ -126,7 +134,7 @@ For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](
 | `npm run typecheck` | Type-checks without emitting. |
 | `npm run verify` | Typecheck, then tests. Run it before publishing. |
 | `npm run build` | Builds ESM, CJS, type declarations and the theme stylesheets into `dist/`. |
-| `node scripts/bench/run.mjs [--base <ref>]` | Benchmarks the corpus, the 547 KB fixture and adversarial inputs at growing sizes, each workload in its own process, alternating with `<ref>` when given. Run from the monorepo root. |
+| `npm run bench -- [--base <ref>]` | Benchmarks the corpus, the 547 KB fixture, restyle and language-service workloads and adversarial inputs at growing sizes, each workload in its own process, alternating with `<ref>` when given. `--budget <file>` and `--baseline <file> --check` gate a run. |
 | `node scripts/differential/run.mjs <ref> --corpus <dir>` | Checks that every output (renders, exports, effects, the HTML importer) is byte-identical to `<ref>`'s. |
 
 ## Documentation
@@ -138,6 +146,7 @@ For a step-by-step integration into an existing site, see [INTEGRATION-LYNE.md](
 | Build an editor on the canvas | [13. WYSIWYG canvas](./docs/13-WYSIWYG.md) |
 | Find out where a keystroke's time goes | [12. Incremental performance](./docs/12-Incremental-Performance.md) |
 | Read the latest audit, findings and contracts | [14. Engineering audit](./docs/14-Engineering-Audit-2026-10-21.md) |
+| Use the language service or speed up restyling | [15. Language service and restyle performance](./docs/15-Language-Service-and-Restyle-Performance.md) |
 | Attach data to parts of a document | [11. Anchors](./docs/11-Anchors-Plan.md) |
 | See how osu! semantics are modeled | [10. Semantic model](./docs/10-Semantic-Model-Plan.md) |
 | Add real-time collaboration | [QuasarCollab.MD](./QuasarCollab.MD) |

@@ -46,7 +46,6 @@ import type { PipelineContext } from '../../Contracts/PipelineContext'
 import type { Contribution } from '../../Contracts/Contribution'
 import { ContributionKind } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
-import { childOffsets } from '../../../Syntax/GreenNode'
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -112,6 +111,15 @@ function blockOf(codePoint: number): SymbolBlock | null {
   return null
 }
 
+/**
+ * Every decorative block starts at U+2190. A native regex scan for that range
+ * rejects ordinary prose in one vectorised pass, before `codePointAt` and the
+ * block loop run per character. Accented Latin (U+00C0–U+024F) still falls
+ * through to the loop, which finds nothing — the cost is one native scan, not
+ * a wrong answer.
+ */
+const MAYBE_SYMBOL = /[\u2190-\uFFFF]/
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface SymbolGlyph {
@@ -134,6 +142,88 @@ export interface SymbolRunModel {
   readonly length: number
   /** Whether the run was long enough to read as a divider. */
   readonly isSeparator: boolean
+}
+
+/**
+ * Find the decorative runs in one text leaf and append their contributions.
+ *
+ * Module-level because the restyle analyzer scans the same text in the same
+ * single pass as the colour and gradient work; a second implementation would
+ * be a second opinion about what a symbol is.
+ */
+export function scanSymbolText(
+  text: string,
+  textStart: number,
+  sink: Contribution[],
+): void {
+  if (!MAYBE_SYMBOL.test(text)) return
+
+  let run: SymbolGlyph[] = []
+
+  const flush = (): void => {
+    if (run.length === 0) return
+    const glyphs = run
+    run = []
+    const start = glyphs[0].start
+    const end = glyphs[glyphs.length - 1].end
+    const isSeparator = glyphs.length >= MIN_SEPARATOR_LENGTH
+
+    const blocks: string[] = []
+    for (const glyph of glyphs) {
+      if (!blocks.includes(glyph.block)) blocks.push(glyph.block)
+    }
+
+    // The lowest base wins: a run is only as safely ornamental as its least
+    // ornamental glyph, so `≈≈≈` stays more doubtful than `✧✧✧`.
+    let confidence = Math.min(...glyphs.map(g => blockOf(g.codePoint)!.confidence))
+    if (isSeparator) confidence = Math.min(MAX_CONFIDENCE, confidence + SEPARATOR_BONUS)
+
+    const model: SymbolRunModel = {
+      text: text.slice(start - textStart, end - textStart),
+      glyphs,
+      blocks,
+      length: glyphs.length,
+      isSeparator,
+    }
+
+    sink.push({
+      kind: ContributionKind.Semantic,
+      label: isSeparator ? 'Separator' : 'Symbol',
+      confidence,
+      range: { start, end },
+      metadata: { model },
+      description: isSeparator
+        ? `Separator of ${glyphs.length} glyphs (${blocks.join(', ')})`
+        : `Decorative symbol ${model.text} (${blocks.join(', ')})`,
+    })
+  }
+
+  // Iterates by code point, not by index: an astral symbol such as `🌸`
+  // occupies two UTF-16 units, and stepping one unit at a time would split it
+  // into unpaired surrogates that match no block. The offsets recorded stay in
+  // UTF-16 units so they address the source directly.
+  let i = 0
+  while (i < text.length) {
+    const codePoint = text.codePointAt(i)!
+    const width = codePoint > 0xffff ? 2 : 1
+    const block = blockOf(codePoint)
+
+    if (block) {
+      run.push({
+        char: String.fromCodePoint(codePoint),
+        codePoint,
+        block: block.name,
+        start: textStart + i,
+        end: textStart + i + width,
+      })
+    } else {
+      flush()
+    }
+
+    i += width
+  }
+
+  flush()
 }
 
 // ── Analyzer ──────────────────────────────────────────────────────
@@ -161,97 +251,18 @@ export class SymbolAnalyzer implements AnalyzerPass {
     if (OPAQUE_KINDS.has(node.kind)) return
 
     if (node.kind === 'text') {
-      this.scanText(node.text, start, sink)
+      scanSymbolText(node.text, start, sink)
       return
     }
 
     const children = node.children as readonly GreenNode[]
     if (children.length === 0) return
 
-    const offsets = childOffsets(node, start)
+    // Accumulate, don't allocate: see the note in `ColorUsageAnalyzer`.
+    let offset = start + node.leadingWidth
     for (let i = 0; i < children.length; i++) {
-      this.walk(children[i], sink, offsets[i])
-    }
-  }
-
-  /**
-   * Find runs of decorative glyphs in one text leaf.
-   *
-   * Iterates by code point, not by index: an astral symbol such as `🌸`
-   * occupies two UTF-16 units, and stepping one unit at a time would split it
-   * into unpaired surrogates that match no block. The offsets recorded stay in
-   * UTF-16 units so they address the source directly.
-   */
-  private scanText(text: string, textStart: number, sink: Contribution[]): void {
-    let run: SymbolGlyph[] = []
-
-    const flush = () => {
-      if (run.length > 0) {
-        sink.push(this.toContribution(text, textStart, run))
-        run = []
-      }
-    }
-
-    let i = 0
-    while (i < text.length) {
-      const codePoint = text.codePointAt(i)!
-      const width = codePoint > 0xffff ? 2 : 1
-      const block = blockOf(codePoint)
-
-      if (block) {
-        run.push({
-          char: String.fromCodePoint(codePoint),
-          codePoint,
-          block: block.name,
-          start: textStart + i,
-          end: textStart + i + width,
-        })
-      } else {
-        flush()
-      }
-
-      i += width
-    }
-
-    flush()
-  }
-
-  private toContribution(
-    text: string,
-    textStart: number,
-    glyphs: readonly SymbolGlyph[],
-  ): Contribution {
-    const start = glyphs[0].start
-    const end = glyphs[glyphs.length - 1].end
-    const isSeparator = glyphs.length >= MIN_SEPARATOR_LENGTH
-
-    const blocks: string[] = []
-    for (const glyph of glyphs) {
-      if (!blocks.includes(glyph.block)) blocks.push(glyph.block)
-    }
-
-    // The lowest base wins: a run is only as safely ornamental as its least
-    // ornamental glyph, so `≈≈≈` stays more doubtful than `✧✧✧`.
-    let confidence = Math.min(...glyphs.map(g => blockOf(g.codePoint)!.confidence))
-    if (isSeparator) confidence = Math.min(MAX_CONFIDENCE, confidence + SEPARATOR_BONUS)
-
-    const model: SymbolRunModel = {
-      text: text.slice(start - textStart, end - textStart),
-      glyphs,
-      blocks,
-      length: glyphs.length,
-      isSeparator,
-    }
-
-    return {
-      kind: ContributionKind.Semantic,
-      label: isSeparator ? 'Separator' : 'Symbol',
-      confidence,
-      range: { start, end },
-      metadata: { model },
-      description: isSeparator
-        ? `Separator of ${glyphs.length} glyphs (${blocks.join(', ')})`
-        : `Decorative symbol ${model.text} (${blocks.join(', ')})`,
+      this.walk(children[i], sink, offset)
+      offset += children[i].width
     }
   }
 }

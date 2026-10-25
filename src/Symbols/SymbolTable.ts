@@ -5,15 +5,17 @@
  * them: go-to-definition, find-all-references, rename, and the document
  * outline.
  *
- * BBCode has no declaration syntax of its own, so the engine records two
- * metadata keys when a tag or plugin provides them:
+ * BBCode has no declaration syntax of its own, so symbols come from two
+ * places:
  *
- *   `id`    a definition, e.g. `[anchor=hero]`
- *   `goto`  a reference, e.g. `[goto=hero]`
+ *  - **Headings.** A `[heading]Title[/heading]` defines `#title`; a
+ *    `[url=#title]` link refers to it. This is a table of contents that every
+ *    real userpage already writes, and it needs no new syntax.
+ *  - **Metadata.** A tag or plugin can carry `id` (a definition) or `goto`
+ *    (a reference). The built-in tag set produces neither, but the extension
+ *    point stays available.
  *
- * The built-in tag set does not currently produce either (an `[id=…]` tag
- * parses as literal text), but plugins can, and the type has always promised
- * the lookup. What it did not deliver:
+ * What this module did not deliver before:
  *
  *  - `getSymbolForNode` looked the symbol ID up in a map keyed by NAME, so it
  *    returned `undefined` for every node it was ever asked about;
@@ -23,13 +25,41 @@
  *  - symbol IDs embedded `Date.now()`, so two builds of identical text
  *    disagreed — the opposite of what an ID is for.
  *
- * Built in two passes over the tree, in document order, with IDs derived from
- * the definition's name and offset. Deterministic, and stable for as long as
- * the bytes are.
+ * Built in passes over the tree, in document order, with IDs derived from the
+ * definition's name and offset. Deterministic, and stable for as long as the
+ * bytes are.
  */
 
 import { RedNode } from '../Syntax/RedNode'
+import { extractTextContent } from '../Model/TagRegistry'
 import type { SymbolInfo, Reference, SymbolSearchResult } from '../Types/symbols'
+
+/**
+ * Turn heading text into the fragment an author links to.
+ *
+ * The rules are deliberately boring and deterministic: compatibility-decompose
+ * and drop accents, lowercase, collapse every run of non-alphanumerics to one
+ * hyphen, trim hyphens. A heading with no letters or digits becomes `section`,
+ * and the caller appends `-2`, `-3` for duplicates. `#section` is what a table
+ * of contents would link to, so that is what the symbol is called.
+ *
+ * Unicode property escapes are ES2018, the package targets ES2022, and Node,
+ * Blink and Tauri all support them.
+ */
+export function slugifyHeading(text: string): string {
+  const slug = text
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug === '' ? 'section' : slug
+}
+
+/** The plain text of a heading, or `''` for a heading with no text. */
+function headingText(node: RedNode): string {
+  return extractTextContent(node).replace(/\s+/g, ' ').trim()
+}
 
 export class SymbolTable {
   private symbols: Map<string, SymbolInfo> = new Map()
@@ -44,7 +74,7 @@ export class SymbolTable {
    * definitions are still mapped to it (a duplicate definition and a reference
    * are the same navigation target as far as go-to-definition is concerned).
    */
-  build(root: RedNode): void {
+  build(root: RedNode, source?: string): void {
     this.symbols.clear()
     this.nodeToSymbolName.clear()
 
@@ -74,26 +104,106 @@ export class SymbolTable {
       this.nodeToSymbolName.set(node.id, id)
     }
 
-    // Pass 2: references, now that every definition exists.
+    // Pass 2: headings. BBCode has no declaration syntax, but a heading and a
+    // `[url=#fragment]` link to it are a definition and a reference that every
+    // real userpage already writes. Before this, the table only understood
+    // `id`/`goto` metadata that no built-in tag produced, so a document with a
+    // table of contents had no symbols at all.
+    this.buildHeadingSymbols(nodes, root)
+
+    // Pass 3: references, now that every definition exists.
+    const byLowerName = new Map<string, SymbolInfo>()
+    for (const symbol of this.symbols.values()) {
+      byLowerName.set(symbol.name.toLowerCase(), symbol)
+    }
+
     for (const node of nodes) {
       const goto = node.metadata?.goto
-      if (typeof goto !== 'string' || goto === '') continue
-      // A node that both defines and refers to the same name is not its own
-      // reference; counting it would show a phantom usage.
-      if (node.metadata?.id === goto) continue
-      const symbol = this.symbols.get(goto)
-      if (!symbol) {
-        // A `goto` with no definition is not a reference to anything yet.
+      if (typeof goto === 'string' && goto !== '') {
+        // A node that both defines and refers to the same name is not its own
+        // reference; counting it would show a phantom usage.
+        if (node.metadata?.id !== goto) {
+          const symbol = this.symbols.get(goto)
+          if (symbol) {
+            this.addReference(symbol, node, { start: node.range.start, end: node.range.end }, goto)
+          }
+        }
         continue
       }
-      const reference: Reference = {
-        nodeId: node.id,
-        range: { start: node.range.start, end: node.range.end },
-        kind: 'reference',
+
+      if (node.kind !== 'url') continue
+      const href = node.metadata?.href
+      if (typeof href !== 'string' || !href.startsWith('#')) continue
+
+      const fragment = href.slice(1)
+      let decoded = fragment
+      try {
+        decoded = decodeURIComponent(fragment)
+      } catch {
+        // A malformed escape is still a fragment the author wrote; match it as
+        // it appears rather than throw.
       }
-      symbol.references.push(reference)
-      this.nodeToSymbolName.set(node.id, goto)
+      const symbol = byLowerName.get(decoded.toLowerCase())
+      if (!symbol) continue
+
+      // Point at the fragment itself, not the whole `[url=…]` tag. Without the
+      // source there is no exact span, so the whole node is the honest answer.
+      let range = { start: node.range.start, end: node.range.end }
+      if (source !== undefined) {
+        const delimiter = source.slice(node.range.start, node.innerStart)
+        const at = delimiter.indexOf(href)
+        if (at >= 0) {
+          const start = node.range.start + at
+          range = { start, end: start + href.length }
+        }
+      }
+      this.addReference(symbol, node, range, symbol.name)
     }
+  }
+
+  /**
+   * One symbol per heading, named by its fragment. Duplicate headings get
+   * `-2`, `-3`, in document order — the same rule a static-site generator uses,
+   * and the only one that keeps `#intro` and a second "Intro" addressable.
+   */
+  private buildHeadingSymbols(nodes: readonly RedNode[], root: RedNode): void {
+    for (const node of nodes) {
+      if (node.kind !== 'heading') continue
+
+      const text = headingText(node)
+      const base = slugifyHeading(text)
+      let name = base
+      for (let n = 2; this.symbols.has(name); n++) name = `${base}-${n}`
+
+      const symbol: SymbolInfo = {
+        id: symbolId(name, node.innerStart),
+        name,
+        kind: 'id_definition',
+        definitionNodeId: node.id,
+        definitionRange: { start: node.innerStart, end: node.innerEnd },
+        containerNodeId: root.id,
+        references: [],
+        data: {
+          origin: 'heading',
+          text,
+          nodeRange: { start: node.range.start, end: node.range.end },
+          innerRange: { start: node.innerStart, end: node.innerEnd },
+        },
+      }
+      this.symbols.set(name, symbol)
+      this.nodeToSymbolName.set(node.id, name)
+    }
+  }
+
+  private addReference(
+    symbol: SymbolInfo,
+    node: RedNode,
+    range: { start: number; end: number },
+    name: string,
+  ): void {
+    const reference: Reference = { nodeId: node.id, range, kind: 'reference' }
+    symbol.references.push(reference)
+    this.nodeToSymbolName.set(node.id, name)
   }
 
   /** Get a symbol by name. */

@@ -15,3 +15,4 @@
 - [12. Incremental performance](./12-Incremental-Performance.md)
 - [13. WYSIWYG canvas](./13-WYSIWYG.md)
 - [14. Engineering audit 2026-10-21](./14-Engineering-Audit-2026-10-21.md)
+- [15. Language service and restyle performance](./15-Language-Service-and-Restyle-Performance.md)

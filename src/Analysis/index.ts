@@ -41,11 +41,13 @@ export { RainbowAnalyzer } from './Passes/Analysis/RainbowAnalyzer'
 export type { RainbowModel, RainbowDiagnostics } from './Passes/Analysis/RainbowAnalyzer'
 export { WaveAnalyzer } from './Passes/Analysis/WaveAnalyzer'
 export type { WaveModel, WaveDiagnostics } from './Passes/Analysis/WaveAnalyzer'
-export { SymbolAnalyzer } from './Passes/Analysis/SymbolAnalyzer'
-export type { SymbolGlyph, SymbolRunModel } from './Passes/Analysis/SymbolAnalyzer'
-export { ColorUsageAnalyzer } from './Passes/Analysis/ColorUsageAnalyzer'
+
+export { ColorUsageAnalyzer, colorUsageContributionAt } from './Passes/Analysis/ColorUsageAnalyzer'
 export type { ColorUsageModel } from './Passes/Analysis/ColorUsageAnalyzer'
-export { GradientTagAnalyzer, locateGradientStops } from './Passes/Analysis/GradientTagAnalyzer'
+export { SymbolAnalyzer, scanSymbolText } from './Passes/Analysis/SymbolAnalyzer'
+export type { SymbolGlyph, SymbolRunModel } from './Passes/Analysis/SymbolAnalyzer'
+export { RestyleAnalyzer } from './Passes/Analysis/RestyleAnalyzer'
+export { GradientTagAnalyzer, locateGradientStops, gradientTagContributionAt } from './Passes/Analysis/GradientTagAnalyzer'
 export type { GradientTagModel, GradientTagStop } from './Passes/Analysis/GradientTagAnalyzer'
 
 // ── Decision Passes ───────────────────────────────────────────────

@@ -36,7 +36,7 @@ import type { Contribution } from '../../Contracts/Contribution'
 import { ContributionKind } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
 import { childOffsets } from '../../../Syntax/GreenNode'
-import { hexToOklab, mixOklabToHex, perceptualDistanceOklab, hexToRgb } from '../../../Utils/ColorMath'
+import { hexToOklabCached, mixOklabToHex, perceptualDistanceOklab, hexToRgb } from '../../../Utils/ColorMath'
 import { extractHex, sigmoid, extractSequences, checkFormattingBreaks } from '../../Utils/color-utils'
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -51,6 +51,19 @@ const WEIGHTS = {
   monotonicProgression: 0.20,
   lowPerceptualError: 0.10,
 } as const
+
+/**
+ * Gradient detection is a pure function of a colour sequence, and real pages
+ * repeat sequences: a header motif, a divider used five times, the same body
+ * gradient copied into each section. `detectStops` and `buildDiagnostics` are
+ * the expensive halves (OKLab conversion, chord deviation, per-colour error),
+ * so both memoize on the colours they were given. The cap keeps a document
+ * with thousands of unique ramps bounded; on overflow the memo is cleared, the
+ * same policy as the OKLab cache.
+ */
+const SEQUENCE_CACHE_LIMIT = 1024
+const stopsCache = new Map<string, { stops: GradientStop[]; easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' }>()
+const diagnosticsCache = new Map<string, Omit<GradientDiagnostics, 'featureScores'>>()
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -264,51 +277,83 @@ export class GradientAnalyzer implements AnalyzerPass {
 
   // ── Sequence Detection ──────────────────────────────────────────
 
-  private findGradients(node: GreenNode, sink: Contribution[], nodeStart: number = 0): void {
-    // Green nodes carry widths, not positions, so a walk that reports source
-    // ranges accumulates them on the way down.
-    const offsets = childOffsets(node, nodeStart)
-    if (node.children.length > 0) {
-      const children = node.children as GreenNode[]
-      const sequences = extractSequences(children, 'color', extractHex)
+  /**
+   * One contribution per colour run among `children`, whose absolute starts
+   * are `offsets`. The caller already has the offsets, which is what lets the
+   * single-pass restyle analyzer join this scan instead of walking the tree
+   * again.
+   */
+  gradientsAt(
+    children: readonly GreenNode[],
+    offsets: readonly number[],
+  ): Contribution[] {
+    const sequences = extractSequences(children as GreenNode[], 'color', extractHex)
+    if (sequences.length === 0) return []
 
-      for (const seq of sequences) {
-        const colors = seq.values as string[]
-        if (colors.length < MIN_SEQUENCE_LENGTH) continue
+    const contributions: Contribution[] = []
+    for (const seq of sequences) {
+      const colors = seq.values as string[]
+      if (colors.length < MIN_SEQUENCE_LENGTH) continue
 
-        // Sum text length in the sequence
-        let textLen = 0
-        for (let i = seq.startIdx; i < seq.endIdx; i++) {
-          for (const child of children[i].children as GreenNode[]) {
-            if (child.kind === 'text') textLen += child.text.length
-          }
+      // Sum text length in the sequence
+      let textLen = 0
+      for (let i = seq.startIdx; i < seq.endIdx; i++) {
+        for (const child of children[i].children as GreenNode[]) {
+          if (child.kind === 'text') textLen += child.text.length
         }
-
-        const hasBreaks = checkFormattingBreaks(children, seq, 'color')
-        const { stops, easing } = this.detectStops(colors)
-        const diag = this.buildDiagnostics(colors, stops)
-        const { score: rawScore, featureScores } = this.calculateRawScore(diag, hasBreaks)
-        const confidence = sigmoid(rawScore, SIGMOID_STEEPNESS)
-
-        sink.push({
-          kind: ContributionKind.Semantic,
-          label: 'Gradient',
-          confidence,
-          range: {
-            start: offsets[seq.startIdx],
-            end: offsets[seq.endIdx],
-          },
-          metadata: {
-            model: { colors, easing, stops, charCount: textLen },
-            diagnostics: { ...diag, featureScores },
-          },
-        })
       }
+
+      const hasBreaks = checkFormattingBreaks(children as GreenNode[], seq, 'color')
+      const { stops, easing } = this.detectStops(colors)
+      const diag = this.buildDiagnostics(colors, stops)
+      const { score: rawScore, featureScores } = this.calculateRawScore(diag, hasBreaks)
+      const confidence = sigmoid(rawScore, SIGMOID_STEEPNESS)
+
+      contributions.push({
+        kind: ContributionKind.Semantic,
+        label: 'Gradient',
+        confidence,
+        range: {
+          start: offsets[seq.startIdx],
+          end: offsets[seq.endIdx],
+        },
+        metadata: {
+          model: { colors, easing, stops, charCount: textLen },
+          diagnostics: { ...diag, featureScores },
+        },
+      })
+    }
+    return contributions
+  }
+
+  private findGradients(node: GreenNode, sink: Contribution[], nodeStart: number = 0): void {
+    const children = node.children as GreenNode[]
+    if (children.length === 0) return
+
+    // A gradient run needs three adjacent colour children. Checking that
+    // before allocating offsets is the difference between one array per
+    // element node and one array per node that could actually contain a run:
+    // most of a document's nodes are paragraphs, boxes and plain text, and
+    // the old unconditional `childOffsets` allocation was a third of this
+    // pass on the 500 KB fixture.
+    if (countColorChildren(children) >= MIN_SEQUENCE_LENGTH) {
+      // Green nodes carry widths, not positions, so a walk that reports
+      // source ranges accumulates them on the way down.
+      const offsets = childOffsets(node, nodeStart)
+      for (const contribution of this.gradientsAt(children, offsets)) {
+        sink.push(contribution)
+      }
+      for (let i = 0; i < children.length; i++) {
+        this.findGradients(children[i], sink, offsets[i])
+      }
+      return
     }
 
-    const kids = node.children as GreenNode[]
-    for (let i = 0; i < kids.length; i++) {
-      this.findGradients(kids[i], sink, offsets[i])
+    // No possible run at this level: recurse without materialising offsets.
+    let offset = nodeStart + node.leadingWidth
+    for (let i = 0; i < children.length; i++) {
+      this.findGradients(children[i], sink, offset)
+      offset += children[i].width
     }
   }
 
@@ -322,6 +367,10 @@ export class GradientAnalyzer implements AnalyzerPass {
    * threshold, a new stop is recorded.  This naturally skips over plateaus.
    */
   private detectStops(colors: string[]): { stops: GradientStop[]; easing: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' } {
+    const key = colors.join(',')
+    const cached = stopsCache.get(key)
+    if (cached !== undefined) return cached
+
     const n = colors.length
     if (n <= 2) {
       return {
@@ -330,7 +379,7 @@ export class GradientAnalyzer implements AnalyzerPass {
       }
     }
 
-    const oklab = colors.map(c => hexToOklab(c))
+    const oklab = colors.map(c => hexToOklabCached(c))
     const rgb = colors.map(h => {
       const [r, g, b] = hexToRgb(h)
       return [r / 255, g / 255, b / 255]
@@ -438,7 +487,10 @@ export class GradientAnalyzer implements AnalyzerPass {
       }
     }
 
-    return { stops, easing }
+    const result = { stops, easing }
+    if (stopsCache.size >= SEQUENCE_CACHE_LIMIT) stopsCache.clear()
+    stopsCache.set(key, result)
+    return result
   }
 
   // ── Diagnostics ─────────────────────────────────────────────────
@@ -447,8 +499,12 @@ export class GradientAnalyzer implements AnalyzerPass {
     colors: string[],
     stops: GradientStop[],
   ): Omit<GradientDiagnostics, 'featureScores'> {
+    const key = colors.join(',')
+    const cached = diagnosticsCache.get(key)
+    if (cached !== undefined) return cached
+
     const n = colors.length
-    const oklabArray = colors.map(c => hexToOklab(c))
+    const oklabArray = colors.map(c => hexToOklabCached(c))
 
     // 1. Perceptual distances between adjacent colours
     const pDiffs: number[] = []
@@ -508,7 +564,7 @@ export class GradientAnalyzer implements AnalyzerPass {
     // 4. Perceptual error vs ideal OKLab interpolation across stops
     let maxPerceptualError = 0
     if (n >= 3 && stops.length >= 2) {
-      const stopOklabs = stops.map(s => hexToOklab(s.color))
+      const stopOklabs = stops.map(s => hexToOklabCached(s.color))
       for (let i = 0; i < n; i++) {
         const t = n > 1 ? i / (n - 1) : 0
         let segIdx = 0
@@ -520,12 +576,12 @@ export class GradientAnalyzer implements AnalyzerPass {
         const segSpan = s1.position - s0.position
         const segT = segSpan > 0 ? Math.max(0, Math.min(1, (t - s0.position) / segSpan)) : 0
         const ideal = mixOklabToHex(stopOklabs[segIdx], stopOklabs[segIdx + 1], segT)
-        const error = perceptualDistanceOklab(hexToOklab(ideal), oklabArray[i])
+        const error = perceptualDistanceOklab(hexToOklabCached(ideal), oklabArray[i])
         maxPerceptualError = Math.max(maxPerceptualError, error)
       }
     }
 
-    return {
+    const result = {
       uniformSpacing,
       monotonic,
       plateauCount,
@@ -534,6 +590,9 @@ export class GradientAnalyzer implements AnalyzerPass {
       maxStepDelta,
       avgStepDelta: avgDiff,
     }
+    if (diagnosticsCache.size >= SEQUENCE_CACHE_LIMIT) diagnosticsCache.clear()
+    diagnosticsCache.set(key, result)
+    return result
   }
 
   // ── Confidence Scoring ──────────────────────────────────────────

@@ -397,12 +397,263 @@ function scaling(gen: string): Metrics {
   return out
 }
 
+// ─── Restyle ─────────────────────────────────────────────────────────────────
+
+/**
+ * A realistic palette: multi-glyph separators, as every shipped theme has.
+ * A one-glyph separator collapses a divider below the three-glyph threshold and
+ * turns the next pass into a symbol substitution — correct per the documented
+ * contract, but not what a theme does.
+ */
+const RESTYLE_PALETTE = {
+  colors: ['#FFB7C5', '#FF69B4', '#FFC0CB', '#FF1493', '#FFE4E1'],
+  symbols: ['✿', '❀', '❁', '✾', '♡'],
+  separators: ['✿━━━━━✿', '❀═══════❀', '❁────────❁'],
+}
+
+const RESTYLE_PALETTE_B = {
+  colors: ['#8ECAE6', '#219EBC', '#023047', '#FFB703', '#FB8500'],
+  symbols: ['✦', '✧', '◦', '⋆', '·'],
+  separators: ['✦━━━━✦', '✧────✧'],
+}
+
+const RESTYLE_CONTEXT = {
+  mode: 'interactive' as const,
+  target: 'miliastry' as const,
+  featureFlags: {},
+  metadata: {},
+}
+
+/** Every corpus document through one plan, with a planner per process. */
+function restyleCorpus(docs: string[]): Metrics {
+  const out: Metrics = {}
+  if (typeof E.PaletteRemapPlanner !== 'function') {
+    out['restyle.corpus.plan'] = 'unavailable in this engine'
+    return out
+  }
+  let actions = 0
+  const step = () => {
+    actions = 0
+    const planner = new E.PaletteRemapPlanner()
+    for (const doc of docs) actions += planner.plan(doc, RESTYLE_PALETTE).actions.length
+  }
+  out['restyle.corpus.plan'] = median(step, 5, 1)
+  out['restyle.corpus.actions.count'] = actions
+  out['restyle.corpus.bytes'] = docs.reduce((n, doc) => n + doc.length, 0)
+  return out
+}
+
+/**
+ * A whole page: plan, plan again, change the theme, apply, and prove silence
+ * on the second pass. The metric names say which lifetime is being measured:
+ *
+ *   cold     new planner → parse + analyse + decide
+ *   warm     same source + palette → the plan is returned unchanged
+ *   theme    same source, new palette → decision only
+ *   apply    one linear pass over the source
+ */
+function restyleFixture(src: string): Metrics {
+  const out: Metrics = {}
+  if (typeof E.PaletteRemapPlanner !== 'function') {
+    out['restyle.plan.cold'] = 'unavailable in this engine'
+    return out
+  }
+
+  const planner = new E.PaletteRemapPlanner()
+  const plan = planner.plan(src, RESTYLE_PALETTE)
+  const actions = plan.actions as Array<{ payload: { range: { start: number; end: number }; replacement: string } }>
+
+  out['restyle.plan.cold'] = median(() => new E.PaletteRemapPlanner().plan(src, RESTYLE_PALETTE), 3, 0)
+  out['restyle.plan.warm'] = median(() => planner.plan(src, RESTYLE_PALETTE), 7, 1)
+
+  const parsed = new E.BBCodeDocumentModel({ source: src, autoAnalyze: false, maxUndo: 0 })
+  const green = parsed.greenRoot
+  out['restyle.analyzer.combined'] = median(
+    () => new E.RestyleAnalyzer(src).run(green, RESTYLE_CONTEXT),
+    5,
+    1,
+  )
+  out['restyle.analyzer.separate'] = median(() => {
+    new E.GradientAnalyzer().run(green, RESTYLE_CONTEXT)
+    new E.ColorUsageAnalyzer().run(green, RESTYLE_CONTEXT)
+    new E.GradientTagAnalyzer(src).run(green, RESTYLE_CONTEXT)
+    new E.SymbolAnalyzer().run(green, RESTYLE_CONTEXT)
+  }, 5, 1)
+  out['restyle.actions.count'] = actions.length
+  out['restyle.contributions.count'] = planner.report(src).contributions.length
+
+  const report = planner.report(src)
+  out['restyle.decision'] = median(
+    () => new E.PaletteRemapDecision(RESTYLE_PALETTE_B).run(report, RESTYLE_CONTEXT),
+    5,
+    1,
+  )
+  out['restyle.apply'] = median(() => E.applyRemapActions(src, actions), 5, 1)
+
+  const applied = E.applyRemapActions(src, actions) as string
+  out['restyle.applied.bytes'] = applied.length
+  // Informational, not a promise: glyph and native-gradient substitutions are
+  // exact, while a run of colour tags can be re-detected as a slightly
+  // different ramp after it is recoloured. The count says how much a second
+  // pass would still touch.
+  out['restyle.replan.actions.count'] = new E.PaletteRemapPlanner().plan(applied, RESTYLE_PALETTE).actions.length
+
+  // The four-pass pipeline this workload replaced, measured in the same
+  // process. Kept as a reference: the analyzers are public API, so the
+  // comparison stays reproducible instead of living in a commit message.
+  if (typeof E.PipelineBuilder === 'function') {
+    const legacy = () => {
+      const model = new E.BBCodeDocumentModel({ source: src, autoAnalyze: false, maxUndo: 0 })
+      return new E.PipelineBuilder()
+        .analysis(
+          new E.GradientAnalyzer(),
+          new E.ColorUsageAnalyzer(),
+          new E.GradientTagAnalyzer(src),
+          new E.SymbolAnalyzer(),
+        )
+        .decision(new E.PaletteRemapDecision(RESTYLE_PALETTE))
+        .build()
+        .run(model.greenRoot, RESTYLE_CONTEXT)
+    }
+    const legacyResult = legacy()
+    const legacyActions = legacyResult.plan.actions as typeof actions
+    out['restyle.fourPass.plan'] = median(legacy, 3, 0)
+    out['restyle.fourPass.decision'] = median(
+      () => new E.PaletteRemapDecision(RESTYLE_PALETTE).run(legacyResult.report, RESTYLE_CONTEXT),
+      5,
+      1,
+    )
+    out['restyle.fourPass.apply'] = median(() => {
+      let text = src
+      for (let i = legacyActions.length - 1; i >= 0; i--) {
+        const { range, replacement } = legacyActions[i].payload
+        text = text.slice(0, range.start) + replacement + text.slice(range.end)
+      }
+      return text
+    }, 3, 1)
+  }
+
+  return out
+}
+
+// ─── Language service ───────────────────────────────────────────────────────
+
+/** Diagnostics, outline, tokens, folding and caret answers on the fixture. */
+function languageFixture(src: string): Metrics {
+  const out: Metrics = {}
+  if (typeof E.LanguageService !== 'function') {
+    out['language.outline.cold'] = 'unavailable in this engine'
+    return out
+  }
+
+  const model = new E.BBCodeDocumentModel({ source: src, autoAnalyze: true, maxUndo: 0 })
+  const service = new E.LanguageService(model)
+
+  out['language.diagnostics.count'] = service.getDiagnostics().diagnostics.length
+
+  const symbols = service.getDocumentSymbols()
+  out['language.outline.count'] = symbols.length
+  out['language.outline.cold'] = median(() => {
+    const fresh = new E.LanguageService(model)
+    return fresh.getDocumentSymbols()
+  }, 3, 1)
+  out['language.outline.warm'] = median(() => service.getDocumentSymbols(), 7, 1)
+
+  const tokens = service.getSemanticTokens()
+  out['language.tokens.count'] = tokens.length
+  out['language.tokens.cold'] = median(() => {
+    const fresh = new E.LanguageService(model)
+    return fresh.getSemanticTokens()
+  }, 3, 1)
+  out['language.tokens.warm'] = median(() => service.getSemanticTokens(), 7, 1)
+
+  out['language.folding.count'] = service.getFoldingRanges().length
+  out['language.folding'] = median(() => service.getFoldingRanges(), 7, 1)
+
+  const caret = Math.floor(src.length * 0.37)
+  out['language.quickInfo'] = median(() => service.getQuickInfo(caret), 100, 5)
+
+  // A known-opener offset, so completion actually has a delimiter to work in.
+  const open = src.indexOf('[color')
+  out['language.completions'] = open > 0
+    ? median(() => service.getCompletions(open + 6), 100, 5)
+    : 'no [color] in fixture'
+
+  out['language.codeActions'] = median(() => service.getCodeActions(caret), 5, 1)
+
+  // The post-edit path: apply a real one-character edit, then time only the
+  // token rebuild. Alternate insert/delete so it runs repeatedly on the same
+  // text and the model keeps taking the incremental reparse route.
+  const editAt = Math.max(0, src.indexOf('e', Math.floor(src.length / 2)))
+  const editTimes: number[] = []
+  const outlineTimes: number[] = []
+  const foldingTimes: number[] = []
+  const reusedBefore = service.stats.tokenBlocksReused
+  let inserting = true
+  for (let i = 0; i < 9; i++) {
+    if (inserting) model.applyChange({ start: editAt, end: editAt, text: 'x' })
+    else model.applyChange({ start: editAt, end: editAt + 1, text: '' })
+    inserting = !inserting
+
+    let t = now()
+    service.getSemanticTokens()
+    editTimes.push(now() - t)
+    t = now()
+    service.getDocumentSymbols()
+    outlineTimes.push(now() - t)
+    t = now()
+    service.getFoldingRanges()
+    foldingTimes.push(now() - t)
+  }
+  const medianOf = (values: number[]) => {
+    values.sort((a, b) => a - b)
+    return values[Math.floor(values.length / 2)]
+  }
+  out['language.tokens.edit'] = medianOf(editTimes)
+  out['language.outline.edit'] = medianOf(outlineTimes)
+  out['language.folding.edit'] = medianOf(foldingTimes)
+  out['language.tokens.blocks.reused'] = service.stats.tokenBlocksReused - reusedBefore
+  return out
+}
+
+/** Heading + fragment navigation on a synthetic table of contents. */
+function languageNavigation(): Metrics {
+  if (typeof E.LanguageService !== 'function') {
+    return { 'language.nav.refs': 'unavailable in this engine' }
+  }
+
+  const sections = 500
+  const source = Array.from({ length: sections }, (_, i) =>
+    `[heading]Section ${i}[/heading]\n[url=#section-${i}]jump[/url]\n`,
+  ).join('')
+
+  const model = new E.BBCodeDocumentModel({ source, autoAnalyze: false, maxUndo: 0 })
+  const service = new E.LanguageService(model)
+  const at = source.indexOf('#section-250]') + 1
+
+  const refs = service.findReferences(at)
+  const rename = service.rename(at, 'Renamed Section')
+
+  return {
+    'language.nav.bytes': source.length,
+    'language.nav.refs.count': refs.length,
+    'language.nav.rename.edits': rename?.edits.length ?? 0,
+    'language.nav.refs': median(() => {
+      const fresh = new E.LanguageService(model)
+      fresh.findReferences(at)
+    }, 3, 1),
+    'language.nav.refs.warm': median(() => service.findReferences(at), 20, 2),
+  }
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export const WORKLOADS: string[] = [
   'corpus.parse', 'corpus.parse.osu', 'corpus.analyze', 'corpus.render', 'corpus.export.osu', 'corpus.forum',
   'fixture.open', 'fixture.phases', 'fixture.keys', 'fixture.typing', 'fixture.editAnalyze', 'fixture.analyzeRepeat', 'fixture.editor',
   'fixture.markdown',
+  'restyle.corpus', 'restyle.fixture',
+  'language.fixture', 'language.navigation',
   ...Object.keys(GENERATORS).map(g => `scale.${g}`),
 ]
 
@@ -418,6 +669,10 @@ export function runWorkload(name: string, corpus: string[], fixture: string): Me
     case 'fixture.analyzeRepeat': return fixtureAnalyzeRepeat(fixture)
     case 'fixture.editor': return fixtureEditor(fixture)
     case 'fixture.markdown': return fixtureMarkdown(fixture)
+    case 'restyle.corpus': return restyleCorpus(corpus)
+    case 'restyle.fixture': return restyleFixture(fixture)
+    case 'language.fixture': return languageFixture(fixture)
+    case 'language.navigation': return languageNavigation()
   }
   throw new Error(`unknown workload ${name}`)
 }

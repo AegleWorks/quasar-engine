@@ -57,7 +57,7 @@ import type { AnalysisReport } from '../../Contracts/AnalysisReport'
 import type { PipelineContext } from '../../Contracts/PipelineContext'
 import type { SemanticContribution } from '../../Contracts/Contribution'
 import { ContributionKind } from '../../Contracts/Contribution'
-import { ease, mixHexOklab, perceptualDistance } from '../../../Utils/ColorMath'
+import { ease, hexToOklabCached, mixOklabToHex, perceptualDistanceOklab } from '../../../Utils/ColorMath'
 import type { ColorUsageModel } from '../Analysis/ColorUsageAnalyzer'
 import type { GradientModel } from '../Analysis/GradientAnalyzer'
 import type { GradientTagModel } from '../Analysis/GradientTagAnalyzer'
@@ -95,6 +95,9 @@ export interface PaletteRemapOptions {
 }
 
 const DEFAULT_MIN_CONFIDENCE = 0.7
+
+/** Shared empty list for labels no analyzer produced. */
+const EMPTY: readonly SemanticContribution[] = Object.freeze([])
 
 /**
  * One spelling for every hex this pass emits.
@@ -148,6 +151,25 @@ export class PaletteRemapDecision implements DecisionPass {
   private readonly minConfidence: number
 
   /**
+   * The palette in OKLab, computed once per instance.
+   *
+   * `nearestPaletteColor` used to call `perceptualDistance`, which parses BOTH
+   * hex strings on every comparison. A restyle of the 500 KB fixture asks that
+   * question ~12 000 times against a five-colour palette: 60 000 parses for a
+   * palette that never changes. These are the same numbers, calculated once.
+   */
+  private readonly paletteOklab: readonly (readonly [number, number, number])[]
+
+  /**
+   * Nearest-entry memo, one per run.
+   *
+   * Real documents repeat colours: a page with 12 000 colour tags typically
+   * has a few dozen distinct hex values. The distance scan is deterministic,
+   * so each distinct colour needs to be matched once.
+   */
+  private nearestCache = new Map<string, string>()
+
+  /**
    * Substitution tables, rebuilt per `run` so the pass stays reusable and
    * every run over the same report produces the same plan.
    */
@@ -157,26 +179,33 @@ export class PaletteRemapDecision implements DecisionPass {
   constructor(palette: Palette, options: PaletteRemapOptions = {}) {
     this.palette = palette
     this.minConfidence = options.minConfidence ?? DEFAULT_MIN_CONFIDENCE
+    this.paletteOklab = palette.colors.map(hexToOklabCached)
   }
 
   run(report: AnalysisReport, _context: PipelineContext): TransformationPlan {
     this.symbolMap = new Map()
     this.separatorMap = new Map()
+    this.nearestCache = new Map()
 
-    const semantic = report.contributions.filter(
-      (c): c is SemanticContribution => c.kind === ContributionKind.Semantic,
-    )
-
-    const byLabel = (label: string) =>
-      semantic
-        .filter(c => c.label === label)
-        .sort((a, b) => a.range.start - b.range.start)
+    // One bucket per label and one sort each, instead of four `filter` passes
+    // over every contribution plus four sorts of the whole semantic array.
+    const byLabel = new Map<string, SemanticContribution[]>()
+    for (const contribution of report.contributions) {
+      if (contribution.kind !== ContributionKind.Semantic) continue
+      const bucket = byLabel.get(contribution.label)
+      if (bucket === undefined) byLabel.set(contribution.label, [contribution])
+      else bucket.push(contribution)
+    }
+    for (const bucket of byLabel.values()) {
+      bucket.sort((a, b) => a.range.start - b.range.start)
+    }
+    const labelled = (label: string): readonly SemanticContribution[] => byLabel.get(label) ?? EMPTY
 
     const actions: RemapAction[] = [
-      ...this.planColors(byLabel('Color'), byLabel('Gradient')),
-      ...this.planGradientTags(byLabel('GradientTag')),
-      ...this.planSymbols(byLabel('Symbol')),
-      ...this.planSeparators(byLabel('Separator')),
+      ...this.planColors(labelled('Color'), labelled('Gradient')),
+      ...this.planGradientTags(labelled('GradientTag')),
+      ...this.planSymbols(labelled('Symbol')),
+      ...this.planSeparators(labelled('Separator')),
     ]
 
     // Source order, so a caller can apply them back to front by reversing.
@@ -195,8 +224,15 @@ export class PaletteRemapDecision implements DecisionPass {
 
     // Which gradient, if any, each colour tag belongs to. Membership is by
     // containment: GradientAnalyzer reports the span its member tags cover.
+    //
+    // Both lists arrive in source order, so a binary search finds the first
+    // colour at or after a gradient's start and the walk stops at its end.
+    // The old `colors.filter` per gradient was O(gradients × colours): on a
+    // page with a gradient per line that is millions of comparisons before a
+    // single action is produced.
     const memberOf = new Map<SemanticContribution, SemanticContribution>()
     const members = new Map<SemanticContribution, SemanticContribution[]>()
+    const colorsByStart = colors as readonly SemanticContribution[]
 
     for (const gradient of gradients) {
       // A doubtful gradient must not drive ramp sampling.
@@ -209,9 +245,20 @@ export class PaletteRemapDecision implements DecisionPass {
       // falls through and its colours are matched individually instead.
       if (gradient.confidence < this.minConfidence) continue
 
-      const inside = colors.filter(
-        c => c.range.start >= gradient.range.start && c.range.end <= gradient.range.end,
-      )
+      let lo = 0
+      let hi = colorsByStart.length
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1
+        if (colorsByStart[mid].range.start < gradient.range.start) lo = mid + 1
+        else hi = mid
+      }
+
+      const inside: SemanticContribution[] = []
+      for (let i = lo; i < colorsByStart.length; i++) {
+        const color = colorsByStart[i]
+        if (color.range.start > gradient.range.end) break
+        if (color.range.end <= gradient.range.end) inside.push(color)
+      }
       // A gradient needs at least two members before "position along it" means
       // anything; a degenerate one is treated as standalone colours.
       if (inside.length < 2) continue
@@ -340,7 +387,11 @@ export class PaletteRemapDecision implements DecisionPass {
 
     if (index >= colors.length - 1) return canonicalHex(colors[colors.length - 1])
 
-    return canonicalHex(mixHexOklab(colors[index], colors[index + 1], scaled - index))
+    // Both endpoints are already in OKLab: the palette is converted once per
+    // instance, not once per sampled stop.
+    return canonicalHex(
+      mixOklabToHex(this.paletteOklab[index], this.paletteOklab[index + 1], scaled - index),
+    )
   }
 
   /**
@@ -351,18 +402,24 @@ export class PaletteRemapDecision implements DecisionPass {
    * list first.
    */
   private nearestPaletteColor(hex: string): string {
+    const cached = this.nearestCache.get(hex)
+    if (cached !== undefined) return cached
+
+    const target = hexToOklabCached(hex)
     let best = this.palette.colors[0]
     let bestDistance = Infinity
 
-    for (const candidate of this.palette.colors) {
-      const distance = perceptualDistance(hex, candidate)
+    for (let i = 0; i < this.palette.colors.length; i++) {
+      const distance = perceptualDistanceOklab(target, this.paletteOklab[i])
       if (distance < bestDistance) {
         bestDistance = distance
-        best = candidate
+        best = this.palette.colors[i]
       }
     }
 
-    return canonicalHex(best)
+    const result = canonicalHex(best)
+    this.nearestCache.set(hex, result)
+    return result
   }
 
   // ── Glyphs ──────────────────────────────────────────────────────
