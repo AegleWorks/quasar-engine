@@ -119,14 +119,6 @@ export function extractTextContent(node: RedNode): string {
   return node.children.map(extractTextContent).join('')
 }
 
-/** Escape [ and ] inside BBCode content so they're not parsed as tags */
-function escapeBracket(ch: string): string {
-  // BBCode has no standard escape. For internal tags produced by TextStudio,
-  // text never contains brackets. If it does, we use the backslash escape
-  // that some BBCode parsers support.
-  return ch.replace(/\[/g, '\\[').replace(/\]/g, '\\]')
-}
-
 // ─── Effect segments ──────────────────────────────────────────
 //
 // The maths lives in `Utils/EffectMath`, not here. It used to live in
@@ -160,12 +152,22 @@ function effectSegments(node: RedNode, kind: EffectKind): StyledSegment[] {
   return evaluateEffect(text, kind, params, span)
 }
 
-/** Present styled segments as osu!-compatible BBCode. */
+/**
+ * Present styled segments as osu!-compatible BBCode.
+ *
+ * Segment text is written verbatim, brackets included. BBCode has no escape
+ * character: `\[` is not an escaped bracket to osu!, it is a backslash the
+ * reader sees, and re-parsing the export turns it into a real backslash in
+ * the document. Text Studio layers legitimately contain `[` and `]` (a
+ * framed nickname, `[ hxovc ]`), and a lone bracket that does not spell a
+ * tag is already ordinary text to the parser this output is pasted into.
+ * Escaping it was the only thing making the export differ from the preview.
+ */
 function segmentsToBBCode(segments: StyledSegment[]): string {
   let out = ''
   for (const s of segments) {
-    if (s.color !== undefined) out += `[color=${s.color}]${escapeBracket(s.text)}[/color]`
-    else if (s.size !== undefined) out += `[size=${s.size}]${escapeBracket(s.text)}[/size]`
+    if (s.color !== undefined) out += `[color=${s.color}]${s.text}[/color]`
+    else if (s.size !== undefined) out += `[size=${s.size}]${s.text}[/size]`
     else out += s.text
   }
   return out
