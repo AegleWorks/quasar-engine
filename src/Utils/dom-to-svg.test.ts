@@ -228,3 +228,60 @@ describe('domToSVGResult — block containment', () => {
     expect(liftedDuringExport({})).toEqual([false, false, false, false, false, false])
   })
 })
+
+describe('dom-to-svg · gradient text', () => {
+  let restore: () => void
+  let originalGetComputedStyle: typeof window.getComputedStyle
+
+  beforeEach(() => {
+    document.body.innerHTML =
+      '<div id="root" style="width:200px;height:40px"><span id="g" style="left:0px;top:0px;width:200px;height:20px">hola</span></div>'
+    restore = mockLayout(document.getElementById('root') as HTMLElement)
+
+    // jsdom has no text layout: one 200x20 line per text node.
+    Range.prototype.getClientRects = (() => [new DOMRect(0, 0, 200, 20)]) as unknown as Range['getClientRects']
+    Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 200, 20)
+
+    // jsdom drops `background-clip` and `-webkit-text-fill-color`: report them by hand.
+    originalGetComputedStyle = window.getComputedStyle
+    window.getComputedStyle = ((el: Element, pseudo?: string | null) => {
+      const real = originalGetComputedStyle(el, pseudo)
+      if (el.id !== 'g') return real
+      return new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'getPropertyValue') {
+            return (name: string) => {
+              if (name === '-webkit-text-fill-color') return 'rgba(0, 0, 0, 0)'
+              if (name === 'background-clip') return 'text'
+              return target.getPropertyValue(name)
+            }
+          }
+          if (prop === 'backgroundImage') {
+            return 'linear-gradient(to right, rgb(255, 0, 0), rgb(0, 255, 0) 25%, rgb(0, 0, 255))'
+          }
+          const v = Reflect.get(target, prop)
+          return typeof v === 'function' ? v.bind(target) : v
+        },
+      })
+    }) as typeof window.getComputedStyle
+  })
+
+  afterEach(() => {
+    delete (Range.prototype as Partial<Range>).getClientRects
+    delete (Range.prototype as Partial<Range>).getBoundingClientRect
+    window.getComputedStyle = originalGetComputedStyle
+    restore()
+    document.body.innerHTML = ''
+  })
+
+  it('draws a clipped CSS gradient as an SVG gradient fill', () => {
+    const { svg } = domToSVGResult(document.getElementById('root') as HTMLElement)
+    const id = svg.match(/<linearGradient id="([^"]+)"/)?.[1]
+    expect(id).toBeTruthy()
+    expect(svg).toContain(`fill="url(#${id})"`)
+    expect(svg).toContain('stop-color="#ff0000"')
+    expect(svg).toContain('stop-color="#0000ff"')
+    expect(svg).toMatch(/<stop offset="0\.2500" stop-color="#00ff00"/)
+    expect(svg).toMatch(/x1="0\.00"[^>]*x2="200\.00"/)
+  })
+})

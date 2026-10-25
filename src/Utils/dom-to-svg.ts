@@ -597,6 +597,150 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
 }
 
 // ────────────────────────────────────────────────────────────
+// Gradient text (`background-clip: text`)
+// ────────────────────────────────────────────────────────────
+
+interface GradientStop {
+  offset: number
+  color: string
+  opacity: number
+}
+
+interface TextGradient {
+  stops: GradientStop[]
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+const GRADIENT_ANGLES: Record<string, number> = {
+  "to top": 0,
+  "to right": 90,
+  "to bottom": 180,
+  "to left": 270,
+}
+
+/** Split on commas that are not inside parentheses (`rgb(1, 2, 3)` stays whole). */
+function splitTopLevel(list: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < list.length; i++) {
+    const ch = list[i]
+    if (ch === "(") depth++
+    else if (ch === ")") depth--
+    else if (ch === "," && depth === 0) {
+      out.push(list.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  out.push(list.slice(start).trim())
+  return out
+}
+
+/**
+ * Parse a computed `linear-gradient(...)` over `box` (in SVG units).
+ *
+ * Computed styles always spell colours as `rgb()`/`rgba()`, so that is all the
+ * stop parser reads. Anything it does not understand (radial and repeating
+ * gradients, corner directions, length stops) returns null and the text is
+ * drawn in its solid colour, which is what it did before gradients.
+ */
+function parseLinearGradient(image: string, box: DOMRect, rootRect: DOMRect, scale: number): TextGradient | null {
+  const m = image.match(/^linear-gradient\(([\s\S]*)\)$/)
+  if (!m) return null
+
+  const args = splitTopLevel(m[1])
+  let angle = 180 // CSS default: top to bottom
+  const first = args[0]
+  if (first in GRADIENT_ANGLES) {
+    angle = GRADIENT_ANGLES[first]
+    args.shift()
+  } else if (/^-?\d+(\.\d+)?deg$/.test(first)) {
+    angle = parseFloat(first)
+    args.shift()
+  } else if (/^to /.test(first)) {
+    return null
+  }
+
+  const raw: { color: string; opacity: number; offset: number | null }[] = []
+  for (const arg of args) {
+    const stop = arg.match(/^(rgba?\([^)]*\))\s*(-?\d+(?:\.\d+)?%)?$/)
+    if (!stop) return null
+    raw.push({
+      color: colorToHex(stop[1]),
+      opacity: extractAlpha(stop[1]),
+      offset: stop[2] ? Math.min(1, Math.max(0, parseFloat(stop[2]) / 100)) : null,
+    })
+  }
+  if (raw.length < 2) return null
+
+  // Stops without a position spread evenly between their positioned neighbours.
+  if (raw[0].offset === null) raw[0].offset = 0
+  if (raw[raw.length - 1].offset === null) raw[raw.length - 1].offset = 1
+  for (let i = 1; i < raw.length - 1; i++) {
+    if (raw[i].offset !== null) continue
+    let j = i
+    while (raw[j].offset === null) j++
+    const from = raw[i - 1].offset as number
+    const to = raw[j].offset as number
+    for (let k = i; k < j; k++) raw[k].offset = from + ((to - from) * (k - i + 1)) / (j - i + 1)
+    i = j
+  }
+
+  // CSS gradient line: through the box centre, long enough to touch both corners.
+  const rad = (angle * Math.PI) / 180
+  const dx = Math.sin(rad)
+  const dy = -Math.cos(rad)
+  const w = box.width * scale
+  const h = box.height * scale
+  const half = (Math.abs(w * dx) + Math.abs(h * dy)) / 2
+  const cx = (box.left - rootRect.left) * scale + w / 2
+  const cy = (box.top - rootRect.top) * scale + h / 2
+
+  return {
+    stops: raw.map(s => ({ offset: s.offset as number, color: s.color, opacity: s.opacity })),
+    x1: cx - dx * half,
+    y1: cy - dy * half,
+    x2: cx + dx * half,
+    y2: cy + dy * half,
+  }
+}
+
+const isClear = (color: string): boolean => color === "transparent" || /,\s*0\)$/.test(color)
+
+/**
+ * The gradient painting `parent`'s text, when there is one.
+ *
+ * The preview draws a plain gradient as a span with a CSS gradient background
+ * clipped to its glyphs, and the glyphs themselves transparent. Their own
+ * `color` says nothing about what is seen, so the gradient has to be found on
+ * the element that carries it: the text's parent or a few ancestors up (a
+ * `[b]` inside the gradient wraps the text in one more span).
+ */
+function findTextGradient(parent: HTMLElement, cs: CSSStyleDeclaration, state: WalkState): TextGradient | null {
+  // Cheap gate: only text with a clear fill can be showing a background through it.
+  if (!isClear(cs.getPropertyValue("-webkit-text-fill-color"))) return null
+
+  let el: HTMLElement | null = parent
+  for (let depth = 0; el && depth < 4; depth++, el = el.parentElement) {
+    const style = depth === 0 ? cs : window.getComputedStyle(el)
+    const clip = style.getPropertyValue("background-clip") || style.getPropertyValue("-webkit-background-clip")
+    if (clip !== "text") continue
+    return parseLinearGradient(style.backgroundImage, el.getBoundingClientRect(), state.rootRect, state.scale)
+  }
+  return null
+}
+
+function gradientDef(id: string, g: TextGradient): string {
+  const stops = g.stops
+    .map(s => `<stop offset="${s.offset.toFixed(4)}" stop-color="${s.color}"${s.opacity < 1 ? ` stop-opacity="${s.opacity.toFixed(3)}"` : ""} />`)
+    .join("")
+  return `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${px(g.x1)}" y1="${px(g.y1)}" x2="${px(g.x2)}" y2="${px(g.y2)}">${stops}</linearGradient></defs>`
+}
+
+// ────────────────────────────────────────────────────────────
 // Text node walker — character-scan for correct line wrapping
 // ────────────────────────────────────────────────────────────
 
@@ -616,8 +760,11 @@ function walkTextNode(textNode: Text, state: WalkState, depth: number): void {
 
   const { rootRect, scale } = state
 
-  const color = colorToHex(cs.color)
-  const colorAlpha = extractAlpha(cs.color)
+  const gradient = findTextGradient(parent, cs, state)
+  // Underline and line-through take the first stop: SVG strokes cannot reference
+  // the gradient the thumbnail whitelist admits for `fill`.
+  const color = gradient ? gradient.stops[0].color : colorToHex(cs.color)
+  const colorAlpha = gradient ? 1 : extractAlpha(cs.color)
   const fillOpacityAttr = colorAlpha < 1 ? ` fill-opacity="${colorAlpha.toFixed(3)}"` : ""
 
   const fontSize = parseFloat(cs.fontSize) || 14
@@ -653,8 +800,14 @@ function walkTextNode(textNode: Text, state: WalkState, depth: number): void {
     else if (textAlign === "right" || textAlign === "end") { anchor = "end"; tx = lx + lw }
 
     const textLayerId = `text-${depth}-${state.layerCount}`
+    let fill = color
+    if (gradient) {
+      const gradientId = `${textLayerId}-gradient`
+      state.parts.push(`${ind(depth)}${gradientDef(gradientId, gradient)}`)
+      fill = `url(#${gradientId})`
+    }
     state.parts.push(
-      `${ind(depth)}<text id="${textLayerId}" x="${px(tx)}" y="${px(baselineY)}" fill="${color}"${fillOpacityAttr} font-size="${(fontSize * scale).toFixed(2)}" font-family="${fontFamily}" font-weight="${fontWeight}" font-style="${fontStyleValue}" text-anchor="${anchor}"${lsAttr}>${escapeXml(line.text)}</text>`,
+      `${ind(depth)}<text id="${textLayerId}" x="${px(tx)}" y="${px(baselineY)}" fill="${fill}"${fillOpacityAttr} font-size="${(fontSize * scale).toFixed(2)}" font-family="${fontFamily}" font-weight="${fontWeight}" font-style="${fontStyleValue}" text-anchor="${anchor}"${lsAttr}>${escapeXml(line.text)}</text>`,
     )
     state.layersList.push({
       id: textLayerId,
