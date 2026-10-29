@@ -184,7 +184,10 @@ export class DocumentModel {
   private _pendingAnalyze: (() => void) | null = null
 
   // ── Diagnostics info ──
-  /** Last reparse timings breakdown (exposed for debugging) */
+  /**
+   * Last edit route: `'incremental'`, `'full_rebuild'`, or `'text_leaf'` for
+   * the MilHibri one-leaf splice (see {@link adoptTextLeafSplice}).
+   */
   lastReparsePath: string = ''
   /** Why the last reparse fell back to a full rebuild, if it did. */
   lastReparseFallbackReason: FallbackReason | null = null
@@ -653,7 +656,77 @@ export class DocumentModel {
     // report.
     if (VALIDATE_TREES) this.validateTree('incremental reparse')
 
-    // Emit event immediately
+    this.afterTextChange(oldRoot, change, origin)
+  }
+
+  /**
+   * Adopt a tree a language model built itself for a text edit it knows is
+   * confined to one text leaf.
+   *
+   * The model still owns every piece of state that makes an edit observable —
+   * source, version, node ids, the change range, events and the debounced
+   * analysis — so a fast path cannot forget one and drift from the normal
+   * one. The caller only proves the GREEN tree: the old one with one text
+   * leaf swapped and the ancestors above it rebuilt.
+   *
+   * Used by MilHibri, whose hybrid parse (BBCode pairing + Markdown blocks and
+   * inline) cannot be windowed: a leaf splice is the only way to type into a
+   * large page without re-running the whole import. It reports itself as
+   * `text_leaf` in `lastReparsePath`, never as an incremental window it did
+   * not compute.
+   */
+  protected adoptTextLeafSplice(
+    source: string,
+    green: GreenNode,
+    change: TextChange,
+    origin: string,
+    path: string = 'text_leaf',
+    red?: RedNode,
+  ): void {
+    const oldRoot = this._redRoot
+    if (this._analyzeTimeout) {
+      clearTimeout(this._analyzeTimeout)
+      this._analyzeTimeout = null
+    }
+    this._pendingAnalyze = null
+
+    this._source = source
+    this._greenRoot = green
+    // A caller that already built the red tree by REUSING untouched subtrees
+    // hands it over: those nodes keep their ids, and the only new nodes are
+    // the leaf and its ancestors, so the positional id walk must not run.
+    this._redRoot = red ?? this.buildRedFromGreen(green)
+    this._lastChangeRange = {
+      start: change.start,
+      end: change.start + change.text.length,
+      endOld: change.end,
+    }
+    this.lastReparsePath = path
+    this.lastReparseFallbackReason = null
+    this.lastReparseIsolation = null
+    this.lastReparseTimings = null
+    this.lastReparseWindow = { start: change.start, end: change.start + change.text.length }
+    this._analysisWindow = null
+    this._analysisWindowBroken = true
+    this._attachChangeRange(this._redRoot)
+    // Without a reused red tree every node is fresh: positional pairing is
+    // what carries identity across. With one, the survivors ARE the previous
+    // nodes; pairing would overwrite their live ids (same corruption the
+    // incremental path documents).
+    if (oldRoot && red === undefined) preserveNodeIds(oldRoot, this._redRoot)
+    if (VALIDATE_TREES) this.validateTree(path)
+    this._version++
+    this.afterTextChange(oldRoot, change, origin)
+  }
+
+  /**
+   * Everything an edit announces once its tree is in place: the synchronous
+   * `document_changed`, then the debounced analysis and its event.
+   *
+   * Shared by the incremental path and `adoptTextLeafSplice` so the two
+   * cannot disagree about ordering or about `nodeMatch`.
+   */
+  private afterTextChange(oldRoot: RedNode | null, change: TextChange, origin: string): void {
     if (this.events.hasListeners('document_changed') || this.events.recordHistory) {
       this.events.emit({
         type: 'document_changed',
@@ -667,7 +740,6 @@ export class DocumentModel {
       })
     }
 
-    // Debounced background task for heavy phases
     if (this._analyzeTimeout) {
       clearTimeout(this._analyzeTimeout)
     }
@@ -675,13 +747,10 @@ export class DocumentModel {
       this._analyzeTimeout = null
       this._pendingAnalyze = null
 
-      // Background Phase 1: Semantic Analysis
       if (this._options.autoAnalyze) {
         this.analyze()
       }
 
-      // Background Phase 2: Notify UI that semantics are ready — if some UI
-      // is listening. `nodeMatch` is lazy here too — see `defineLazyNodeMatch`.
       this.emitDiagnosticsUpdated(oldRoot)
     }
     this._pendingAnalyze = runPendingAnalyze
@@ -974,6 +1043,19 @@ export class DocumentModel {
    */
   findNode(id: NodeId): RedNode | null {
     return this._redRoot?.findById(id) ?? null
+  }
+
+  /**
+   * Parse `source` with this document's dialect and pairing, without touching
+   * the document.
+   *
+   * Commands use it to decide whether inserted content is block-level, and
+   * that answer depends on how THIS document reads tags. Exposing the same
+   * parser keeps the decision here instead of making every host build a
+   * throwaway model with the right options.
+   */
+  parseSource(source: string): RedNode {
+    return this.buildRedFromGreen(this.parseToGreen(source))
   }
 
   /**

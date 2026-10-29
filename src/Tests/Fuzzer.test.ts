@@ -110,8 +110,8 @@ function getPlainText(node: RedNode): string {
 // The pipeline under test is the one the app ships: "Export BBCode" runs
 // `BBCodeExporter` (target 'osu', which includes the same-name nesting
 // flatten) and, when minifying, `optimizeBBCodeFully` over the exported text
-// (`features/BBCode/export/exportAnalysis.ts`). The older tree-based
-// `ASTOptimizer` is no longer called by the app, so it is not fuzzed here.
+// (`features/BBCode/export/exportAnalysis.ts`). There is no tree-based
+// optimizer to fuzz: `Edits/Optimizer` works on source offsets.
 describe('Empirical Fuzz Testing - export + optimizer', () => {
   const fuzzer = new BBCodeFuzzer()
   const registry = new TagRegistry()

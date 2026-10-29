@@ -57,7 +57,10 @@ describe('url-markdown-link', () => {
   it('the osu! preview shows the link as osu! does: cut at the first "]", the rest printed', () => {
     const root = new BBCodeDocumentModel({ source: pasted, dialect: 'osu', autoAnalyze: false }).redRoot!
     const html = new HTMLRenderer({ dialect: 'osu' }).render(root)
-    expect(html).toContain('href="https://[https://osu.ppy.sh/users/8986574"')
+    // Sin href: la dirección cortada empieza con `https://[`, y ese `[` cae en la
+    // posición del host, así que el purificador de osu! descarta el atributo entero
+    // (medido con el harness). El enlace queda con su texto y nada más.
+    expect(html).not.toContain('href=')
     expect(html).toContain('(https://osu.ppy.sh/users/8986574?utm_source=gemini)]</span>Dezu')
     // Miliastry's preview is not osu!'s: it keeps rendering the link it always did.
     const mili = new HTMLRenderer({ dialect: 'miliastry' }).render(

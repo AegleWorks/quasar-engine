@@ -48,10 +48,38 @@ function canonicalBBCodeTag(name: string): string {
   }
 }
 
+const MEDIA_RAW_BODY_TAGS = new Set([
+  'img', 'youtube', 'audio', 'video',
+]);
+
 const BLOCK_BBCODE_TAGS = new Set([
   'box', 'boxw', 'spoilerbox', 'centre', 'center', 'right', 'left', 'align', 'quote', 'notice', 'wnotice', 'code',
   'columns', 'tables', 'row', 'th', 'col', 'glass', 'card', 'neon-box', 'scroll', 'separator', 'list', 'group', 'svg', 'imagemap', 'image',
 ]);
+
+export interface MarkdownParseOptions {
+  /**
+   * How a newline inside a paragraph is treated.
+   *
+   * `soft` is Markdown's rule: the newline stays inside the paragraph as a
+   * `\n` text node, so a browser collapses it to a space. `hard` is BBCode's
+   * rule: every newline ends the line, so it becomes a sibling `spacing` /
+   * `empty_line` node and renders as `<br>`. MilHibri uses `hard`; the
+   * Markdown importer keeps `soft`.
+   */
+  lineBreaks?: 'soft' | 'hard';
+  /**
+   * Parse a text run, not a document.
+   *
+   * Inline-only mode does not interpret single `*`/`_` emphasis or `->`
+   * alignment: inside an osu! page those are ordinary prose far more often
+   * than Markdown. Double emphasis, `~~`, `++`, inline code and links stay
+   * available, because those are unambiguous.
+   */
+  inlineOnly?: boolean;
+  /** Original source, used by inline-only boundary checks. */
+  source?: string;
+}
 
 /**
  * DocumentEngine — MarkdownParser
@@ -65,9 +93,34 @@ export class MarkdownParser {
   private inlineDepth = 0
   /** Last index of each closing tag, built once; see `hasClosingTagAfter`. */
   private closeIndexByTag: Map<string, number> | null = null;
+  /** Whether newlines end lines (BBCode) instead of softening (Markdown). */
+  private readonly hardBreaks: boolean;
+  /** Inline-only mode: see {@link MarkdownParseOptions.inlineOnly}. */
+  private readonly inlineOnly: boolean;
+  /** Original source, when the caller has it (inline mode). */
+  private readonly source: string;
 
-  constructor(tokens: MarkdownToken[]) {
+  constructor(tokens: MarkdownToken[], options: MarkdownParseOptions = {}) {
     this.tokens = tokens;
+    this.hardBreaks = options.lineBreaks === 'hard';
+    this.inlineOnly = options.inlineOnly === true;
+    this.source = options.source ?? '';
+  }
+
+  /** Whether `index` is a word character in the source. */
+  private isWordCharAt(index: number): boolean {
+    if (index < 0 || index >= this.source.length) return false;
+    return /[A-Za-z0-9_]/.test(this.source[index]);
+  }
+
+  /** `C++`, `M****`, `word**` — an opener glued to a word is prose. */
+  private emphasisOpenBlocked(token: MarkdownToken): boolean {
+    return this.inlineOnly && this.isWordCharAt(token.start - 1);
+  }
+
+  /** `**bold**word` — a closer glued to a word is prose too. */
+  private emphasisCloseBlocked(token: MarkdownToken): boolean {
+    return this.inlineOnly && this.isWordCharAt(token.end);
   }
 
   public parse(): MarkdownDocument {
@@ -77,21 +130,16 @@ export class MarkdownParser {
     };
 
     while (!this.isAtEnd()) {
-      let newlines = 0;
-      while (this.match('newline')) newlines++;
-
-      if (newlines > 0) {
-        for (let i = 0; i < newlines; i++) {
-          doc.children.push({ type: 'empty_line' });
-        }
+      if (this.check('newline')) {
+        const count = this.newlineRunLength();
+        this.current += count;
+        this.pushNewlineRun(doc.children, count);
+        continue;
       }
-
-      if (this.isAtEnd()) break;
 
       const node = this.parseBlock();
-      if (node) {
-        doc.children.push(node);
-      }
+      if (node) doc.children.push(node);
+      else break;
     }
 
     return doc;
@@ -102,14 +150,27 @@ export class MarkdownParser {
 
     const token = this.peek();
 
+    // A line made only of tildes is osu!'s separator, not empty
+    // strikethrough: `~~~~` used to render as `<s></s>` and lose the marks.
+    if (this.isTildeRuleLine()) {
+      let raw = '';
+      while (!this.isAtEnd() && !this.check('newline')) {
+        raw += this.tokenValue(this.advance());
+      }
+      if (!this.hardBreaks) this.match('newline');
+      return { type: 'paragraph', children: [{ type: 'text', value: raw }] };
+    }
+
     // Horizontal Rule (---)
     if (token.kind === 'hr' || (token.kind === 'dash' && ('value' in token && token.value === '---'))) {
       this.advance();
-      this.match('newline');
+      // In hard mode the line ending stays in the tree: the renderer hides the
+      // newlines a block swallows, so dropping it here would hide the NEXT one.
+      if (!this.hardBreaks) this.match('newline');
       return { type: 'separator' };
     }
 
-    if (token.kind === 'hash') {
+    if (token.kind === 'hash' && this.isAtxHeading()) {
       return this.parseHeading();
     }
     
@@ -130,7 +191,7 @@ export class MarkdownParser {
       return this.parseBlockquote();
     }
     
-    if (token.kind === 'fence') {
+    if (token.kind === 'fence' && this.isFenceOpener(token)) {
       return this.parseFence();
     }
 
@@ -150,10 +211,50 @@ export class MarkdownParser {
       if (bbTag && BLOCK_BBCODE_TAGS.has(bbTag.tagName)) {
         return this.parseBBCodeBlock(bbTag);
       }
+
+      // A closer with no opener left to match is not an instruction. Consume
+      // it as literal text so the document loop always makes progress:
+      // `parseParagraph` stops when `parseInline` sees the closer and returns
+      // null without advancing, which used to spin on the same token forever.
+      const closeTag = this.peekBBCodeCloseTag(this.current);
+      if (closeTag) {
+        const literal = this.literalOpener({
+          tagName: closeTag.tagName,
+          attrValue: undefined,
+          tokenEndIndex: closeTag.tokenEndIndex,
+        });
+        this.current = closeTag.tokenEndIndex + 1;
+        return { type: 'paragraph', children: [{ type: 'text', value: literal }] };
+      }
     }
 
     // Default to paragraph
     return this.parseParagraph();
+  }
+
+  /** A line made only of tildes is osu!'s separator, not empty strikethrough. */
+  private isTildeRuleLine(index = this.current): boolean {
+    if (this.tokens[index]?.kind !== 'tilde') return false
+    let at = index
+    let count = 0
+    while (this.tokens[at]?.kind === 'tilde') {
+      count += (this.tokens[at] as any).value.length
+      at++
+    }
+    return count >= 3 && (!this.tokens[at] || this.tokens[at].kind === 'newline')
+  }
+
+  /**
+   * CommonMark requires a space (or the line's end) after the `#` run.
+   * osu! userpages are full of `#1 vermont`, which is prose, not a heading;
+   * treating it as one turned the line into `[heading=1]` on export and moved
+   * the text into an h2.
+   */
+  private isAtxHeading(index = this.current): boolean {
+    if (this.tokens[index]?.kind !== 'hash') return false
+    const next = this.tokens[index + 1]
+    if (!next || next.kind === 'newline') return true
+    return next.kind === 'text' && 'value' in next && (next as any).value.startsWith(' ')
   }
 
   private parseHeading(): MarkdownHeading {
@@ -174,7 +275,7 @@ export class MarkdownParser {
       children[0].value = (children[0] as MarkdownText).value.replace(/^\s+/, '');
     }
 
-    this.match('newline');
+    if (!this.hardBreaks) this.match('newline');
 
     return {
       type: 'heading',
@@ -264,8 +365,13 @@ export class MarkdownParser {
         if (this.check('newline') || this.isAtEnd()) {
           break; // Empty line ends blockquote
         }
+        // A fence, heading or other block on the next line is not a lazy
+        // quote continuation: it belongs outside the quote. Without this the
+        // rest of the document became quote text (and a fenced code block
+        // showed as literal backticks).
+        if (!this.check('gt') && this.startsBlockAt(this.current)) break;
         if (children.length > 0) {
-          children.push({ type: 'text', value: '\n' });
+          children.push(this.hardBreaks ? { type: 'spacing' } : { type: 'text', value: '\n' });
         }
       }
 
@@ -337,7 +443,8 @@ export class MarkdownParser {
       if (this.check('newline')) {
         this.advance();
         if (this.check('newline') || this.isAtEnd()) break;
-        children.push({ type: 'text', value: '\n' });
+        if (!this.check('gt') && this.startsBlockAt(this.current)) break;
+        children.push(this.hardBreaks ? { type: 'spacing' } : { type: 'text', value: '\n' });
       } else {
         const inlineNode = this.parseInline();
         if (inlineNode) children.push(inlineNode);
@@ -359,21 +466,22 @@ export class MarkdownParser {
     const firstSpace = info.indexOf(' ');
     const tag = (firstSpace === -1 ? info : info.slice(0, firstSpace)).toLowerCase();
     const rest = firstSpace === -1 ? '' : info.slice(firstSpace + 1).trim();
-
-    this.match('newline');
+    // The fence's own line ending is syntax, not content: Markdown drops it.
+    // MilHibri keeps it so the renderer can hide exactly the newlines BBCode
+    // hides, instead of hiding the one after them.
     const children: MarkdownNode[] = [];
+    if (!this.hardBreaks) this.match('newline');
 
     while (!this.isAtEnd()) {
       if (this.check('container')) {
         this.advance(); // closing :::
-        this.match('newline');
+        if (!this.hardBreaks) this.match('newline');
         break;
       }
       if (this.check('newline')) {
-        this.advance();
-        while (this.match('newline')) {
-          children.push({ type: 'empty_line' });
-        }
+        const count = this.newlineRunLength();
+        this.current += count;
+        this.pushNewlineRun(children, count);
       } else {
         const block = this.parseBlock();
         if (block) children.push(block);
@@ -409,9 +517,16 @@ export class MarkdownParser {
         return { type: 'box', title: info || 'Box', rawTitle: info, children };
     }
   }
-  
+
   private tokenValue(token: MarkdownToken): string {
     if (!token) return '';
+
+    // Fences and containers carry their info string in a second field; a
+    // verbatim block must reconstruct the whole line, not just the marker.
+    // (`::: details no` used to lose " details no" inside a code fence.)
+    if (token.kind === 'container') return token.value + (token.info ? ' ' + token.info : '');
+    if (token.kind === 'fence') return token.value + token.lang;
+
     if ('value' in token) return (token as any).value;
     switch (token.kind) {
       case 'bracket_open': return '[';
@@ -428,15 +543,51 @@ export class MarkdownParser {
     }
   }
 
+  /**
+   * A bare `~~~~` line is an osu! userpage separator far more often than a
+   * tilde code fence. Quasar's Markdown docs use backticks exclusively, so in
+   * the hard-break (MilHibri) dialect a tilde fence needs an info string to
+   * opt in. Markdown's own importer (soft breaks) keeps the full grammar.
+   */
+  private isFenceOpener(token: MarkdownToken): boolean {
+    if (token.kind !== 'fence') return false
+    return !this.hardBreaks || token.value.startsWith('`') || token.lang !== ''
+  }
+
   private parseFence(): MarkdownNode {
     const token = this.advance() as MarkdownFenceToken;
     const value = token.lang;
+    const marker = token.value[0] || '`';
     let code = '';
     while (!this.isAtEnd()) {
-      if (this.check('fence')) {
+      const next = this.peek();
+      // CommonMark's closer: same character, at least as long, at the start
+      // of its own line, no info string. Anywhere else — even a run of
+      // backticks in the middle of a code line — is content.
+      if (
+        next.kind === 'fence'
+        && next.value[0] === marker
+        && next.value.length >= token.value.length
+        && next.lang === ''
+        && this.isAtLineStart(this.current)
+      ) {
         this.advance(); // close fence
-        this.match('newline');
+        if (!this.hardBreaks) this.match('newline');
         break;
+      }
+      // Indentation before the closer is not code content.
+      if (next.kind === 'text' && 'value' in next && /^[ \t]+$/.test((next as any).value)) {
+        let at = this.current + 1;
+        while (
+          this.tokens[at]?.kind === 'text'
+          && 'value' in this.tokens[at]
+          && /^[ \t]+$/.test((this.tokens[at] as any).value)
+        ) at++;
+        const closer = this.tokens[at];
+        if (closer?.kind === 'fence' && closer.lang === '' && this.isAtLineStart(at)) {
+          this.current = at;
+          continue;
+        }
       }
       const p = this.advance();
       code += this.tokenValue(p);
@@ -499,12 +650,81 @@ export class MarkdownParser {
       if (children.length > 0 && children[0].type === 'text') {
         children[0].value = (children[0] as MarkdownText).value.replace(/^\s+/, '');
       }
-      items.push({ type: 'list_item', children });
       if (this.match('newline')) {
-        if (this.check('newline')) break; // End of list on double newline
+        if (this.check('newline')) {
+          items.push({ type: 'list_item', children });
+          break; // End of list on double newline
+        }
+        // A fence indented under the item belongs to the item, not to a
+        // paragraph after the list. Skipping the indentation here is enough
+        // for the block to be parsed (and its content kept) instead of the
+        // backticks becoming literal prose.
+        const saved = this.current;
+        let next = this.current;
+        while (
+          this.tokens[next]?.kind === 'text'
+          && 'value' in this.tokens[next]
+          && /^[ \t]+$/.test((this.tokens[next] as any).value)
+        ) next++;
+        const fence = this.tokens[next]
+        if (fence?.kind === 'fence' && this.isFenceOpener(fence)) {
+          this.current = next;
+          children.push(this.parseFence());
+          // In hard-break mode the fence leaves its line ending in the tree;
+          // eating it here keeps the next `- item` in the same list.
+          this.match('newline');
+        } else {
+          this.current = saved;
+        }
       }
+      items.push({ type: 'list_item', children });
     }
     return { type: 'list', ordered, children: items };
+  }
+
+  private isListItemMarker(index = this.current): boolean {
+    if (this.tokens[index]?.kind !== 'bracket_open') return false
+    const middle = this.tokens[index + 1]
+    const star = middle && (middle.kind === 'star' || middle.kind === 'text')
+      && 'value' in middle && (middle as any).value === '*'
+    return !!star && this.tokens[index + 2]?.kind === 'bracket_close'
+  }
+
+  /** Whether the line starting at `index` is a block, not a lazy quote line. */
+  private startsBlockAt(index: number): boolean {
+    const token = this.tokens[index]
+    if (!token) return false
+    if (token.kind === 'fence') return this.isFenceOpener(token)
+    if (token.kind === 'container' || token.kind === 'hr') return true
+    if (token.kind === 'hash') return this.isAtxHeading(index)
+    if (token.kind === 'dash' || token.kind === 'star') {
+      const next = this.tokens[index + 1]
+      return !!next && next.kind === 'text' && 'value' in next && (next as any).value.startsWith(' ')
+    }
+    if (token.kind === 'text' && /^\d+$/.test(((token as any).value as string).trim())) {
+      const dot = this.tokens[index + 1]
+      const next = this.tokens[index + 2]
+      return dot?.kind === 'dot' && !!next && next.kind === 'text' && 'value' in next && (next as any).value.startsWith(' ')
+    }
+    if (token.kind === 'bracket_open') {
+      const open = this.peekBBCodeOpenTag(index)
+      return !!open && BLOCK_BBCODE_TAGS.has((open as BBCodeTagInfo).tagName.toLowerCase())
+    }
+    return false
+  }
+
+  /** Whether only indentation precedes `index` on its line. */
+  private isAtLineStart(index: number): boolean {
+    let i = index - 1
+    while (i >= 0) {
+      const token = this.tokens[i]
+      if (token.kind === 'text' && 'value' in token && /^[ \t]+$/.test((token as any).value)) {
+        i--
+        continue
+      }
+      return token.kind === 'newline'
+    }
+    return true
   }
 
   private parseParagraph(): MarkdownParagraph {
@@ -512,6 +732,9 @@ export class MarkdownParser {
     
     while (!this.isAtEnd()) {
       if (this.check('newline')) {
+        // BBCode ends the line here; the caller turns the newline into its own
+        // node. Markdown keeps it inside the paragraph (a soft break).
+        if (this.hardBreaks) break;
         this.advance();
         if (this.check('newline') || this.isAtEnd()) {
           break;
@@ -565,6 +788,17 @@ export class MarkdownParser {
     }
   }
 
+  /** Parse the whole token stream as inline content (no blocks). */
+  public parseInlineSequence(): MarkdownNode[] {
+    const nodes: MarkdownNode[] = [];
+    while (!this.isAtEnd()) {
+      const node = this.parseInline();
+      if (!node) break;
+      nodes.push(node);
+    }
+    return nodes;
+  }
+
   private parseInlineAt(terminator?: { kind: string, value?: string }): MarkdownNode | null {
 
     if (terminator) {
@@ -586,6 +820,15 @@ export class MarkdownParser {
       if (openTag) {
         return this.parseBBCodeInline(openTag);
       }
+    }
+
+    // `[*]` is BBCode's list-item marker, not an emphasis opener. Left to the
+    // `*` branch below, each nesting level re-scanned the entire rest of the
+    // document looking for a closing `*`, which made `[list]` nests
+    // exponential (24 levels = 27 s).
+    if (this.isListItemMarker()) {
+      this.current += 3
+      return { type: 'text', value: '[*]' }
     }
 
     const token = this.advance();
@@ -624,7 +867,12 @@ export class MarkdownParser {
     // Bold and Italic (*, **, _, __)
     if (token.kind === 'star' || token.kind === 'underscore') {
       const val = ('value' in token) ? token.value as string : '';
-      if (val === '**' || val === '__' || val === '*' || val === '_') {
+      // Inside a BBCode text run a `_` is prose far more often than Markdown
+      // (`__init__`, a URL, a username), and the document-level detector does
+      // not treat `__…__` as an unambiguous marker. Only `**` survives here.
+      const ambiguousSingle = this.inlineOnly && (token.kind === 'underscore' || val.length === 1);
+      const blocked = this.emphasisOpenBlocked(token);
+      if (!ambiguousSingle && !blocked && (val === '**' || val === '__' || val === '*' || val === '_')) {
         const type = (val.length === 2) ? 'strong' : 'emphasis';
         
         const savedCurrent = this.current;
@@ -635,7 +883,7 @@ export class MarkdownParser {
           const next = this.peek();
           if (next.kind === 'newline') break;
 
-          if (next.kind === token.kind && ('value' in next && next.value === val)) {
+          if (next.kind === token.kind && ('value' in next && next.value === val) && !this.emphasisCloseBlocked(next)) {
             this.advance();
             closed = true;
             break;
@@ -649,7 +897,7 @@ export class MarkdownParser {
           }
         }
 
-        if (closed) {
+        if (closed && children.length > 0) {
           return { type, children };
         } else {
           this.current = savedCurrent;
@@ -661,7 +909,7 @@ export class MarkdownParser {
     // Strikethrough (~~)
     if (token.kind === 'tilde') {
       const val = ('value' in token) ? token.value as string : '';
-      if (val === '~~') {
+      if (val === '~~' && !this.emphasisOpenBlocked(token)) {
         const savedCurrent = this.current;
         const children: MarkdownNode[] = [];
         let closed = false;
@@ -670,7 +918,7 @@ export class MarkdownParser {
           const next = this.peek();
           if (next.kind === 'newline') break;
 
-          if (next.kind === 'tilde' && ('value' in next && next.value === val)) {
+          if (next.kind === 'tilde' && ('value' in next && next.value === val) && !this.emphasisCloseBlocked(next)) {
             this.advance();
             closed = true;
             break;
@@ -681,7 +929,7 @@ export class MarkdownParser {
           else break;
         }
 
-        if (closed) {
+        if (closed && children.length > 0) {
           return { type: 'strikethrough', children }; 
         } else {
           this.current = savedCurrent;
@@ -691,14 +939,14 @@ export class MarkdownParser {
     }
     
     // Underline (++) (CriticMarkup / markdown-it-ins)
-    if (token.kind === 'plus' && ('value' in token && token.value === '++')) {
+    if (token.kind === 'plus' && ('value' in token && token.value === '++') && !this.emphasisOpenBlocked(token)) {
       const savedCurrent = this.current;
       const children: MarkdownNode[] = [];
       let closed = false;
       while (!this.isAtEnd()) {
         const next = this.peek();
         if (next.kind === 'newline') break;
-        if (next.kind === 'plus' && ('value' in next && next.value === '++')) {
+        if (next.kind === 'plus' && ('value' in next && next.value === '++') && !this.emphasisCloseBlocked(next)) {
           this.advance();
           closed = true;
           break;
@@ -707,7 +955,7 @@ export class MarkdownParser {
         if (child) children.push(child);
         else break;
       }
-      if (closed) {
+      if (closed && children.length > 0) {
         return { type: 'underline', children };
       } else {
         this.current = savedCurrent;
@@ -715,8 +963,9 @@ export class MarkdownParser {
       }
     }
 
-    // Alignment arrow (-> text <- or -> text ->)
-    if (token.kind === 'arrow_right') {
+    // Alignment arrow (-> text <- or -> text ->). A block construct, so the
+    // BBCode-structure hybrid leaves it alone inside a text run.
+    if (token.kind === 'arrow_right' && !this.inlineOnly) {
       const savedCurrent = this.current;
       const children: MarkdownNode[] = [];
       let alignType: 'center' | 'right' | null = null;
@@ -851,7 +1100,11 @@ export class MarkdownParser {
 
   private createAttributeSpanNode(rawText: string, attrString: string): MarkdownNode {
     const innerTokens = scanMarkdown(rawText);
-    const innerDoc = new MarkdownParser(innerTokens).parseInline();
+    const innerDoc = new MarkdownParser(innerTokens, {
+      lineBreaks: this.hardBreaks ? 'hard' : 'soft',
+      inlineOnly: this.inlineOnly,
+      source: rawText,
+    }).parseInline();
     const children: MarkdownNode[] = innerDoc ? [innerDoc] : [{ type: 'text', value: rawText }];
 
     // 1. Shorthand class: .underline
@@ -988,7 +1241,7 @@ export class MarkdownParser {
           const closeTag = this.peekBBCodeCloseTag(this.current);
           if (closeTag && closeTag.tagName.toLowerCase() === 'code') {
             this.current = closeTag.tokenEndIndex + 1;
-            this.match('newline');
+            if (!this.hardBreaks) this.match('newline');
             break;
           }
         }
@@ -1020,8 +1273,13 @@ export class MarkdownParser {
       }
     }
 
+    if (t === 'list') return this.parseBBCodeList(openTag)
+
     this.current = openTag.tokenEndIndex + 1;
-    this.match('newline');
+    // Soft Markdown keeps the old parser's treatment: the newline that follows
+    // the opener is syntax and disappears. MilHibri keeps it so the renderer's
+    // own swallow budget lines up with the source, one node per newline.
+    if (!this.hardBreaks) this.match('newline');
 
     const children: MarkdownNode[] = [];
 
@@ -1030,16 +1288,15 @@ export class MarkdownParser {
         const closeTag = this.peekBBCodeCloseTag(this.current);
         if (closeTag && this.isMatchingCloseTag(closeTag.tagName, openTag.tagName)) {
           this.current = closeTag.tokenEndIndex + 1;
-          this.match('newline');
+          if (!this.hardBreaks) this.match('newline');
           break;
         }
       }
 
       if (this.check('newline')) {
-        this.advance();
-        while (this.match('newline')) {
-          children.push({ type: 'empty_line' });
-        }
+        const count = this.newlineRunLength();
+        this.current += count;
+        this.pushNewlineRun(children, count);
       } else {
         const block = this.parseBlock();
         if (block) children.push(block);
@@ -1048,6 +1305,62 @@ export class MarkdownParser {
     }
 
     return this.createBBCodeNode(openTag.tagName, openTag.attrValue, children);
+  }
+
+  /**
+   * `[list]` / `[list=1]` with `[*]` items. osu!'s list syntax is the one
+   * piece of BBCode the Markdown importer did not understand: every `[*]`
+   * stayed visible as prose (`list-leak` in the stress study), and a list
+   * exported by MilHibri could not be re-imported.
+   */
+  private parseBBCodeList(openTag: BBCodeTagInfo): MarkdownNode {
+    const ordered = (openTag.attrValue ?? '') === '1'
+    this.current = openTag.tokenEndIndex + 1
+    const items: MarkdownNode[] = []
+    let children: MarkdownNode[] | null = null
+    const finish = (): void => {
+      if (children !== null) items.push({ type: 'list_item', children })
+      children = null
+    }
+
+    while (!this.isAtEnd()) {
+      if (this.check('bracket_open')) {
+        const closeTag = this.peekBBCodeCloseTag(this.current)
+        if (closeTag && this.isMatchingCloseTag(closeTag.tagName, openTag.tagName)) {
+          this.current = closeTag.tokenEndIndex + 1
+          break
+        }
+      }
+
+      if (this.isListItemMarker()) {
+        finish()
+        children = []
+        this.current += 3
+        continue
+      }
+
+      if (children === null) {
+        // The newline that follows `[list]` (and indentation between items)
+        // is separator, not the first item's content.
+        if (this.check('newline')) {
+          this.current += this.newlineRunLength()
+          continue
+        }
+        children = []
+      }
+
+      if (this.check('newline')) {
+        const count = this.newlineRunLength()
+        this.current += count
+        this.pushNewlineRun(children, count)
+      } else {
+        const block = this.parseBlock()
+        if (block) children.push(block)
+        else children.push({ type: 'text', value: this.tokenValue(this.advance()) })
+      }
+    }
+    finish()
+    return { type: 'list', ordered, children: items } as MarkdownNode
   }
 
   private parseBBCodeInline(openTag: BBCodeTagInfo): MarkdownNode {
@@ -1105,6 +1418,30 @@ export class MarkdownParser {
       return { type: 'text', value: literal }
     }
 
+    // Media and link bodies are VALUES, not prose. `[img]…__len__…[/img]`
+    // used to parse the underscores as emphasis and `[url]a_b_c[/url]` as
+    // italics, so the exported URL was rewritten with `[i]`/`[b]` inside it.
+    if (MEDIA_RAW_BODY_TAGS.has(t)) {
+      this.current = openTag.tokenEndIndex + 1;
+      let raw = '';
+      while (!this.isAtEnd()) {
+        if (this.check('bracket_open')) {
+          const closeTag = this.peekBBCodeCloseTag(this.current);
+          if (closeTag && this.isMatchingCloseTag(closeTag.tagName, openTag.tagName)) {
+            this.current = closeTag.tokenEndIndex + 1;
+            break;
+          }
+        }
+        if (this.check('newline')) {
+          this.advance();
+          raw += '\n';
+        } else {
+          raw += this.tokenValue(this.advance());
+        }
+      }
+      return this.createBBCodeNode(openTag.tagName, openTag.attrValue, [{ type: 'text', value: raw }]);
+    }
+
     this.current = openTag.tokenEndIndex + 1;
     const children: MarkdownNode[] = [];
 
@@ -1118,8 +1455,16 @@ export class MarkdownParser {
       }
 
       if (this.check('newline')) {
-        this.advance();
-        children.push({ type: 'text', value: '\n' });
+        if (this.hardBreaks) {
+          // Inline tags never swallow a newline in BBCode: each one is a
+          // break, not Markdown's soft space.
+          const count = this.newlineRunLength();
+          this.current += count;
+          this.pushNewlineRun(children, count);
+        } else {
+          this.advance();
+          children.push({ type: 'text', value: '\n' });
+        }
       } else {
         const child = this.parseInline();
         if (child) children.push(child);
@@ -1195,9 +1540,11 @@ export class MarkdownParser {
         return { type: (attrValue === 'center' || attrValue === 'right' || attrValue === 'left' ? attrValue : 'center') as any, children };
       case 'box':
       case 'boxw':
-        return { type: 'box', title: attrValue || 'Box', rawTitle: attrValue, children };
+        // `[box=]` has an EMPTY title; `[box]` has none. Defaulting the empty
+        // one to "Box" made MilHibri add a heading osu! never showed.
+        return { type: 'box', title: attrValue ?? 'Box', rawTitle: attrValue, children };
       case 'spoilerbox':
-        return { type: 'spoilerbox', title: attrValue || 'Spoiler', rawTitle: attrValue, children };
+        return { type: 'spoilerbox', title: attrValue ?? 'Spoiler', rawTitle: attrValue, children };
       case 'spoiler':
         return { type: 'spoiler', children };
       case 'quote':
@@ -1209,6 +1556,34 @@ export class MarkdownParser {
       default:
         return { type: 'bbcode_tag', tagName: t, attrValue, children };
     }
+  }
+
+  // --- Newlines ---
+
+  /** How many consecutive newline tokens sit at the cursor. */
+  private newlineRunLength(): number {
+    let count = 0;
+    while (this.tokens[this.current + count]?.kind === 'newline') count++;
+    return count;
+  }
+
+  /**
+   * Turns a newline run into the nodes BBCode's own parser builds: a `spacing`
+   * first (the line break) and one `empty_line` per extra newline. That shape
+   * matters after a block, too: the renderer hides the newlines the tag
+   * swallows, and if we dropped them here it would hide the NEXT one instead.
+   *
+   * Soft Markdown keeps its old behaviour — its paragraph already owns the line
+   * terminator, so a run only adds blank lines.
+   */
+  private pushNewlineRun(children: MarkdownNode[], count: number): void {
+    if (count <= 0) return;
+    if (this.hardBreaks) {
+      children.push({ type: 'spacing' });
+      for (let i = 1; i < count; i++) children.push({ type: 'empty_line' });
+      return;
+    }
+    for (let i = 0; i < count; i++) children.push({ type: 'empty_line' });
   }
 
   // --- Helpers ---
@@ -1244,7 +1619,31 @@ export class MarkdownParser {
   }
 }
 
-export function parseMarkdown(tokens: MarkdownToken[]): MarkdownDocument {
-  const parser = new MarkdownParser(tokens);
+export function parseMarkdown(
+  tokens: MarkdownToken[],
+  options: MarkdownParseOptions = {},
+): MarkdownDocument {
+  const parser = new MarkdownParser(tokens, options);
   return parser.parse();
+}
+
+/**
+ * Parse one text run as Markdown inline content.
+ *
+ * This is what the BBCode-structure hybrid uses: the BBCode engine owns the
+ * block tree, and each text leaf is translated with the same inline rules the
+ * Markdown importer has (double emphasis, `~~`, `++`, code and links), without
+ * turning a line of prose into a heading or list.
+ */
+export function parseInlineMarkdown(
+  source: string,
+  options: Omit<MarkdownParseOptions, 'inlineOnly'> = {},
+): MarkdownNode[] {
+  const parser = new MarkdownParser(scanMarkdown(source), {
+    ...options,
+    lineBreaks: options.lineBreaks ?? 'hard',
+    inlineOnly: true,
+    source,
+  });
+  return parser.parseInlineSequence();
 }

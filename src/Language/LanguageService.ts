@@ -66,6 +66,7 @@ const NOT_IN_OUTLINE: ReadonlySet<NodeKind> = new Set([
   'discarded_tag',
   'discarded_box_close',
   'box_tail',
+  'title_div',
 ])
 
 /** Kinds whose content is literal and therefore not completed or classified. */
@@ -599,6 +600,13 @@ export class LanguageService {
    *
    * Outside a delimiter the list is empty. A tag name may contain `*`
    * (`[*]`), so the scanner does not assume a letter.
+   *
+   * Every item carries the `]` that ends the delimiter in its `insertText`
+   * unless the source already has one at the caret: an accepted completion
+   * must leave a *closed* tag, not the fragment `[color`, which the parser
+   * reads as plain text and the author reads as a broken document. A host
+   * that only replaces `replaceRange` with `insertText` gets the bracket for
+   * free and does not have to know the delimiter syntax.
    */
   getCompletions(offset: number, limit = 50): CompletionItem[] {
     const source = this.model.source
@@ -671,7 +679,7 @@ export class LanguageService {
           documentation: vocabulary.syntax === 'flags'
             ? 'Combinable with commas or spaces.'
             : 'One of the values the renderer handles.',
-          insertText: value,
+          insertText: `${value}${closeSuffix}`,
           replaceRange: { start: valueStart, end: offset },
         }))
     }
@@ -697,7 +705,7 @@ export class LanguageService {
         documentation: definition?.isDeprecated
           ? `Deprecated${definition.deprecatedReplacement ? `; use [${definition.deprecatedReplacement}]` : ''}.`
           : undefined,
-        insertText: name,
+        insertText: `${name}${closeSuffix}`,
         replaceRange: { start: typedStart, end: offset },
       })
     }

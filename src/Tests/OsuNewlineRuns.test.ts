@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
 import {
-  CROSSABLE_DIV_KINDS, WIDTHLESS_CLOSE, WIDTHLESS_OPEN, firstNonWidthlessOpenChild, newlineRule,
+  CROSSABLE_DIV_KINDS, WIDTHLESS_CLOSE, WIDTHLESS_OPEN, newlineRule,
 } from '../Semantic/osu/newlineRules'
 import type { RedNode } from '../Syntax/RedNode'
 import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
@@ -16,6 +16,18 @@ import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 
 const isNewline = (n: RedNode): boolean => n.kind === 'spacing' || n.kind === 'empty_line'
 const isBlank = (n: RedNode): boolean => n.kind === 'text' && n.children.length === 0 && n.text.trim() === ''
+
+/**
+ * The first node of `n`'s own subtree, walking through the wrappers the source
+ * text runs straight through: a `paragraph`/`group` the parser put a
+ * `discarded_box_close` in, and the `box_tail` a box's own closer lands in when
+ * a crossing tag took the box out of its own frame (see the model's `firstContent`).
+ */
+function firstContent(n: RedNode): RedNode {
+  let c = n
+  while (c.children.length > 0 && (WIDTHLESS_OPEN.has(c.kind) || c.kind === 'box_tail')) c = c.children[0]
+  return c
+}
 
 function oracle(model: OsuSemanticModel, node: RedNode): boolean {
   const byOpening = (): boolean => {
@@ -47,7 +59,7 @@ function oracle(model: OsuSemanticModel, node: RedNode): boolean {
       if (next) {
         if (isNewline(next)) { cur = next; continue }
         if (isBlank(next)) { blank = true; cur = next; continue }
-        const boundary = firstNonWidthlessOpenChild(next)
+        const boundary = firstContent(next)
         if (model.isGhost(boundary)) {
           const rule = model.closingBudget(boundary)
           return rule?.beforeClose === 'all' ? !blank : rule?.beforeClose === 'whitespace'
@@ -57,7 +69,45 @@ function oracle(model: OsuSemanticModel, node: RedNode): boolean {
       const parent = cur.parent
       if (!parent) return false
       if (WIDTHLESS_CLOSE.has(parent.kind)) { cur = parent; continue }
+      // Los saltos de un `box_tail` los come el `\n*\[/box\]` del box que lo
+      // contiene, PERO solo si su cierre propio viene después EN EL TEXTO: si
+      // el `[/box]` real ya llegó (se comió el cuerpo al cruzar una etiqueta
+      // interna) y lo que sigue es otra etiqueta, estos saltos quedan tras un
+      // cierre real y solo el `\n?` de su afterClose los toca (ver
+      // `OsuSemanticModel.closeState` / su `closerAfter`).
+      if (parent.kind === 'box_tail' && parent.parent !== null) {
+        const owner = parent.parent
+        let cur: RedNode = owner
+        let after: RedNode | null = null
+        for (;;) {
+          const next = cur.nextSibling
+          if (next) { after = firstContent(next); break }
+          const up = cur.parent
+          if (!up || up.green.trailingWidth > 0) break
+          const last = up.children[up.children.length - 1]
+          if (last && last !== cur && last.kind === 'box_tail') {
+            after = last.children[0] ? firstContent(last.children[0]) : null
+            break
+          }
+          cur = up
+        }
+        // Cualquier cierre que venga después en el texto ofrece su propio
+        // `\n*`, no solo el del box: `[/notice]` también empieza por `\n*`.
+        if (after === null || !model.isGhost(after)) return false
+        const rule = model.closingBudget(after)
+        return !!rule && (rule.beforeClose === 'whitespace' || (rule.beforeClose === 'all' && !blank))
+      }
       if (CROSSABLE_DIV_KINDS.has(parent.kind) && parent.green.trailingWidth === 0) { cur = parent; continue }
+      // `quote`/`list` crossed by an ancestor's closer: their own closer is a
+      // discarded leaf later in the source, so `beforeClose` cannot reach
+      // these newlines (see `OsuSemanticModel.closeState`). `heading` cruza
+      // igual cuando un `[centre]`/`[box]` abierto descarta su `[/heading]`.
+      if ((parent.kind === 'quote' || parent.kind === 'list' || parent.kind === 'heading') && parent.green.trailingWidth === 0) { cur = parent; continue }
+      // Un inline sin cierre propio (`trailingWidth === 0`) no tiene regla:
+      // los saltos al final de su contenido los come el cierre que venga
+      // después EN LA FUENTE, que es lo que el branch `next` encuentra un
+      // nivel más arriba (ver `OsuSemanticModel.closeState`).
+      if (!newlineRule(parent.kind) && parent.green.trailingWidth === 0) { cur = parent; continue }
       const rule = newlineRule(parent.kind)
       if (!rule) return false
       return rule.beforeClose === 'whitespace' || (rule.beforeClose === 'all' && !blank)

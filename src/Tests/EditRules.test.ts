@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { optimizeBBCode, defaultRules, allRules } from '../Edits/Optimizer'
+import { optimizeBBCode, optimizeBBCodeFully, defaultRules, allRules } from '../Edits/Optimizer'
 import { MergeAdjacentRule } from '../Edits/Rules/mergeAdjacent'
 import { DropEmptyTagsRule } from '../Edits/Rules/dropEmptyTags'
 import { DropRedundantNestingRule } from '../Edits/Rules/dropRedundantNesting'
@@ -536,6 +536,8 @@ describe('a whitespace colour is a bridge, never a run member', () => {
 // ── Cross-rule properties ─────────────────────────────────────────
 
 const SAMPLES = [
+  '[url=https://osu.ppy.sh][/url][notice][/notice][url=https://osu.ppy.sh]',
+  '[b]uno[/b]\n\n[b]dos[/b]',
   '[color=#FF0000]H[/color][color=#FF0000]e[/color][color=#FF0000]y[/color]',
   '[color=#FFAA00]a[/color][color=#ffaa00]b[/color]',
   '[color=#F00][color=#F00]a[/color][color=#F00]b[/color][/color]',
@@ -612,4 +614,26 @@ describe('every rule, over every sample', () => {
       }
     })
   }
+})
+
+/**
+ * The old `ASTOptimizer` regression, retargeted at the source optimizer.
+ *
+ * The tree optimizer needed a fixpoint pass because deleting an empty block
+ * left two paragraphs adjacent. `Edits/Optimizer` addresses the source, so
+ * the failure mode is different, but the invariant is the same: a full run
+ * must already be a fixpoint, and an authored blank line must survive.
+ */
+describe('block boundaries — the old ASTOptimizer repro', () => {
+  const REPRO = '[url=https://osu.ppy.sh][/url][notice][/notice][url=https://osu.ppy.sh]'
+
+  it('reaches a fixpoint in one full run', () => {
+    const once = optimizeBBCodeFully(REPRO)
+    expect(optimizeBBCodeFully(once.output).output).toBe(once.output)
+  })
+
+  it('preserves an authored blank line between paragraphs', () => {
+    const source = '[b]uno[/b]\n\n[b]dos[/b]'
+    expect(optimizeBBCode(source).output).toBe(source)
+  })
 })

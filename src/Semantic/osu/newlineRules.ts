@@ -112,14 +112,14 @@ export const LEGACY_BLOCK_RULE: NewlineRule = {
  * Containers whose opening tag occupies no source text, so a backwards scan
  * has to walk straight through them.
  */
-export const WIDTHLESS_OPEN: ReadonlySet<string> = new Set(['paragraph', 'group'])
+export const WIDTHLESS_OPEN: ReadonlySet<string> = new Set(['paragraph', 'group', 'title_div'])
 
 /**
  * Same for the closing side. `list_item` is here because `[/*]` is never
  * written: an item ends where the next `[*]` or the `[/list]` begins, so
  * `\s*\[/list\]` sees the newline that Quasar stores inside the item.
  */
-export const WIDTHLESS_CLOSE: ReadonlySet<string> = new Set(['paragraph', 'group', 'list_item'])
+export const WIDTHLESS_CLOSE: ReadonlySet<string> = new Set(['paragraph', 'group', 'list_item', 'title_div'])
 
 /**
  * `pairing: 'osu'` only — the four div-emitting kinds that can be closed

@@ -224,3 +224,28 @@ The lever left inside the engine for a cold open is memory: every surviving
 byte is heap V8 has to grow into. Past that, an idle-time warm-up in the
 application covers the JIT third.
 
+## MilHibri: one text leaf, not a whole re-import
+
+`MilHibriDocumentModel` cannot use the BBCode window parser: `MarkdownBlocks`
+and the inline pass decide a document's shape from syntax outside any one
+window. Its edit path therefore tries a narrower proof first — the tree
+partitions the source (no rewritten Markdown blocks, no translated inline),
+and the edit is plain prose inside one text leaf. Then it swaps that leaf,
+rebuilds only the green spine to the root, and rebuilds red by adopting every
+unchanged sibling. A syntax character, a line-leading space, a Markdown-special
+marker or a translated tree falls back to the full import.
+
+On hxovc (41.8 KB, 3,215 nodes), typing and deleting letters in prose, 200
+edits each, `autoAnalyze: false`:
+
+| Path | p50 | p90 |
+|---|---|---|
+| MilHibri text-leaf splice | **0.33 ms** | **0.49 ms** |
+| `BBCodeDocumentModel` incremental reparse | 4.40 ms | 5.82 ms |
+| Before (full re-import per key) | ~26 ms | — |
+
+The differential used to pin it: 1,200 consecutive letter splices on hxovc with
+`QUASAR_VALIDATE_TREES=1`, and 802 splices over 120 real userpages, each step
+compared against a fresh full import. Zero divergences. `Tests/MilHibriFastSplice.test.ts`
+holds the small regression cases.
+

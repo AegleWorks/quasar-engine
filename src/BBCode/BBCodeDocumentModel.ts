@@ -32,7 +32,8 @@ import { greenToRedNode, greenToRedNodeReusing, type BBCodeDialect } from './BBC
 import { parseTokensToGreen } from './Parser'
 import { createBBCodeScanner } from '../Lexer/BBCodeLexer'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
-import { HTMLRenderer, type HTMLRendererOptions } from '../Visitors/HTMLRenderer'
+import { HTMLRenderer } from '../Visitors/HTMLRenderer'
+import { renderBBCode, renderBBCodeMany, type BBCodeRenderOptions } from './BBCodeBatch'
 
 export interface BBCodeDocumentModelOptions extends DocumentModelOptions {
   /** Source BBCode text to parse */
@@ -140,31 +141,21 @@ export class BBCodeDocumentModel extends DocumentModel {
    * Completely bypasses semantic analysis (linter), undo stack allocations, and
    * editor node ids (idMode: 'none') to maximize throughput and minimize memory.
    */
-  static renderForum(
-    source: string,
-    options: HTMLRendererOptions & { dialect?: BBCodeDialect } = {}
-  ): string {
-    const dialect = options.dialect ?? (options.theme === 'lyne' ? 'lyne' : 'miliastry')
-    const effectiveSource = source || ' '
-    const doc = new BBCodeDocumentModel({
-      source: effectiveSource,
-      dialect,
-      autoAnalyze: false,
-      maxUndo: 0,
-      incremental: false,
-    })
-    if (!doc.redRoot) return ''
-    // Ids off for THIS renderer only. This used to flip the process-wide
-    // `HTMLRenderer.idMode` and restore it in a `finally`, so every other
-    // renderer that painted in between — a resolver callback rendering a
-    // preview, a nested render — lost its ids too.
-    const renderer = new HTMLRenderer({
-      ...options,
-      dialect,
-      registry: options.registry ?? doc.tagRegistry,
-      idMode: 'none',
-    })
-    return renderer.render(doc.redRoot)
+  /**
+   * Render a feed of pages with one parser configuration and no models
+   * retained. The result is one HTML string per input page.
+   */
+  static renderMany(sources: Iterable<string>, options: BBCodeRenderOptions = {}): string[] {
+    return renderBBCodeMany(sources, options)
+  }
+
+  static renderForum(source: string, options: BBCodeRenderOptions = {}): string {
+    // Delegates to the stateless path: same lexer/parser/red tree/HTMLRenderer
+    // and the same `idMode: 'none'`, but without constructing a DocumentModel
+    // (undo, events, semantic analyzer, incremental parser) for a page nobody
+    // is editing. The registry and renderer are still per call, so a resolver
+    // callback can render another page recursively without sharing state.
+    return renderBBCode(source, options)
   }
 
   /**

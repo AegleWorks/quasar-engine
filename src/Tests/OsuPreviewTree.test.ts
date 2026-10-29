@@ -158,7 +158,13 @@ describe('OsuPreviewTree — a full osu parse that keeps unchanged blocks', () =
       }
       // The point of the exercise: most edits leave most blocks alone.
       expect(adoptedTotal).toBeGreaterThan(0)
-    })
+      // 24 seeds × 30 edits × two dialect cases is ~8 s of parse on an idle
+      // machine, and the suite runs files in parallel: the 20 s global budget
+      // (`vitest.config.ts`) ends up measuring the other workers' load more
+      // than this loop, which runs at the same speed as before the osu!
+      // pairing work. A budget that does not depend on the machine's core
+      // count, like every other heavy test in this package.
+    }, 120_000)
   })
 
   it('keeps unchanged blocks as the same RedNode objects (ids included) and moves the ones after the edit', () => {

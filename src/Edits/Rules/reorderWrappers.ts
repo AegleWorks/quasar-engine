@@ -107,7 +107,7 @@ export class ReorderWrappersRule implements OptimizationRule {
    * belongs in the permutation. Gating its INCLUSION on `children.length===1`
    * used to mean a chain like `[color=blue][b][url]…[/url][size=…]…[/size][/b]`
    * — `color` single-child, but its child `b` wrapping two things — produced
-   * an empty chain and skipped a swap `ASTOptimizer`'s tree-walk equivalent
+   * an empty chain and skipped a swap the old tree optimizer's tree-walk equivalent
    * still makes, breaking export's own idempotence (`Tests/Fuzzer.test.ts`).
    */
   private chainFrom(item: Positioned): Positioned[] {

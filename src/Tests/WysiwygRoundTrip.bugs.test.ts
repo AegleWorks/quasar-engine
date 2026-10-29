@@ -4,6 +4,7 @@ import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import { HTMLDocumentModel } from '../HTML/HTMLDocumentModel'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { reconcileVisualDOMToBBCode, computeTextDelta } from '../Reconciler/SurgicalReconciler'
+import { previewHTML } from './support/visibleLines'
 
 /**
  * Known-broken round trips between the WYSIWYG canvas and the BBCode source.
@@ -208,6 +209,20 @@ describe('WYSIWYG -> BBCode: what the fallback destroys', () => {
     expect(roundTrip('[img][/img]')).toBe('[img][/img]')
     expect(roundTrip('[box=T][img][/img]\ntexto\n[/box]')).toBe('[box=T][img][/img]\ntexto\n[/box]')
     expect(roundTrip('[img][/img]')).not.toContain('missing source URL')
+  })
+
+  it('says [img] has no source in the editor while osu! publishes it silent', () => {
+    // The osu! pipeline writes `<img alt="" src="" loading="lazy">` for a sealed
+    // empty `[img]`, so the compat renderer must not print the editor notice.
+    // The editor itself still has to tell the author what is missing.
+    const doc = new BBCodeDocumentModel({ source: '[img]\n[/img]' })
+    const editor = new HTMLRenderer().render(doc.redRoot!)
+    expect(editor).toContain('data-bb-empty="img"')
+    expect(editor).toContain('[img] missing source URL')
+
+    const published = previewHTML('[img]\n[/img]')
+    expect(published).toContain('src=""')
+    expect(published).not.toContain('missing source URL')
   })
 
   it('keeps the id of a profile written with one', () => {

@@ -75,6 +75,23 @@ export class MarkdownExporter extends Visitor<string> {
       return this.exportSequence(node.children, depth)
     }
 
+    // Lists are built directly: the generic `content` below already exports
+    // every child (including nested lists), and the old `case 'list'` exported
+    // `child.children` a second time. Two exports per level is exponential —
+    // 20 nested lists took ~1 s and 30 never finished.
+    if (node.kind === 'list') {
+      const lines: string[] = []
+      let orderIdx = 1
+      for (const child of node.children) {
+        if (child.kind !== 'list_item') continue
+        const itemContent = this.exportSequence(child.children, depth + 1)
+        const isOrdered = node.metadata?.ordered
+        const prefix = isOrdered ? `${orderIdx++}. ` : '- '
+        lines.push(`${'  '.repeat(Math.max(0, depth))}${prefix}${itemContent.trim()}`)
+      }
+      return lines.length > 0 ? lines.join('\n') + '\n' : ''
+    }
+
     const content = BLOCK_KINDS.has(node.kind)
       ? this.exportSequence(node.children, depth)
       : node.children.map(c => this.exportNode(c, depth)).join('')
@@ -147,19 +164,6 @@ export class MarkdownExporter extends Visitor<string> {
         const title = this.renderTitleMarkdown(node)
         const header = title ? `::: details ${title}` : '::: details'
         return `${header}\n${trimNewlines(content)}\n:::`
-      }
-      case 'list': {
-        const lines: string[] = []
-        let orderIdx = 1
-        for (const child of node.children) {
-          if (child.kind === 'list_item') {
-            const itemContent = this.exportSequence(child.children, depth)
-            const isOrdered = node.metadata?.ordered
-            const prefix = isOrdered ? `${orderIdx++}. ` : '- '
-            lines.push(`${'  '.repeat(Math.max(0, depth))}${prefix}${itemContent.trim()}`)
-          }
-        }
-        return lines.length > 0 ? lines.join('\n') + '\n' : content
       }
       case 'list_item': {
         const isOrdered = node.parent?.metadata?.ordered

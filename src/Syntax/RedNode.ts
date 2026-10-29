@@ -79,7 +79,7 @@ export class RedNode {
    * The cache is *self-validating*: `index` only trusts it when
    * `parent.children[_idxCache] === this`. That single reference compare is what
    * makes it safe against code that mutates the `children` array directly
-   * (`treeTransformers` does `cloned.children = []`) instead of going through the
+   * (the old effect transformers did `cloned.children = []`) instead of going through the
    * mutation methods — a stale entry is detected and recomputed rather than
    * silently returning a wrong index. `-1` never validates, so it is a safe
    * initial value.
@@ -286,7 +286,7 @@ export class RedNode {
   // editor does not have.
   //
   // It cannot be airtight either. `children` is a public mutable array, and
-  // `treeTransformers` assigns to it directly in five places, bypassing these
+  // the old effect transformers assigned to it directly in five places, bypassing these
   // methods entirely. Sealing that means making `children` private, which is a
   // large API change for the same small benefit.
   //

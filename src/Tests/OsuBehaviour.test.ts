@@ -197,6 +197,120 @@ describe('osuPairing — pairing: osu reproduces osu!\'s tag sealing', () => {
       expect(html.match(/<br/g)?.length).toBe(1)
     })
 
+    it('a SEALED [imagemap] collapses to one line, so a single-line [heading] can wrap it', () => {
+      // Measured: '[heading][imagemap]\nurl\n0 0 10 10 #\n[/imagemap][/heading]'
+      // → '<h2></h2><div class="imagemap">…</div>'. BBCodeForDB's parseImagemap
+      // runs FIRST and escapes the whole body ('\n' → '&#10;'), so the later
+      // non-dotall heading regex sees one line and seals; HTMLPurifier then
+      // lifts the map's <div> out of the <h2>, leaving it empty.
+      const html = renderOsuPaired(
+        '[heading][imagemap]\nhttps://a.b/i.png\n0 0 10 10 https://x Tip\n[/imagemap][/heading]',
+        dialect,
+      )
+      expect(html).not.toContain('[heading]')
+      expect(html).toContain('<h2')
+      expect(html).toMatch(/class="[^"]*imagemap/)
+    })
+
+    it('a [heading] still refuses a plain newline — only the sealed imagemap body collapses', () => {
+      const html = renderOsuPaired('[heading]a\nb[/heading]', dialect)
+      expect(html).not.toContain('<h2')
+      expect(html).toContain('[heading]a')
+      expect(html).toContain('[/heading]')
+    })
+
+    it('the same collapse lets a single-line [url] wrap a multi-line [imagemap]', () => {
+      // Measured: '[url=https://a.b/p][imagemap]\n…\n[/imagemap][/url]' becomes
+      // `<a href="https://a.b/p"></a><div class="imagemap">…</div><a …></a>`.
+      const html = renderOsuPaired(
+        '[url=https://a.b/p][imagemap]\nhttps://a.b/i.png\n0 0 10 10 https://x Tip\n[/imagemap][/url]',
+        dialect,
+      )
+      expect(html).not.toContain('[url=')
+      expect(html).toContain('href="https://a.b/p"')
+      expect(html).toMatch(/class="[^"]*imagemap/)
+    })
+
+    it('[c] seals across a multi-line [imagemap] too — the collapsed body is one line for it as well', () => {
+      // `parseInlineSimple` handles BOTH `c` and `heading`; `parseImagemap`
+      // ran before it and escaped the body, so `[c]` matches. Measured:
+      // `[c][imagemap]⏎url⏎link⏎[/imagemap][/c]` publishes
+      // `<code></code><div class="imagemap">…<code>…</code></div><code></code>`.
+      const html = renderOsuPaired(
+        '[c][imagemap]\nhttps://a.b/i.png\n0 0 10 10 https://x Tip\n[/imagemap][/c]',
+        dialect,
+      )
+      expect(html).not.toContain('[c]')
+      expect(html).toContain('<code')
+      expect(html).toMatch(/class="[^"]*imagemap/)
+    })
+
+    it('[c] still refuses a plain newline — the collapse is the imagemap\'s, not a general rule', () => {
+      const html = renderOsuPaired('[c]a\nb[/c]', dialect)
+      expect(html).not.toContain('<code')
+      expect(html).toContain('[c]a')
+    })
+
+    it('an indented image URL still builds the map — parseImagemap carries `\s*` there', () => {
+      // Measured: `^\[imagemap\]\n\s*(?<imageUrl>https?://.+)` accepts ASCII
+      // indentation before the URL, so a map nested in a box with every line
+      // indented publishes a real `<div class="imagemap">` (`osu/14981802`,
+      // `osu/36631973`, `osu/18579521`). Tabs count too; the closer and the
+      // area lines already carried the same `\s*`.
+      const indented = renderOsuPaired(
+        '[box=T]\n    [imagemap]\n        https://a.b/i.png\n        10 15 50 70 https://x Tip\n    [/imagemap]\n[/box]',
+        dialect,
+      )
+      expect(indented).toMatch(/class="[^"]*imagemap/)
+      expect(indented).not.toContain('[imagemap]')
+
+      const tabbed = renderOsuPaired('[imagemap]\n\thttps://a.b/i.png\n\t0 0 10 10 #\n[/imagemap]', dialect)
+      expect(tabbed).toMatch(/class="[^"]*imagemap/)
+
+      // The indentation is not a licence for a body without a URL: osu! keeps
+      // that one literal. Under other dialects the editor paints its own
+      // container instead, so the literal fallback is asserted for osu only.
+      if (dialect === 'osu') {
+        const notAUrl = renderOsuPaired('[imagemap]\n   not a url\n   0 0 10 10 #\n[/imagemap]', dialect)
+        expect(notAUrl).toContain('[imagemap]')
+        expect(notAUrl).not.toMatch(/class="[^"]*imagemap/)
+      }
+    })
+
+    it('a SEALED orphan [/list] renders nothing — osu!\'s stray </ol> is dropped by HTMLPurifier', () => {
+      // '[list][*]a[/list]\n[/list]\n[list][*]b[/list]': the middle closer is
+      // sealed (count-limited: 2 openers, 3 closers), so osu! substitutes it
+      // for `</ol>`; nothing is open there, and HTMLPurifier removes the end
+      // tag. Measured: `…<li>a</li></ul>[list:1]b[/list]` — the middle closer
+      // is gone. The THIRD closer is unsealed, so `[/list]` still shows.
+      const html = renderOsuPaired('[list][*]a[/list]\n[/list]\n[list][*]b[/list]', dialect)
+      expect(html.match(/\[\/list\]/g)?.length).toBe(1)
+      expect(html.match(/<li/g)?.length).toBe(2)
+    })
+
+    it('a SEALED orphan [/quote] renders nothing too', () => {
+      // Measured: '[quote]a[/quote]\n[/quote]\n[quote]b[/quote]' →
+      // `<blockquote>a</blockquote><blockquote>b[/quote]</blockquote>` — the
+      // sealed middle `</blockquote>` is dropped, the unsealed third shows.
+      const html = renderOsuPaired('[quote]a[/quote]\n[/quote]\n[quote]b[/quote]', dialect)
+      expect(html.match(/\[\/quote\]/g)?.length).toBe(1)
+    })
+
+    it('an invisible orphan [/list] still eats its newlines — `\\s*` before, two after', () => {
+      // Same budget as a REAL `[/list]`: `#\s*\[/list:(o|u):uid\]\n?\n?#`.
+      // Measured: the blank lines around the orphan leave no `<br />` behind.
+      const html = renderOsuPaired('[list][*]a[/list]\n\n[/list]\n\n[list][*]b[/list]', dialect)
+      expect(html).not.toContain('<br')
+    })
+
+    it('an UNSEALED orphan [/list] stays visible — no ghost for a tag osu! never substituted', () => {
+      // '[list][*]a[/list]\n[/list]': 1 opener, 2 closers → only the first
+      // closer seals; the second was never turned into `</ol>`, so it is
+      // plain text in osu! and must stay text here.
+      const html = renderOsuPaired('[list][*]a[/list]\n[/list]', dialect)
+      expect(html.match(/\[\/list\]/g)?.length).toBe(1)
+    })
+
     it('quote: count-limited — 2 openers, 1 closer → only the FIRST opener seals', () => {
       // Measured: '[quote]a[quote]b[/quote]' → '<blockquote>a[quote]b</blockquote>'
       const html = renderOsuPaired('[quote]a[quote]b[/quote]', dialect)
@@ -304,6 +418,16 @@ describe('osuPairing — pairing: osu reproduces osu!\'s tag sealing', () => {
     it('img: plain content seals normally', () => {
       const html = renderOsuPaired('[img]a[/img][img]b[/img]', dialect)
       expect(html.match(/<img/g)?.length).toBe(2)
+    })
+
+    it('list: a [list] under an UNSEALED format keeps its <ol> — the opener is text, so nothing wraps it', () => {
+      // Measured: '[b][box=b][list][*]a[*]b[/list][/box]' → literal `[b]`,
+      // then a real spoilerbox whose body holds `<ol class="unordered">`.
+      // Only a SEALED b/i/u flattens a list (see OsuMarkupVocabulary).
+      const html = renderOsuPaired('[b][box=b][list][*]a[*]b[/list][/box]', dialect)
+      expect(html).toContain('[b]')
+      expect(html).toContain('<li>a</li>')
+      expect(html).toContain('<li>b</li>')
     })
 
     it('list: [*] item markers always seal, even outside the sealed [list] (unconditional in osu!, like box)', () => {
@@ -419,6 +543,39 @@ describe('osuPairing — pairing: osu reproduces osu!\'s tag sealing', () => {
     // incremental machinery itself.
     expect(doc.redRoot).toBeTruthy()
     expect(doc.pairing).toBe('osu')
+  })
+})
+
+/**
+ * Medido con el harness: `BBCodeFromDB::parseList` escribe un `<li>` para TODO
+ * `[*]`, pero HTMLPurifier lo desenvuelve si no hay `<ul>`/`<ol>` alrededor, así
+ * que un `[*]` suelto no es un bloque y no corta el `<span>` que lo envuelve.
+ * `[size]`/`[color]` no se reabren tras un corte (a diferencia de `[b]`), así
+ * que tratarlo como bloque perdía el formato en osu/4991464 y osu/19778889;
+ * `HTMLRenderer.cutsOsuBlock` sólo lo corta con una lista por encima.
+ */
+describe('HTMLRenderer (pairing: osu) — un [*] sin lista no corta el formato', () => {
+  const bare = (source: string): string =>
+    renderOsuPaired(source, 'osu').replace(/<span data-bb-nl hidden><\/span>/g, '')
+
+  it('el [size] sigue abierto a través del ítem suelto', () => {
+    const html = bare('[size=150]\n[*]x[/size]')
+    expect(html).toContain('<span style="font-size:150%;">x</span>')
+    expect(html).not.toContain('<li')
+  })
+
+  it('también con texto antes del ítem: `ab` cae en el MISMO span', () => {
+    expect(bare('[size=150]a\n[*]b[/size]')).toContain('<span style="font-size:150%;">ab</span>')
+  })
+
+  it('igual para [color], que tampoco se reabre', () => {
+    expect(bare('[color=#ff0000]\n[*]x[/color]')).toContain('<span style="color:#ff0000;">x</span>')
+  })
+
+  it('un ítem de una lista REAL sí corta: el [size] no pasa al ítem siguiente', () => {
+    const html = bare('[list]\n[*][size=150]a\n[*]b[/size]\n[/list]')
+    expect(html).toContain('<li><span style="font-size:150%;">a</span></li>')
+    expect(html).toContain('<li>b</li>')
   })
 })
 

@@ -31,7 +31,7 @@ import { tagToNodeKind, type BBCodeDialect } from './BBCodeToGreenNode'
 import type { BBCodeToken, BBCodeTokenCursor, BBCodeOpenToken, BBCodeCloseToken } from '../Lexer/BBCodeLexer'
 import { createBBCodeScanner } from '../Lexer/BBCodeLexer'
 import { isBlockKind } from './BBCodeToGreenNode'
-import { applyOsuPairing } from '../Osu/osuPairing'
+import { applyOsuPairing, type OsuListCarrier, type OsuTitleEvent } from '../Osu/osuPairing'
 
 // ─── Main entry point ──────────────────────────────────────────
 
@@ -105,6 +105,20 @@ export interface ParseOptions {
  */
 export const MAX_NESTING_DEPTH = 256
 
+/**
+ * Anonymous `<div>`s each `pairing: 'osu'` tag pushes (wrapper + body for
+ * boxes, one for the rest). Module-level: it used to be rebuilt for every
+ * parsed document, and a feed parses thousands.
+ */
+const DIV_UNITS: Readonly<Record<string, number>> = {
+  box: 2,
+  spoilerbox: 2,
+  notice: 1,
+  centre: 1,
+  left: 1,
+  right: 1,
+}
+
 /** A cursor over a token array, for callers that already hold one. */
 function arrayCursor(tokens: readonly BBCodeToken[]): () => BBCodeToken | null {
   let at = 0
@@ -133,8 +147,33 @@ export function parseTokensToGreen(
   // cold parse copying. osu! pairing needs the whole list (it looks ahead for
   // closers), so it still gets one.
   let next: () => BBCodeToken | null
+  /**
+   * Tags de bloque que un TÍTULO de caja selló de verdad, por `start` del token
+   * `open` que los contiene y en orden de documento (ver `Osu/osuPairing.ts`).
+   * El árbol los necesita porque osu! los publica como `</div>`/`<div>` DENTRO
+   * del título — antes de que el cuerpo de la caja exista.
+   */
+  let titleEvents: Map<number, OsuTitleEvent[]> | undefined
+  /**
+   * Listas selladas que `parseList` de osu! deja cruzando un cierre de caja,
+   * por `start` del `[list]` PORTADOR (la lista siguiente). Ver
+   * `Osu/osuPairing.ts` y el uso en la rama de `[*]` de `onOpen`.
+   */
+  let listCarriers: Map<number, OsuListCarrier> | undefined
+  /** Cabezas sin portadora: el `[*]` que abre su cuerpo sintético. */
+  let listHeadItems: Map<number, OsuListCarrier> | undefined
   if (options.pairing === 'osu') {
-    next = arrayCursor(applyOsuPairing(Array.isArray(input) ? input : drain(input), source));
+    const sink = new Map<number, OsuTitleEvent[]>()
+    const carriers = new Map<number, OsuListCarrier>()
+    const headItems = new Map<number, OsuListCarrier>()
+    next = arrayCursor(applyOsuPairing(Array.isArray(input) ? input : drain(input), source, {
+      titleEvents: sink,
+      listCarriers: carriers,
+      listHeadItems: headItems,
+    }))
+    titleEvents = sink.size > 0 ? sink : undefined
+    listCarriers = carriers.size > 0 ? carriers : undefined
+    listHeadItems = headItems.size > 0 ? headItems : undefined
   } else {
     next = Array.isArray(input) ? arrayCursor(input) : () => input.next();
   }
@@ -164,21 +203,6 @@ export function parseTokensToGreen(
    */
   const overflow = new Map<string, number>()
 
-  /**
-   * How many anonymous `<div>`s each `pairing: 'osu'` div-emitting tag pushes
-   * per occurrence — see `closeDivUnits` below. `box`/`spoilerbox` push TWO
-   * (wrapper + body) at once; `notice`/`centre`/`left`/`right` push one.
-   * Never consulted under the default `'quasar'` pairing.
-   */
-  const DIV_UNITS: Readonly<Record<string, number>> = {
-    box: 2,
-    spoilerbox: 2,
-    notice: 1,
-    centre: 1,
-    left: 1,
-    right: 1,
-  }
-
   const stack: {
     /** The literal tag name. Closing matches on THIS, not on `kind`: `[centre]`
      *  and `[center]` share a kind but do not close each other, and that is
@@ -202,6 +226,25 @@ export function parseTokensToGreen(
     bodyClosed?: boolean
     /** Content collected after `bodyClosed` flips true. See `bodyClosed`. */
     tailChildren?: GreenNode[]
+    /**
+     * `pairing: 'osu'` only. Unidades `<div>` que un cierre escrito DENTRO de
+     * este mismo tag de apertura ya gastó — sólo el título de un
+     * `box`/`spoilerbox` (`[box=…[/centre]]`), donde el `</div>` de osu! cae
+     * ANTES de que exista el div del cuerpo: lo que cierra ahí es el WRAPPER,
+     * no el body (medido: `[centre][box=T[/centre]]body[/box]` publica
+     * `<div centre><div box><a>T</a></div><div body>body</div></div>`). La caja
+     * sigue coleccionando contenido normalmente — es su cuerpo — y su `[/box]`
+     * final gasta una unidad menos de las dos suyas.
+     */
+    preClosed?: number
+    /**
+     * `pairing: 'osu'` only. La lista es PORTADORA de una cabeza que osu! dejó
+     * cruzando un cierre de caja: su primer `[*]` abre, dentro del ítem, el
+     * cuerpo sintético de la cabeza (ver `findListCarriers`).
+     */
+    carrier?: OsuListCarrier
+    /** El cuerpo de la cabeza ya se sintetizó en el primer ítem. */
+    carried?: boolean
   }[] = []
 
   /**
@@ -313,7 +356,7 @@ export function parseTokensToGreen(
   function availableDivUnits(frame: (typeof stack)[number]): number {
     const total = DIV_UNITS[frame.tag]
     if (total === undefined) return 0
-    return frame.bodyClosed ? total - 1 : total
+    return total - (frame.preClosed ?? 0) - (frame.bodyClosed ? 1 : 0)
   }
 
   /**
@@ -346,7 +389,7 @@ export function parseTokensToGreen(
    * HTMLPurifier's inline content-model enforcement, a materially different
    * mechanism this pass does not attempt.
    */
-  function closeDivUnits(tag: string, closeWidth: number, tokStart: number, tokEnd: number): void {
+  function closeDivUnits(tag: string, closeWidth: number, tokStart: number, tokEnd: number, titlePhase = false): void {
     const needed = DIV_UNITS[tag]
 
     // Nothing div-related open ANYWHERE — leave every unrelated open tag
@@ -403,7 +446,10 @@ export function parseTokensToGreen(
     // the tag back out of the leaf's own text), so the rendered HTML is
     // identical either way; only which node "owns" the bytes differs.
     const top0 = stack[stack.length - 1]
-    const clean = top0.tag === tag && availableDivUnits(top0) === needed
+    // `titlePhase`: el cierre vive DENTRO del tag de apertura, así que sus
+    // bytes ya están en el `leadingWidth` del nodo y no hay nada que emitir
+    // ni ancho de cierre que asignar — ver `preClosed`.
+    const clean = !titlePhase && top0.tag === tag && availableDivUnits(top0) === needed
 
     let remaining = needed
     while (remaining > 0 && stack.length > 0) {
@@ -430,6 +476,12 @@ export function parseTokensToGreen(
         // that is its OWN matching closer (`clean`) or a crossing one.
         stack.pop()
         currentBucket().push(closeFrame(top, clean && top === top0 ? closeWidth : 0))
+      } else if (titlePhase) {
+        // Sólo alcanzable en el título de un `box`/`spoilerbox`: sus dos
+        // unidades aún no tienen cuerpo, y la primera que cierra un `</div>`
+        // ahí dentro es el wrapper. El frame sigue coleccionando contenido en
+        // `children` (el cuerpo), con una unidad menos disponible.
+        top.preClosed = (top.preClosed ?? 0) + take
       } else {
         // Only reachable for `box`/`spoilerbox` (avail 2, take 1): the body
         // div closes, the wrapper stays open — and stays ON the stack, still
@@ -445,7 +497,7 @@ export function parseTokensToGreen(
     // the unmet rest of this closer's own need just has nothing left to
     // close and is dropped, same as any other excess closer.
 
-    if (!clean) {
+    if (!clean && !titlePhase) {
       addToParent(createLeaf('discarded_tag', source.slice(tokStart, tokEnd)))
     }
   }
@@ -492,6 +544,40 @@ export function parseTokensToGreen(
         return
       }
       autoClosed.delete(tok.tag)
+      const parent = stack[stack.length - 1]
+      // Cabeza SIN portadora: el cuerpo sintético no cabe en una lista previa,
+      // así que este mismo `[*]` lo abre (la lista lo envuelve) y el primer
+      // `[/list]` lo cierra. `autoClosed` se limpia porque el `[/list]` sellado
+      // que viene es SU cierre, no el fantasma de la cabeza auto-cerrada.
+      const headBody = listHeadItems?.get(tok.start)
+      // Dos frames sintéticos (lista + ítem) además del ítem real: si no caben
+      // bajo el tope de anidamiento, se deja el ítem solo (mismo aspecto que
+      // antes del cruce, sin desbordar la pila).
+      if (headBody !== undefined && stack.length + 1 < depthLimit) {
+        autoClosed.delete('list')
+        // El `\s*` de `[\*]` en `parseList` come el espacio/salto que queda
+        // DELANTE del ítem. Cuando el cuerpo sintético nace aquí, esos nodos
+        // ya están en el bucket del padre —fuera de la lista—, así que la
+        // regla `beforeOpen` del ítem no los ve y el salto se pinta como línea
+        // vacía (osu/9072586). Se adoptan en la lista; el renderer los come
+        // con el mismo presupuesto que los de una lista normal.
+        const bucket = currentBucket()
+        const absorbed: GreenNode[] = []
+        while (bucket.length > 0) {
+          const last = bucket[bucket.length - 1]
+          if (last.kind !== 'spacing' && last.kind !== 'empty_line' &&
+              !(last.kind === 'text' && /^[ \t\r\n]*$/.test(last.text))) break
+          absorbed.push(bucket.pop()!)
+        }
+        absorbed.reverse()
+        stack.push({
+          tag: 'list',
+          kind: 'list',
+          attrs: headBody.ordered ? '=1' : '',
+          children: absorbed,
+          leadingWidth: 0,
+        })
+      }
       stack.push({
         tag: tok.tag,
         kind: openKind,
@@ -499,6 +585,29 @@ export function parseTokensToGreen(
         children: [],
         leadingWidth: tok.end - tok.start,
       })
+      // `pairing: 'osu'`: el primer ítem de una lista PORTADORA abre dentro de
+      // sí el cuerpo de la cabeza que `parseList` capturó a través del cierre
+      // del bloque. El `<ol>` de la cabeza no nace en su `[list]` (que ya quedó
+      // dentro del box, sin cuerpo): nace aquí, y el primer `[/list]` lo cierra
+      // a él, no a la portadora. Los `[*]`/`[list]` siguientes siguen colgando
+      // del ítem de la portadora, que es lo que publica HTMLPurifier.
+      if (headBody === undefined && stack.length + 2 <= depthLimit && parent !== undefined && parent.tag === 'list' && parent.carrier !== undefined && !parent.carried) {
+        parent.carried = true
+        stack.push({
+          tag: 'list',
+          kind: 'list',
+          attrs: parent.carrier.ordered ? '=1' : '',
+          children: [],
+          leadingWidth: 0,
+        })
+        stack.push({
+          tag: '*',
+          kind: 'list_item',
+          attrs: '',
+          children: [],
+          leadingWidth: 0,
+        })
+      }
       return
     }
 
@@ -531,7 +640,36 @@ export function parseTokensToGreen(
       attrs,
       children: [],
       leadingWidth: tok.end - tok.start,
+      carrier: listCarriers?.get(tok.start),
     })
+
+    // Los tags de bloque escritos en el TÍTULO de esta caja (ver
+    // `titleEvents`), en orden de documento:
+    //
+    // - un CIERRE es un `</div>` dentro del propio título, con el wrapper ya
+    //   abierto y el cuerpo aún sin abrir: se aplica aquí, ya con el frame en
+    //   la pila, y sin emitir hoja — sus bytes son parte del delimitador de
+    //   apertura (`leadingWidth`).
+    // - una APERTURA sellada es un `<div>` ahí mismo, y el cuerpo de la caja
+    //   cae DENTRO de él (medido: `box-title-opener-sealed.bbcode` publica
+    //   `<div centre><div box><a/></div><div centre><div body>body</div>
+    //   </div></div>`). Se abre un frame propio, así que el contenido de la
+    //   caja se cuelga de él y el `<div>` del cuerpo lo pinta el renderer
+    //   dentro (`HTMLRenderer.renderOsuSpoilerbox`).
+    const events = titleEvents?.get(tok.start)
+    if (events !== undefined) {
+      for (const ev of events) {
+        if (!ev.open) {
+          closeDivUnits(ev.tag, 0, tok.start, tok.end, true)
+          continue
+        }
+        // `title_div`: el `<div>` no tiene bytes propios en la fuente (son
+        // parte del delimitador de la caja), así que el nodo los lleva en su
+        // texto (el tag) y el renderer los saca de ahí. El `tag` del frame sí
+        // es el real, que es lo que miran `DIV_UNITS` y `closeDivUnits`.
+        stack.push({ tag: ev.tag, kind: 'title_div', attrs: ev.tag, children: [], leadingWidth: 0 })
+      }
+    }
   }
 
   // ── Closing tag: [/tag] ──────────────────────────────────
@@ -587,7 +725,28 @@ export function parseTokensToGreen(
         }
       }
 
-      if (found !== -1) {
+      // `pairing: 'osu'`: does a div-emitting tag sit ABOVE the tag this
+      // closer matches? (see `closeDivUnits`)
+      //
+      // osu!'s own `</div>`s are anonymous: HTMLPurifier closes a stray
+      // `</span>`/`</strong>` against nothing and drops it, and it does NOT
+      // reach past a `<div>` to do it. Measured: `[size=85]x[box=T]y[/size]
+      // z[/box]` keeps `z` inside the box body — and inside the same
+      // `<strong>`, for `[b]x[box=T]y[/b]z[/box]` — where walking back to
+      // `size` and closing everything above it ejected `z` from the box
+      // entirely. So the closer is dropped, as osu! drops it, and every open
+      // tag stays open: the div keeps collecting, exactly as the enclosing
+      // `[centre]`/`[box]`/`[notice]` does in osu!'s HTML.
+      let divAbove = false
+      if (found !== -1 && options.pairing === 'osu') {
+        for (let j = found + 1; j < stack.length; j++) {
+          if (DIV_UNITS[stack[j].tag] !== undefined) { divAbove = true; break }
+        }
+      }
+
+      if (divAbove) {
+        addToParent(createLeaf('discarded_tag', source.slice(tok.start, tok.end)))
+      } else if (found !== -1) {
         // Auto-close any tags that were opened inside this one. They end
         // where the closing delimiter BEGINS — the delimiter itself is owned
         // by the tag it actually closes, so an auto-closed inner tag gets a
@@ -606,6 +765,23 @@ export function parseTokensToGreen(
         // Las etiquetas que se cerraron solas quedan pendientes en el nivel
         // que ha quedado abierto tras cerrar esta.
         for (const tag of autoClosedHere) autoClosed.add(tag)
+      } else if (options.pairing === 'osu' && (tok.tag === 'list' || tok.tag === 'quote')) {
+        // A sealed `[/list]`/`[/quote]` with no opener left to close.
+        //
+        // `osuPairing` only lets a SEALED closer reach this branch (its
+        // `countLimited` sweep demotes every other one to literal text), and
+        // osu! turns a sealed closer into real HTML unconditionally:
+        // `[/list:o:1]` → `</ol>`, `[/quote:1]` → `</blockquote>`. When
+        // nothing is open for it, HTMLPurifier drops the stray end tag —
+        // measured: `[list]a[/list]\n[/list]\n[list]b[/list]` publishes
+        // `…<li>a</li></ul>[list:1]b[/list]`, with the middle closer gone —
+        // while a closer ForDB never sealed stays visible as `[/list]`
+        // (measured: `[list]a[/list]\n[/list]` → `…</ul>[/list]`). Same
+        // ghost as an orphan `[/box]`: invisible, but it still owns its own
+        // newline budget (`\s*` before, two newlines after — the `list` and
+        // `quote` rows in `NEWLINE_RULES`), which `discardedTagRule`
+        // recovers from the leaf's text.
+        addToParent(createLeaf('discarded_box_close', source.slice(tok.start, tok.end)))
       } else {
         // Orphaned closing tag: no matching opener anywhere on the stack.
         //

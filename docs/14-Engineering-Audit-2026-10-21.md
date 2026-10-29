@@ -33,7 +33,7 @@ nothing exports from rendered output; both read the same red tree.
 | **Import** | `Markdown/*`, `HTML/HTMLToGreenNode`, `MilHibri/*` | other syntax → BBCode-shaped tree | Importer trees translate their source; `treeMirrorsSource` is false. |
 | **Editing** | `Edits/*`, `Fixes/*`, `Commands/*`, `Reconciler/*` | red tree + intent → surgical edits | Produces `TextChange`/`SurgicalEdit`, never rewrites untouched text. |
 | **Editor services** | `Queries/*`, `Symbols/*`, `Formatter/*`, `Diff/*`, `Transactions/*`, `Source/*` | red tree / text → answers | Read-only except transactions; deterministic. |
-| **Effects** | `Utils/EffectMath`, `Transformers/*`, `Visuals/*` | tree + parameters → styled segments | Shared math for preview and export; purity is tested. |
+| **Effects** | `Utils/EffectMath`, `Utils/ColorMath`, `Visuals/*` | text + parameters → styled segments | Shared math for preview and export; determinism is tested. |
 
 Layer rules that the audit verified and that the suite enforces:
 

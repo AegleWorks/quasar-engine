@@ -104,6 +104,22 @@ describe('missing-url-protocol', () => {
     expect(codes('[url=https://www.osu.ppy.sh]click[/url]'))
       .not.toContain('missing-url-protocol')
   })
+
+  it('an empty value takes the address into the attribute, not into the body', () => {
+    // `[url=]www.osu.ppy.sh[/url]` toma la dirección del CUERPO (el `=` está
+    // escrito pero el valor está vacío), así que añadir el esquema delante del
+    // cuerpo cambiaría el texto que lee el lector. La dirección entera va al
+    // atributo y el cuerpo se queda quieto.
+    const src = '[url=]www.osu.ppy.sh[/url]'
+    expect(slice(src, find(src, 'missing-url-protocol'))).toBe('www.osu.ppy.sh')
+
+    const fix = registryFix(src, 'missing-url-protocol')
+    const op = fix.operations[0]
+    expect(op.kind).toBe('insert_text')
+    const position = (op as { position: number }).position
+    const applied = src.slice(0, position) + (op as { text: string }).text + src.slice(position)
+    expect(applied).toBe('[url=https://www.osu.ppy.sh]www.osu.ppy.sh[/url]')
+  })
 })
 
 describe('empty-link', () => {

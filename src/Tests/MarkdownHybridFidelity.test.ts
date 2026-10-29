@@ -75,8 +75,10 @@ describe('Markdown & Hybrid BBCode Fidelity in Quasar', () => {
       const md = '# Main Title\n## Section Subtitle'
       const mdDoc = MarkdownDocumentModel.fromMarkdown(md)
       const bbcode = bbExporter.export(mdDoc.redRoot!)
-      expect(bbcode).toContain('[heading=1]Main Title[/heading]')
-      expect(bbcode).toContain('[heading=2]Section Subtitle[/heading]')
+      // osu! only seals the bare `[heading]`; `[heading=1]` is published as
+      // literal text on a userpage, so the osu-target export drops the level.
+      expect(bbcode).toContain('[heading]Main Title[/heading]')
+      expect(bbcode).toContain('[heading]Section Subtitle[/heading]')
     })
 
     it('round-trips links and images cleanly', () => {
@@ -199,6 +201,19 @@ describe('Markdown & Hybrid BBCode Fidelity in Quasar', () => {
       expect(reExportedMd).toContain('**Important info**')
       expect(reExportedMd).toContain('++underline++')
       expect(reExportedMd).toContain('[/notice]')
+    })
+  })
+
+  describe('Malformed embedded BBCode', () => {
+    it('consumes unmatched closing tags as literal text instead of looping', () => {
+      const md = 'text [/centre]\n\n[/right]\n\n[centre]unclosed'
+      const doc = MarkdownDocumentModel.fromMarkdown(md)
+      const html = htmlRenderer.render(doc.redRoot!)
+
+      expect(html).toContain('[/centre]')
+      expect(html).toContain('[/right]')
+      expect(html).toContain('[centre]')
+      expect(html).toContain('unclosed')
     })
   })
 

@@ -3,6 +3,25 @@ import { RedNode } from '../Syntax/RedNode';
 import type { NodeKind } from '../Types/core';
 import type { MarkdownNode, MarkdownText } from './MarkdownAST';
 
+/**
+ * Kinds that stand for a tag with a real closing delimiter.
+ *
+ * The translated tree carries no delimiter text, so their width would be 0.
+ * `OsuSemanticModel` reads `trailingWidth === 0` as "a crossing closer closed
+ * this, its own `[/tag]` never reached it" and skips the `beforeClose` rule;
+ * on an imported block that made the trailing newline render as a `<br>` the
+ * original hides. A one-character stand-in keeps that distinction honest
+ * without inventing the closing tag's text.
+ */
+const CLOSED_BLOCKS = new Set([
+  'box', 'spoilerbox', 'heading', 'quote', 'notice', 'wnotice', 'list',
+  'center', 'right', 'left', 'align',
+])
+
+function blockGreen(kind: string, text: string, children: GreenNode[]): GreenNode {
+  return greenNode(kind, text, children, 0, CLOSED_BLOCKS.has(kind) ? 1 : 0)
+}
+
 export function markdownAstToGreenTree(root: MarkdownNode): GreenNode {
   let currentOffset = 0;
 
@@ -137,8 +156,11 @@ export function markdownAstToGreenTree(root: MarkdownNode): GreenNode {
         break;
       case 'empty_line':
         kind = 'empty_line';
-        text = '\n\n';
-        currentOffset += 2;
+        // One character, like BBCode's: a run of N newlines is N nodes
+        // (`spacing` + N-1 `empty_line`s), so the translation's widths stay
+        // equal to the source they came from.
+        text = '\n';
+        currentOffset += 1;
         break;
       case 'image':
         kind = 'image';
@@ -151,11 +173,18 @@ export function markdownAstToGreenTree(root: MarkdownNode): GreenNode {
         children.push(greenLeaf('text', node.value));
         currentOffset += node.value.length;
         break;
-      case 'bbcode_tag':
-        kind = node.tagName as NodeKind;
+      case 'bbcode_tag': {
+        // The BBCode-shaped tags the importer understands as MEDIA, not as a
+        // generic container. `[img]url[/img]` used to become kind `img`, which
+        // the renderer does not know (it renders `image`), so every pasted
+        // userpage image came out as its raw URL. Same for `[youtube]`,
+        // whose renderer kind is `video`.
+        const tag = node.tagName.toLowerCase();
+        kind = (tag === 'img' ? 'image' : tag === 'youtube' ? 'video' : tag) as NodeKind;
         text = node.attrValue ? `=${node.attrValue}` : '';
         for (const child of node.children) children.push(convert(child));
         break;
+      }
       default: {
         const unhandled: never = node;
         void unhandled;
@@ -164,7 +193,7 @@ export function markdownAstToGreenTree(root: MarkdownNode): GreenNode {
       }
     }
 
-    return greenNode(kind as string, text, children);
+    return blockGreen(kind as string, text, children);
   }
 
   return convert(root);
@@ -248,12 +277,13 @@ export function greenToRedNode(green: GreenNode, parent?: RedNode | null, start 
     kind = 'style_tag';
     if (attrValue) metadata.style = attrValue;
   } else if (green.kind === 'image') {
-    if (green.children.length > 0) {
-      const first = green.children[0] as GreenNode;
-      if (first.kind === 'text') {
-        metadata.src = first.text;
-      }
-    }
+    // The URL is one text child per lexer token (`https`, `:`, `//host`, …),
+    // not a single leaf. Taking only the first one produced `src="https"`.
+    const src = green.children
+      .filter((child): child is GreenNode => child.kind === 'text')
+      .map((child) => child.text)
+      .join('');
+    if (src) metadata.src = src;
   } else if (attrValue) {
     metadata.value = attrValue;
     metadata.raw = attrValue;

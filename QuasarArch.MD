@@ -45,8 +45,8 @@
 35. [RenderPipeline — Rendering Pipeline (RenderPipeline/)](#35-renderpipeline--rendering-pipeline-renderpipeline)
 36. [RenderTree — Intermediate Tree (RenderPipeline/RenderTree)](#36-rendertree--intermediate-tree-renderpipelinerendertree)
 37. [Plugin System (Plugins/)](#37-plugin-system-plugins)
-38. [Transformers (Transformers/)](#38-transformers-transformers)
-39. [treeTransformers — Functional Transformers (Utils/treeTransformers)](#39-treetransformers--functional-transformers-utilstreetransformers)
+38. [Transformers (removed)](#38-transformers-transformers)
+39. [treeTransformers (removed)](#39-treetransformers--functional-transformers-utilstreetransformers)
 40. [Studio Integration — TextStudio Integration (Studio/)](#40-studio-integration--textstudio-integration-studio)
 41. [Color Utils — Color Math (Utils/color)](#41-color-utils--color-math-utilscolor)
 42. [HTML Bridge — From HTML to AST (HTML/)](#42-html-bridge--from-html-to-ast-html)
@@ -125,7 +125,7 @@ Miliastry Nova had a legacy BBCode parser that:
 | No live validation | `SemanticAnalyzer` + `Linter` |
 | No inspectability | CSS-style `QueryEngine` |
 | No extensibility | `PluginRegistry` + `PluginAPI` |
-| No visual effects | `Transformers` + `treeTransformers` + `Studio` |
+| No visual effects | `Utils/EffectMath` + tag handlers + `@miliastry/quasar-studio` |
 
 ---
 
@@ -193,13 +193,11 @@ packages/quasar/src/
 ├── Queries/         # QueryEngine (CSS-like selectors)
 ├── RenderPipeline/  # Intermediate rendering pipeline
 ├── Semantic/        # SemanticAnalyzer + validators
-├── Studio/          # Visual effects engine (TextStudio)
 ├── Symbols/         # SymbolTable (definitions/references)
 ├── Syntax/          # GreenNode, RedNode, TreeBuilder, NodeMatcher, GreenNodePool
-├── Transformers/    # OOP transformers (Gradient, Rainbow, Grow, SineWave)
 ├── Transactions/    # Transaction + UndoManager
 ├── Types/           # Fundamental types of the system
-├── Utils/           # treeTransformers, color, BBCodeGenerator, dom-to-svg
+├── Utils/           # EffectMath, color, BBCodeGenerator, dom-to-svg
 ├── Visitors/        # Visitor, HTMLRenderer, BBCodeExporter, MarkdownExporter, etc.
 └── Visuals/         # Catalog of visual themes (osu.css)
 ```
@@ -255,10 +253,11 @@ The Quasar pipeline processes data in **6 deterministic phases**:
 - **Process**: A Visitor walks the tree and produces output
 - **Output**: HTML, BBCode, Markdown, JSON, SVG, Tiptap
 
-### Phase 6: Transformation (Optional)
-- **Input**: `DocumentModel` + effect parameters
-- **Process**: `applyGradient()`, `RainbowTransformer.transform()`, etc.
-- **Output**: DocumentModel transformed with visual effects
+### Phase 6: Effects (Optional)
+- **Input**: plain text + `EffectParams` (and, in the studio, a layer stack)
+- **Process**: `evaluateEffect()` in `Utils/EffectMath` — the same kernel the
+  tag handlers, the renderer and `@miliastry/quasar-studio` use
+- **Output**: styled segments, or a GreenNode built from them by the studio
 
 ---
 
@@ -449,7 +448,7 @@ interface BBCodeNewlineToken { kind: 'newline'; value: string; start: number; en
 
 1. **Newlines as explicit tokens**: `\n` and `\r\n` are separate tokens, they are not mixed with text.
 2. **Bracket depth tracking**: For tags like `[box=[b]title[/b]]`, it tracks the depth of `[` to find the right `]`.
-3. **Raw block handling**: `[code]` and `[c]` treat all their content as literal text — no parsing of inner tags or newlines.
+3. **Raw block handling**: `[code]` and `[c]` treat all their content as literal text — no parsing of inner tags or newlines. (One exception, `pairing: 'osu'` only: osu!'s own `[c]` pass only WRAPS its body, it never escapes it, so under that pairing `[c]` is not raw at all and its content is tokenised normally — see section 13's `[c]` vs `[code]` entry. Quasar's own dialect is unchanged.)
 4. **Tag name validation**: Only `[a-zA-Z0-9_*]+` are valid tags. `[Gateron]` or `[90 misses]` are treated as plain text.
 5. **Resilience**: If it finds an invalid `[` (with no matching `]`), it emits `[` as text and continues.
 
@@ -1118,7 +1117,11 @@ class UndoManager {
 
 ## 25. Command System (Commands/)
 
-**High-level commands that produce Transactions.**
+**Commands are planners, not mutators.** A command reads the tree and the
+selection and returns the text changes that make the edit. It never touches
+the model: the host applies those changes as one undo stop (Monaco), as one
+surgical edit (the canvas), or previews them before applying. This keeps the
+command layer free of any editor, DOM or Miliastry-specific kernel.
 
 ```typescript
 interface Command {
@@ -1126,30 +1129,62 @@ interface Command {
   readonly label: string
   readonly description?: string
   readonly shortcut?: string
-  execute(ctx: CommandContext): CommandResult
+  execute(ctx: CommandContext, input?: CommandInput): CommandResult
   canExecute?(ctx: CommandContext): boolean
+}
+
+type CommandResult = {
+  success: boolean
+  operations?: Operation[]        // for commands that edit through transact
+  changes?: TextChange[]         // in the coordinates of ctx.model.source
+  selection?: SourceSelection    // where the caret lands after those changes
+  message?: string
 }
 
 class CommandRegistry {
   register(command): void
   unregister(id): void
   get(id): Command | undefined
-  execute(id, ctx): CommandResult
+  execute(id, ctx, input?): CommandResult
   getAll(): Command[]
 }
+
+// The five built-ins, registered and ready.
+const registry = createCommandRegistry()
+```
+
+`CommandContext.selection` is in **source offsets**, not DOM ranges; `nodeId`
+is optional and only needed by commands that resolve a whole node. The
+`input` is a discriminated union, so a command refuses a payload of the wrong
+shape instead of silently doing nothing:
+
+```typescript
+type CommandInput =
+  | { type: 'insertText'; text: string }
+  | { type: 'wrap'; tag: string; attrs?: string }
+  | { type: 'delete' }
+  | { type: 'split' }
+  | { type: 'merge'; direction?: 'backward' | 'forward' }
 ```
 
 ### Built-in Commands
 
-| Command | ID | Function |
-|---------|-----|---------|
-| `InsertText` | `insert-text` | Insert text at the cursor |
-| `DeleteNode` | `delete-node` | Delete the selected node |
-| `WrapInTag` | `wrap-in-tag` | Wrap the selection in a tag |
-| `SplitNode` | `split-node` | Split a node at a position |
-| `MergeNode` | `merge-nodes` | Merge adjacent nodes |
+| Command | ID | Implemented over |
+|---------|-----|------------------|
+| `InsertText` | `insert-text` | `insertContent`: inserts text or BBCode, replaces a range first, and routes block content through `model.parseSource` |
+| `DeleteNode` | `delete-node` | `deleteSelection` over the node's range (by `nodeId`) or the selected range |
+| `WrapInTag` | `wrap-in-tag` | `toggleInlineFormat` for `b`/`i`/`u`/`s`; `wrapInTag` for any other inline tag; block tags are refused |
+| `SplitNode` | `split-node` | `insertLineBreak` (Enter: list items, headings, block edges) |
+| `MergeNode` | `merge-nodes` | `joinBackward` / `joinForward` (Backspace / Delete) |
 
-**Note**: The built-in commands have placeholder implementations (stubs). The real logic is in the Transactions pipeline.
+These are line-level block edits, not arbitrary surgery: `split-node` splits
+the line at the caret and `merge-nodes` joins it with the previous or next
+one. `PluginAPI` starts from `createCommandRegistry()`; a host that wants an
+empty registry and only its own commands still uses `new CommandRegistry()`.
+
+`model.parseSource(source)` is public for the same reason: commands need the
+document's dialect and pairing to decide whether inserted content is
+block-level, without building a throwaway model.
 
 ---
 
@@ -1360,15 +1395,15 @@ itself — each lives where the real divergence was:
    `scanBBCode`) treated `code`/`c` as a raw block UNCONDITIONALLY —
    with no closer, it swallowed the entire rest of the document into a single opaque
    text token before `applyOsuPairing` or `parseTokensToGreen` ever saw it, under ANY
-   pairing. Now `scanBBCode` takes an optional `pairing`:
-   under `'osu'` it only isolates the block (protecting its content from
-   normal tokenization) when a closer exists AND — for `c`, which is not
-   dotall in osu! — reaching it does not cross a line break; otherwise the opener
-   stays a normal `open` token and the lexer keeps tokenizing
-   normally, and `sealRawBlock` downgrades it to literal text just like
-   any other tag of the `lazy` family. The default `'quasar'` pairing
-   does not pass this option: it still swallows the rest of the document,
-   exactly as before.
+   pairing. Now `scanBBCode` takes an optional `pairing`: under `'osu'` it only
+   isolates a raw block when osu!'s own pass would seal that occurrence, otherwise the
+   opener stays a normal `open` token and the lexer keeps tokenizing normally, and the
+   sealing family downgrades it to literal text just like any other tag of the `lazy`
+   family (`code`: no closer anywhere; `[code][/code]`, whose body `.+?` needs one
+   character, skips the adjacent closer and isolates up to the next one instead —
+   `.cache/c-code2`, e01–e07). `c` is not a raw block under this pairing at all: see
+   the `[c]` vs `[code]` entry in section 13. The default `'quasar'` pairing does not
+   pass this option: it still swallows the rest of the document, exactly as before.
 2. **An orphan `[/box]`/`[/spoilerbox]` is now invisible and eats line breaks
    just like a paired one.** osu! seals EVERY `[/box]`/
    `[/spoilerbox]` — orphan or not (`alwaysSeal` family, this module never
@@ -1427,6 +1462,29 @@ around interposed block content — a different mechanism
 change. See the module doc of `Osu/osuPairing.ts` and of `closeDivUnits`
 (`Parser.ts`) for the full detail, including the unit tables and
 the cases measured against osu-web. Test: `Tests/OsuDivClosing.test.ts`.
+
+**An autolink can swallow the tags behind it** (`HTMLRenderer.osuSpanningLinks`).
+`BBCodeForDB::parseLinks` is the LAST pass, and it runs over the text that still
+carries its tags (`[b:1]`, `[size=150:1]`…): the target is `[^\s]+?`, which does not
+stop at `[`, and its lookahead only accepts tags/punctuation up to a space or the end
+of the line. So `https://x[/url][b]B[/b]TAIL` makes one target of the whole run;
+`BBCodeFromDB` then converts the `:uid` tags inside the `href` into HTML and
+HTMLPurifier cuts the attribute at the first `<`. Published (measured):
+`<a href="https://x%5B/url%5D">https://x[/url]<strong>B</strong>TAIL</a>` — the href
+ends at the first element, and the ANCHOR covers the whole target, tags included.
+The renderer works on an already tokenised tree, so it plans these links per
+children list over a projection of the text osu! sees (text leaves + `[kind]` tags +
+`\n`), and only for the shape that can be painted without cutting a node: the URL
+starts in a direct text leaf and the target ends at a line break, at the end of the
+line, or inside another direct text leaf (the `</a>` then closes inside that leaf).
+The close is emitted by the shared `renderChildSequence` loop, used by `renderChildren`
+and by the `renderLines` path of `lineHandles`. Out of scope, measured and
+listed in `.claude/rules/osu.md`: tags whose generated HTML carries single quotes
+(`color`, `spoiler`, `profile`, `url`, `email` leak the rest of the tag as text),
+block tags (`box`, `quote`, `code`, `list` repair the structure instead), and a
+target ending INSIDE an element with trailing text. Corpus: 0 pages carry the shape
+(scan63 = scan61: 8,442 matches, 319 divergences, 0 lost). Curated as
+`osu-cases/url-autolink-tags.bbcode`; pinned by `Tests/OsuAutolinkTags.test.ts`.
 
 ### data-node-id Attributes
 
@@ -1652,95 +1710,38 @@ class PluginAPI {
 
 ## 38. Transformers (Transformers/)
 
-**OOP transformations that mutate the DocumentModel by producing Transactions.**
-
-```typescript
-interface Transformer {
-  transform(document: DocumentModel): TransformResult
-}
-```
-
-### ASTOptimizer
-
-Optimizes the syntax tree with rules:
-
-1. **Remove empty tags**: Removes tags with no content (except void tags)
-2. **Merge adjacent siblings**: Merges identical tags with the same attributes separated by spacing
-3. **Canonical ordering**: Reorders wrappers into canonical order (e.g. `[color][b] → [b][color]`)
-
-### RainbowTransformer
-
-Applies a rainbow effect: each character gets an HSL color interpolated across the text.
-
-```typescript
-const transformer = new RainbowTransformer({
-  saturation: 80,   // 0-100
-  lightness: 60,    // 0-100
-  spread: 300,      // hue degrees
-  offset: 0
-})
-transformer.transform(document)
-```
-
-### GradientTransformer
-
-Applies a gradient between two colors across the text.
-
-```typescript
-const transformer = new GradientTransformer({
-  from: '#e8b04b',
-  to: '#d94f4f',
-  unit: 'char',      // or 'word'
-  easing: 'linear'   // or 'easeIn', 'easeOut', 'easeInOut'
-})
-```
-
-### GrowTransformer
-
-Applies size waves (a sine wave of font-size).
-
-### SineWaveTransformer
-
-Applies sinusoidal size waves
+> **Removed.** This was the pre-split implementation of the effects that now
+> live in `@miliastry/quasar-studio`. Nothing in the app called it, and the
+> engine never used it: the tag handlers and `HTMLRenderer` read
+> `Utils/EffectMath` directly. The four effect classes and the `Transformer`
+> contract are gone; tree optimization is now `Edits/Optimizer`, which emits
+> source-addressed edits instead of mutating a tree.
 
 ---
 
 ## 39. treeTransformers — Functional Transformers (Utils/treeTransformers)
 
-**Functional (non-OOP) version of the transformers.** They are pure functions that operate on `RedNode`.
+> **Removed.** These functions wrapped text in synthetic `[gradient]` /
+> `[grow]` / `[rainbow]` nodes with position metadata. They duplicated the
+> engine's maths and drifted from it on whitespace and line units.
 
-### API
+The public effect API is now:
 
-```typescript
-function applyGradient(root: RedNode, colors: string[], options?): RedNode
-function applyGrow(root: RedNode, options?): RedNode
-function applyRainbow(root: RedNode, options?): RedNode
-function applyCentralGradient(root: RedNode, colors: string[], options?): RedNode
-function applyMultiGradient(root: RedNode, colors: string[], options?): RedNode
-function applyEffect(root: RedNode, effect: TreeEffect): RedNode
-function countTextLength(node: RedNode): number
-```
-
-### Two-Pass Algorithm
-
-1. **countTextLength()**: Counts the total length of plain text (skips nodes like img, code)
-2. **Walk with wrapping**: Walks the tree, and for each text leaf, wraps it in effect nodes with global position metadata
-
-**IMPORTANT**: Effects are applied **inside** the formatting tags (b, i, u, color), they do not replace them. Structural nodes (box, quote, list) are preserved intact.
-
-### Transformation Example
-
-```
-Input:  [box][b]Hello[/b] World[/box]
-Output: [box][b][gradient]H[/gradient][gradient]e[/gradient]...
-              [/b][gradient] [/gradient][gradient]W[/gradient]...[/box]
-```
+- `evaluateEffect(text, kind, params, span)` in `Utils/EffectMath` — the one
+  implementation shared by the tag handlers, `HTMLRenderer` and
+  `@miliastry/quasar-studio`.
+- `parseEffectParams` / `stringifyEffectParams` for the tag grammar.
+- `parseColorStops`, `maskValue`, `waveform`, `axisValue` for the kernel.
+- `@miliastry/quasar-studio` for the layer model, presets, detection and
+  native serialization.
 
 ---
 
 ## 40. Studio Integration — TextStudio Integration (Studio/)
 
-**Visual effects engine for TextStudio.** It operates on text segments with wrappers.
+**Visual effects engine for Text Studio.** It lives in
+`packages/quasar-studio` (`@miliastry/quasar-studio`), not in this package.
+It operates on text segments with wrappers.
 
 ### QuasarSegment Model
 
@@ -1752,30 +1753,39 @@ interface QuasarSegment {
 }
 ```
 
-### Effect Functions
+### Layer Types
 
-| Function | Effect |
-|---------|--------|
-| `applyGradient()` | Color gradient with easing |
-| `applyRainbow()` | HSL rainbow |
-| `applyGrow()` | Size waves |
-| `applyColorize()` | Coloring with modes (linear, central, multi, random) |
-| `applyRGBCurves()` | Bezier curves per RGB channel |
-| `applyTextDecoration()` | Unicode effects (zalgo, aesthetic, sparkle, bubble) |
-| `applyASCIIFont()` | Unicode fonts (fullwidth, fraktur, smallcaps, etc.) |
+| Layer | What it does | Native Miliastry tag |
+|-------|--------------|----------------------|
+| `gradient` | Multi-stop colour ramp, optional OKLab mixing | `[gradient=…]` |
+| `rainbow` | Hue sweep; optional custom hue ramp and `preserveSL` | `[rainbow=…]` |
+| `grow` | Font-size wave between `min` and `max` | `[grow=…]` |
+| `paint` | Colour sampled from an indexed image grid | `[paint=…]` |
+| `hsl` | Hue/saturation/lightness delta or absolute value | expands to `[color]` |
+| `rgb-curves` | Per-channel cubic Bézier curve | expands to `[color]` |
+| `posterize` | Quantises each channel to N levels | expands to `[color]` |
+| `case` | Uppercase/lowercase/title/alternate/inverted/modulated | rewrites the text |
+
+A layer is written natively only when the range holds one enabled layer and
+that layer is exactly representable; anything else expands to one tag per
+character. `layerToNativeAttribute` / `layersToNativeNode` are the bridge.
 
 ### Studio Layer System
 
 A stackable layer system:
 
 ```typescript
-type StudioLayer = StudioGradientLayer | StudioRainbowLayer 
-  | StudioGrowLayer | StudioRGBLayer
+type StudioLayer =
+  | StudioGradientLayer | StudioRainbowLayer | StudioGrowLayer
+  | StudioRGBLayer | StudioHslLayer | StudioPosterizeLayer
+  | StudioCaseLayer | StudioPaintLayer
 ```
 
 Each layer has `enabled`, `id`, and specific parameters. They are applied in order (from back to front).
 
-**procesStudioAST()**: Takes source text + layers + options, and produces a GreenNode/RedNode transformed with all the effects applied.
+**`processStudioAST()` / `processStudioASTWithRanges()`**: takes source text (or
+a document model) plus layers, and produces a GreenNode/RedNode with all the
+effects applied.
 
 ---
 
@@ -1906,8 +1916,10 @@ The `src/index.ts` file exports 52 public symbols. Here they are grouped by cate
 - `morphHTML`, `domToSVG`
 
 ### Commands & Transactions
-- `CommandRegistry`, `Transaction`, `UndoManager`
+- `CommandRegistry`, `createCommandRegistry`, `Transaction`, `UndoManager`
+- `CommandInput`, `CommandResult`
 - `InsertText`, `DeleteNode`, `WrapInTag`, `SplitNode`, `MergeNode`
+- `toggleInlineFormat`, `wrapInTag`, `applyColor`, `insertContent`, `insertLineBreak`, `joinBackward`, `joinForward`, `deleteSelection`
 
 ### Queries & Analysis
 - `QueryEngine`, `SemanticAnalyzer`, `Linter`, `Formatter`, `SymbolTable`
@@ -1918,9 +1930,9 @@ The `src/index.ts` file exports 52 public symbols. Here they are grouped by cate
 ### Plugins
 - `PluginAPI`, `PluginRegistry`
 
-### Transformers
-- `applyGradient`, `applyGrow`, `applyRainbow`, `applyCentralGradient`, `applyMultiGradient`, `applyEffect`
-- `RainbowTransformer`, `GradientTransformer`, `GrowTransformer`, `SineWaveTransformer`, `ASTOptimizer`
+### Effects
+- `evaluateEffect`, `parseEffectParams`, `stringifyEffectParams`, `parseColorStops`
+- `waveform`, `axisValue`, `maskValue`, `spatialPoint` (the `Utils/EffectMath` kernel)
 
 ### Utilities
 - `TagRegistry`, `NodeFactory`, `IncrementalParser`, `ChangeTracker`, `TreeDiffer`
@@ -2045,15 +2057,15 @@ expect(() => {
 
 7. **Full plugin system**: Manifest, contributions, activate/deactivate lifecycle.
 
-8. **TextStudio effects**: The layer system and the transformers allow complex visual effects (gradients, waves, rainbows, RGB curves) without modifying the parser.
+8. **TextStudio effects**: The layer system in `@miliastry/quasar-studio` and the shared `Utils/EffectMath` kernel allow complex visual effects (gradients, waves, rainbows, RGB curves) without modifying the parser.
 
 ### Weaknesses and Areas for Improvement
 
-1. **Commands with stub implementations**: `InsertText`, `DeleteNode`, `WrapInTag`, `SplitNode`, `MergeNode` are placeholders that return `{ success: true }`. The real editing logic is not implemented.
+1. **Commands are line-level, not arbitrary tree surgery**: the five built-ins plan text changes over `insertContent`, `insertLineBreak`, `joinBackward`/`joinForward` and `deleteSelection`. A command that needs to restructure whole subtrees still has to go through `transact`; the planner contract covers the text-level edits an editor makes on every keystroke.
 
 2. **Minimalist Formatter**: It only extracts plain text. It does not format real BBCode with indentation.
 
-3. **Double implementation of effects**: They exist both in `Utils/treeTransformers.ts` (functional) and in `Transformers/` (OOP). This duplicates logic and can lead to inconsistencies.
+3. **Effects split across packages**: The kernel lives in `Utils/EffectMath`; the layer model, presets and native serialization live in `@miliastry/quasar-studio`. The split is intentional (the studio is the product layer), but the studio still imports a broad slice of Quasar's root barrel.
 
 4. **BBCodeGenerator is a test data generator**, not part of the real pipeline. It should not be confused with the BBCodeExporter.
 
@@ -2135,23 +2147,15 @@ pluginAPI.registerPlugin(
 )
 ```
 
-### How to add a Transformer
+### How to add an effect
 
-```typescript
-class MyTransformer implements Transformer {
-  transform(document: DocumentModel): TransformResult {
-    if (!document.redRoot) return { document }
-    
-    const operations: Operation[] = []
-    // Walk the tree, create operations
-    // ...
-    
-    const transaction = new Transaction(operations)
-    transaction.apply(document.redRoot)
-    return { document, transaction }
-  }
-}
-```
+1. Put the evaluation in `Utils/EffectMath` — one implementation, shared by the
+   tag handlers, `HTMLRenderer` and the studio.
+2. Register the tag in `Model/TagRegistry` (`toBBCode` / `toRenderNode`), and
+   add the parameter keys to `EFFECT_PARAM_KEYS`.
+3. If it needs an authoring UI, add a layer type in
+   `@miliastry/quasar-studio` (`StudioLayers.ts`) and a property panel in
+   `packages/features/BBCode/text-studio`.
 
 ---
 

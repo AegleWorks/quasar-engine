@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
-import { applyEffect } from '../Utils/treeTransformers'
-import type { RedNode } from '../Syntax/RedNode'
+import { RedNode } from '../Syntax/RedNode'
+import { greenLeaf, greenNode } from '../Syntax/GreenNode'
 
 /**
  * An attribute an editor changed through `metadata` (the canvas inspector)
@@ -52,8 +52,26 @@ describe('attributes an editor changed are written from the metadata', () => {
 
 describe('an effect exported to Miliastry comes back as the same picture', () => {
   it('per-letter gradient tags keep one ramp (at/of)', () => {
-    const model = new BBCodeDocumentModel({ source: 'hola mundo' })
-    const tree = applyEffect(model.redRoot!, { kind: 'gradient', colors: ['#ff0000', '#0000ff'] })
+    const text = 'hola mundo'
+    const colors = ['#ff0000', '#0000ff']
+    // The shape the studio writes when it splits one range across nodes: one
+    // `[gradient]` tag per character, each carrying its slice of the ramp.
+    // Built here directly — the tree transformers that used to produce it are
+    // gone, and the export path they exercised is not.
+    const tree = new RedNode(greenNode('document', ''), { kind: 'document' })
+    RedNode.allowMutation(() => {
+      [...text].forEach((ch, i) => {
+        const node = new RedNode(greenNode('gradient', ''), {
+          kind: 'gradient',
+          metadata: {
+            colors, unit: 'character', easing: 'linear',
+            globalOffset: i, documentLength: text.length,
+          },
+        })
+        node.appendChild(new RedNode(greenLeaf('text', ch), { kind: 'text' }))
+        tree.appendChild(node)
+      })
+    })
     const ramps = (root: RedNode): string[] => {
       const out: string[] = []
       const stack = [root]
@@ -67,6 +85,7 @@ describe('an effect exported to Miliastry comes back as the same picture', () =>
       }
       return out
     }
+    const model = new BBCodeDocumentModel({ source: text })
     const bbcode = new BBCodeExporter(model.tagRegistry, 'miliastry').export(tree)
     expect(bbcode).toContain(';at=0;of=')
     expect(ramps(new BBCodeDocumentModel({ source: bbcode }).redRoot!)).toEqual(ramps(tree))

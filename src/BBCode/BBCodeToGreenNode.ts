@@ -421,6 +421,19 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       return {
         title: stripBBCode(titleValue) || (kind === 'box' || kind === 'boxw' ? 'Box' : 'Spoiler'),
         rawTitle: titleValue,
+        // Lo que osu! publica como rótulo es el atributo tal cual está escrito
+        // tras el `=`, sin procesar: `[box="playstyle"]` sale con las comillas
+        // puestas y `[box=Title:#ff0000]` con su sufijo. `value` (de donde
+        // salen `title`/`rawTitle`) ya ha perdido las comillas y el color, así
+        // que el camino osu! del renderer necesita el texto crudo aparte.
+        rawAttr: eqIdx >= 0 ? String(rawText.slice(eqIdx + 1)) : '',
+        // `[box=]` — the `=` with nothing after it. osu! opens a box here and
+        // labels it with nothing at all (only `[box]`, no `=`, stays text), so
+        // the renderer needs to tell this apart from a bare tag, whose title
+        // is synthetic. `rawTitle` is '' for both.
+        // Sobre el texto CRUDO, no el normalizado: `[box=]` no tiene rótulo,
+        // pero `[box=""]` sí — las comillas SON el rótulo que osu! publica.
+        ...(eqIdx >= 0 && String(rawText.slice(eqIdx + 1)) === '' ? { emptyTitle: true } : {}),
         ...(color ? { color } : {}),
         ...(kind === 'boxw' ? { styled: true } : {}),
       }

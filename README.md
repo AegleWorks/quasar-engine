@@ -44,7 +44,7 @@ Read-only views (forum posts, comments) can skip the editor machinery entirely:
 const html = BBCodeDocumentModel.renderForum(source, { dialect: 'lyne' })
 ```
 
-`renderForum` turns off analysis, undo and node ids, so it is the cheapest way to get HTML.
+`renderForum` turns off analysis, undo and node ids, so it is the cheapest way to get one page's HTML. For a feed, `renderBBCodeMany` or `renderBBCodeStream` reuse one parser and renderer across pages; the stream yields one page at a time instead of retaining every result. `BBCodeBatchRenderer.renderDetailed` returns the same HTML with the parse and render times separated, for previews that show where the time went.
 
 ## What Quasar gives you
 
@@ -58,13 +58,13 @@ const html = BBCodeDocumentModel.renderForum(source, { dialect: 'lyne' })
 | **WYSIWYG canvas** | A `contenteditable` painted by the renderer. Bold, color, Enter, Backspace and paste become minimal source edits that keep the author's casing and spacing. | `CanvasDocument`, `toggleInlineFormat`, `insertContent` |
 | **osu! fidelity** | Reproduces osu!'s own tag pairing and newline rules, with an incremental preview tree that patches the DOM block by block. | `OsuPreviewTree`, `patchBlocksInto`, `pairing: 'osu'` |
 | **Rendering and export** | HTML (with osu! and Lyne themes), in-place DOM morphing, SVG, BBCode per target dialect, Markdown, JSON and Tiptap. | `HTMLRenderer`, `morphHTML`, `BBCodeExporter`, `domToSVG` |
-| **Import** | Markdown, HTML and MilHibri (a hybrid of BBCode and Markdown) are translated into the same tree. | `MarkdownDocumentModel`, `HTMLDocumentModel`, `MilHibriDocumentModel` |
-| **Text effects** | Gradients, rainbows, waves and grow effects baked into BBCode, plus the math behind them: OKLab mixing, easing, noise, masks, paint grids and user expressions. | `applyGradient`, `GradientTransformer`, `evaluateEffect`, `mixHexOklab` |
+| **Import** | Markdown, HTML and MilHibri (a hybrid of BBCode and Markdown) are translated into the same tree. Inside MilHibri, a BBCode document keeps the BBCode engine for its blocks — so it inherits the measured osu! rules — and Markdown inline syntax (`**`, links, images, inline code) is translated only inside its text leaves. Markdown blocks (headings, fences, `:::`, quotes, callouts, arrows and lists) are rewritten into the equivalent BBCode tags before pairing, so they nest inside the existing block stack instead of switching parsers; a bare dash list in a pasted osu! page stays literal until another Markdown block declares the intent. Only a document without osu! BBCode, or one using Miliastry-only tags, goes to the Markdown importer. | `MarkdownDocumentModel`, `HTMLDocumentModel`, `MilHibriDocumentModel` |
+| **Text effects** | Gradients, rainbows, waves and grow effects baked into BBCode, plus the math behind them: OKLab mixing, easing, noise, masks, paint grids and user expressions. | `evaluateEffect`, `parseEffectParams`, `mixHexOklab` |
 | **Analysis pipeline** | Pass-based analysis that finds collapsible gradients, mergeable colors and decorative symbol runs, and remaps a document to a palette. | `PipelineBuilder`, `GradientAnalyzer`, `PaletteRemapDecision` |
 | **Anchors** | Ranges that follow the text through edits and survive a reload, for comments, open boxes or ignored warnings. | `AnchorSet`, `toSelector`, `restoreAnchors` |
 | **Collaboration** | Offset and range transforms for a text CRDT (Yjs or similar). Every edit carries an `origin`, so you can tell your own echo apart. | `transformOffset`, `transformRange` |
 | **Language service** | Diagnostics, outline, quick info, definition, references, rename, completion, semantic tokens, folding and code actions over one document, cached per version. A `Workspace` adds project/solution Fix-All across models. | `LanguageService`, `Workspace` |
-| **Editor services** | CSS-like structural queries, a symbol table (headings + `[url=#fragment]`, plus plugin `id`/`goto`), tree diffing, transactions with undo, a formatter and nesting repair. | `QueryEngine`, `SymbolTable`, `TreeDiffer`, `Transaction`, `repairNesting` |
+| **Editor services** | CSS-like structural queries, a symbol table (headings + `[url=#fragment]`, plus plugin `id`/`goto`), tree diffing, transactions with undo, five built-in commands that plan their edit as text changes, a formatter and nesting repair. | `QueryEngine`, `SymbolTable`, `TreeDiffer`, `Transaction`, `createCommandRegistry`, `repairNesting` |
 | **Extensibility** | One plugin can contribute tags, commands, validators, lint rules, code fixes, refactorings, render hooks and CSS. Design tokens resolve at export time. | `PluginRegistry`, `TagRegistry`, `toTokenResolver` |
 
 Everything listed is exported from the package root. Nothing requires a deep import.

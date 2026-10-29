@@ -26,7 +26,7 @@
  *
  * ## Maximal in one pass
  *
- * `ASTOptimizer` merges pairwise and iterates to a fixpoint. Edits addressed
+ * The old tree optimizer merges pairwise and iterates to a fixpoint. Edits addressed
  * to the original source cannot do that — applying one invalidates every later
  * offset — so this rule recognises the **whole run at once**, and then
  * descends into the content the merge is about to create:

@@ -10,7 +10,7 @@
  *
  * 1. **Maximal.** A rule emits the final form in one pass. It may not rely on
  *    being run again: applying an edit invalidates every later offset, so
- *    there is no second pass to be had. Where `ASTOptimizer` merged pairwise
+ *    there is no second pass to be had. Where the old tree optimizer merged pairwise
  *    and iterated to a fixpoint, a rule here recognises the whole run.
  * 2. **Deterministic.** Same tree in, same edits out, in the same order.
  * 3. **Spelling-preserving.** Prefer deleting the author's bytes over

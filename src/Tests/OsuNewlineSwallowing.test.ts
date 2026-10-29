@@ -197,6 +197,15 @@ describe('osu newline swallowing', () => {
     it('la apertura del ítem no se come lo que va detrás', () => {
       expect(breaks('[list][*]\na[/list]')).toBe(1)
     })
+
+    it('una línea de solo U+3000 es CONTENIDO, no blanco: conserva su salto', () => {
+      // `\s` de PCRE sin /u y `trim()` de PHP no incluyen U+3000, así que el
+      // salto de antes no lo come ningún `\s*`: osu! publica
+      // `<li>a<br />　</li>`. Con el `trim()` de JS la línea se trataba como
+      // blanco y se pegaba al ítem anterior (`osu/4637369`, `osu/35798411`).
+      expect(breaks('[list]\n[*]a\n\u3000\n[/list]')).toBe(1)
+      expect(html('[list]\n[*]a\n\u3000\n[/list]', 'osu')).toContain('<br>\u3000')
+    })
   })
 
   // ── [/list] — — / todo el blanco / hasta dos ─────────────────────────────
@@ -386,19 +395,23 @@ describe('osu newline swallowing', () => {
       // `centre` (`HTMLRenderer.CROSSABLE_DIV_KINDS`) — medido contra
       // osu-web: 1.
       expect(breaksCross('[centre][notice]x[/centre]\n\n[/notice]\n\nb')).toBe(1)
-      // `[box=t]`/`[spoilerbox]` cruzan igual (ver `box_tail` en
-      // `Types/core.ts`), pero su propio cierre real puede terminar de
-      // cerrar el WRAPPER por dos caminos distintos según el orden —
-      // directamente (`[/box]` propio) o por el cruce de OTRA etiqueta — y
-      // esta implementación no distingue cuál de los dos fue, así que le
-      // aplica solo el presupuesto (acotado) del cierre huérfano más
-      // cercano, no el `beforeClose` sin límite de `box` cuando le tocaría.
-      // Medido contra osu-web: 1 real; esta implementación da 2 — un `<br>`
-      // de más en esta combinación concreta (cruce + salto doble justo en
-      // la costura). Divergencia conocida, documentada en el informe del
-      // cambio; no afecta el anidado (la métrica de outline).
-      expect(breaksOsuOsu('[centre][box=t]x[/centre]\n\n[/box]\n\nb')).toBe(2)
-      expect(breaksOsuOsu('[centre][spoilerbox]x[/centre]\n\n[/spoilerbox]\n\nb')).toBe(2)
+      // `[box=t]`/`[spoilerbox]` cruzan igual (su cuerpo lo cierra el
+      // `[/centre]`, el WRAPPER sigue abierto hasta el `[/box]` propio):
+      // mientras el cierre real no llegue, los saltos de la costura están
+      // DENTRO del cuerpo y los come su propio `\n*\[/box\]` sin límite —
+      // igual que `[notice]`, medido contra osu-web: 1 (esta implementación
+      // daba 2: un `<br>` de más que ya no existe).
+      //
+      // El caso espejo — el `[/box]` propio SÍ llegó antes (cruzó a
+      // `[centre]` y se comió el cuerpo) — deja solo el `\n?` de su
+      // afterClose (uno) tocando estos saltos, así que el resto sobrevive
+      // como el `<br>` que osu! deja dentro del wrapper. `OsuSemanticModel`
+      // los distingue por quién abre el `box_tail`; medido contra osu-web:
+      // 2, y 2 da esta implementación.
+      expect(breaksCross('[centre][box=t]x[/centre]\n\n[/box]\n\nb')).toBe(1)
+      expect(breaksCross('[centre][spoilerbox]x[/centre]\n\n[/spoilerbox]\n\nb')).toBe(1)
+      expect(breaksCross('[box=t][centre]x[/box]\n\n[/centre]\n\nb')).toBe(2)
+      expect(breaksCross('[box=t][right]x[/box]\n\n[/right]\n\nb')).toBe(2)
     })
 
     it('[quote] / [list] varados: se comen TODO, dentro y fuera', () => {
@@ -409,6 +422,14 @@ describe('osu newline swallowing', () => {
       expect(breaksCross('[centre][list][*]x[/centre][/list]b')).toBe(0)
       expect(breaksCross('[centre][list][*]x[/centre]\n[/list]\nb')).toBe(0)
       expect(breaksCross('[centre][list][*]x[/centre]\n\n[/list]\n\nb')).toBe(0)
+
+      // Los saltos van DENTRO del quote/lista, antes del cierre que cruza:
+      // el `\s*[/quote]` / `\s*[/list]` propio queda detrás de `[/centre]`
+      // en el texto y no llega hasta ellos. osu! publica `x<br /><br />`
+      // dentro del bloque; antes se los comía el presupuesto del cierre
+      // propio, que en este árbol ya no existe (`trailingWidth === 0`).
+      expect(breaksCross('[centre][quote]x\n\n[/centre]\n\n[/quote]\n\nb')).toBe(2)
+      expect(breaksCross('[centre][list][*]x\n\n[/centre]\n\n[/list]\n\nb')).toBe(2)
     })
 
     it('[right] / [left] / [centre] varados: no comen nada antes del cierre, uno después', () => {
@@ -430,6 +451,18 @@ describe('osu newline swallowing', () => {
       // `[b]` queda varado igual que un bloque, pero osu! nunca le da
       // presupuesto de saltos a una etiqueta inline, cerrada o no.
       expect(breaksCross('[centre][b]x\n[/centre]\n[/b]\ny')).toBe(2)
+    })
+
+    it('un inline varado al final de un [notice] no retiene la costura — la come el `\\n*` del cierre del notice', () => {
+      // Reducción de `osu/12264918`: los dos `[box]` cruzan a los `[b]`, y el
+      // segundo `[b]` (varado: su `[/b]` cae dentro del box) envuelve los dos
+      // saltos finales del notice. El inline no tiene regla propia, así que
+      // esos saltos se miden contra el cierre que viene DESPUÉS en la fuente
+      // — el `[/notice]` varado — y su `\n*` se los come: un `<br>` dentro
+      // del `well` (la costura entre los dos boxes) y uno fuera, como osu!.
+      expect(breaksCross(
+        '[notice]\n[b][box=Setup:]a[/b][s]m[/s][/box]\n\n[b][box=Tour:]b[/b]\n[/box]\n\n[/notice]\n\nafter',
+      )).toBe(2)
     })
 
     it('un cierre huérfano de verdad (sin apertura previa) no come nada', () => {

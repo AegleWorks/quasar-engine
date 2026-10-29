@@ -137,6 +137,27 @@ export type NodeKind =
    * y</div>`). Never produced under the default `'quasar'` pairing.
    */
   | 'box_tail'
+  /**
+   * `pairing: 'osu'` only — el `<div>` que un tag de bloque escrito DENTRO de
+   * un TÍTULO de `box`/`spoilerbox` abre ahí mismo, con el cuerpo de la caja
+   * dentro (`Parser.ts`, `Osu/osuPairing.ts`'s `titleEvents`).
+   *
+   * osu! no parsea el título: inserta el texto en crudo en el `link-text` y su
+   * pasada de alineación deja el `<div>` ahí, que HTMLPurifier sube fuera del
+   * enlace con todo lo que venga después — el cuerpo de la caja. Medido:
+   * `[centre][box=X[/centre][centre]]body[/box][/centre]` publica
+   * `<div centre><div box><a…>X</a></div><div centre><div body>body</div>
+   * </div></div>`.
+   *
+   * Es un kind propio, y no el del tag que representa, porque NO tiene
+   * delimitador propio en la fuente (`leadingWidth`/`trailingWidth` = 0, los
+   * bytes viven en el delimitador de la caja) y el presupuesto de saltos tiene
+   * que atravesarlo hasta el `[box=…]`/`[/box]` reales — ver
+   * `newlineRules.WIDTHLESS_OPEN`/`WIDTHLESS_CLOSE`. El tag que representa viaja
+   * en su texto (`centre`, `notice`, …). Nunca se produce bajo el pairing
+   * `'quasar'`.
+   */
+  | 'title_div'
   | 'group'
   | 'wnotice'
   | 'align'

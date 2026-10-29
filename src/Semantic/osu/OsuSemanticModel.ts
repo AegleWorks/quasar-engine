@@ -14,16 +14,23 @@ import { tagToNodeKind, type BBCodeDialect } from '../../BBCode/BBCodeToGreenNod
 import { scanBBCode } from '../../Lexer/BBCodeLexer'
 import {
   CROSSABLE_DIV_KINDS, WIDTHLESS_CLOSE, WIDTHLESS_OPEN,
-  discardedTagRule, firstNonWidthlessOpenChild, newlineRule,
+  discardedTagRule, newlineRule,
   type NewlineRule,
 } from './newlineRules'
 
 /** Walking back to an opener: its `afterOpen` rule, newlines and blank text between. */
 interface OpenState { readonly afterOpen: NewlineRule['afterOpen'] | null; readonly newlines: number; readonly blank: boolean }
-/** Walking forward to a closer: its `beforeClose` rule, and whether blank text came between. */
-interface CloseState { readonly beforeClose: NewlineRule['beforeClose'] | null; readonly blank: boolean }
-/** Walking back over newlines to a closer: its `afterClose` budget and the newlines spent. */
-interface AfterCloseState { readonly afterClose: number | null; readonly newlines: number }
+/**
+ * Walking forward to a closer: its `beforeClose` rule, whether blank text came
+ * between, and whether that closer is one the render shows NOTHING for — a
+ * ghost, whose `</div>` osu! never publishes (see {@link eatenByGhostCloser}).
+ */
+interface CloseState { readonly beforeClose: NewlineRule['beforeClose'] | null; readonly blank: boolean; readonly ghost: boolean }
+/**
+ * Walking back over newlines to a closer: its `afterClose` budget, the
+ * newlines spent, and whether that closer is a ghost.
+ */
+interface AfterCloseState { readonly afterClose: number | null; readonly newlines: number; readonly ghost: boolean }
 
 /**
  * Steps a walk takes before it switches to the memoized one. Runs of a few
@@ -32,9 +39,16 @@ interface AfterCloseState { readonly afterClose: number | null; readonly newline
  */
 const SHORT_WALK = 16
 
+/**
+ * `trim()` de PHP: espacio, tab, saltos, NUL, \v. Ni U+3000 ni U+00A0 ni
+ * U+FEFF, que el `trim()` de JS sí come y osu! cuenta como texto.
+ */
+const PHP_BLANK_RE = /^[ \t\n\r\0\x0B]*$/
+
+
 const NO_OPEN: OpenState = { afterOpen: null, newlines: 0, blank: false }
-const NO_CLOSE: CloseState = { beforeClose: null, blank: false }
-const NO_AFTER_CLOSE: AfterCloseState = { afterClose: null, newlines: 0 }
+const NO_CLOSE: CloseState = { beforeClose: null, blank: false, ghost: false }
+const NO_AFTER_CLOSE: AfterCloseState = { afterClose: null, newlines: 0, ghost: false }
 
 export class OsuSemanticModel {
   constructor(readonly dialect: BBCodeDialect) {}
@@ -91,12 +105,17 @@ export class OsuSemanticModel {
     const rawTitle = box.metadata?.rawTitle
     if (typeof rawTitle === 'string' && rawTitle.includes('[')) {
       // What the title opens and never closes, by exact (lowercase) spelling:
-      // osu!'s passes are case-sensitive.
+      // osu!'s passes are case-sensitive — about the NAME. The check is the
+      // name's own span and not the whole spelled tag, because the attribute
+      // is not part of it: `[box=[color=#A38792]T][/color]` claims its
+      // `[/color]`, and comparing the raw slice lowercased threw the claim
+      // away for every uppercase colour, leaving `[/color]` printed as text
+      // in the preview (measured on `osu/10053373`).
       const pending = new Map<string, number>()
       for (const t of scanBBCode(rawTitle)) {
         if ((t.kind !== 'open' && t.kind !== 'close') || t.tag === '*') continue
-        const spelled = rawTitle.slice(t.start, t.end)
-        if (spelled !== spelled.toLowerCase()) continue
+        const nameAt = t.kind === 'close' ? t.start + 2 : t.start + 1
+        if (rawTitle.slice(nameAt, nameAt + t.tag.length) !== t.tag) continue
         pending.set(t.tag, (pending.get(t.tag) ?? 0) + (t.kind === 'open' ? 1 : -1))
       }
       // The FIRST closers of those tags after the title, in document order —
@@ -193,7 +212,12 @@ export class OsuSemanticModel {
   }
 
   private static isBlankText(node: RedNode): boolean {
-    return node.kind === 'text' && node.children.length === 0 && node.text.trim() === ''
+    // Blancura de PHP, no de JavaScript: los pasos de osu! son PCRE sin /u y
+    // `trim()` de PHP usa " \t\n\r\0\x0B", así que U+3000, U+00A0 y U+FEFF
+    // son CONTENIDO — una línea de solo `　` conserva su salto y se publica
+    // como línea propia. El `trim()` de JS los come y pegaba esa línea a la
+    // anterior (medido: `osu/4637369`, `osu/35798411`).
+    return node.kind === 'text' && node.children.length === 0 && PHP_BLANK_RE.test(node.text)
   }
 
   /**
@@ -215,9 +239,78 @@ export class OsuSemanticModel {
       || this.eatenBeforeOpeningTag(node)
   }
 
+
   /** The newline budget a CLOSING node carries (see {@link closingRule}). */
   closingBudget(node: RedNode): NewlineRule | null {
     return this.closingRule(node)
+  }
+
+  /**
+   * Whether this newline leaf is the first break its own run of newlines puts
+   * on screen because an INVISIBLE closer ate the one before it.
+   *
+   * osu!'s `str_replace("\n", '<br />')` turns every surviving newline into a
+   * flat `<br />`, so when the eaten one belonged to a ghost — a closer the
+   * render shows nothing for — nothing has closed the line yet and this
+   * surviving newline is a bare line break. Measured (`a[/box]\n\nb`: the
+   * orphan closer's `\n?` ate the first newline, and osu! publishes
+   * `a<br />b` — ONE break, since HTMLPurifier drops the stray `</div>`):
+   * drawing the second newline as a blank line adds a line nobody sees.
+   *
+   * A REAL closer is a different story, and the reason this asks for a ghost
+   * rather than for "an eaten newline": its `</div>` does reach the page and
+   * ends the line, so the newline after it is a blank line, exactly as the
+   * `<div class="bb-empty-line">` draws it (measured on `[notice]x[/notice]`
+   * and on every matched `[/box]`). False at the start of a run, and false
+   * once an earlier newline of the same run survived — that one already ended
+   * the line. Nothing here is dialect-gated: Miliastry breaks lines like osu!.
+   */
+  isBareLineBreak(node: RedNode): boolean {
+    return this.eatenEarlierByGhost(node, false)
+  }
+
+  /** Walking back along `node`'s run of newlines: was one of them eaten by a ghost? */
+  private eatenEarlierByGhost(node: RedNode, memoize: boolean): boolean {
+    const memo = memoize ? this.eatenBeforeRunMemo : null
+    const chain: RedNode[] = []
+    let cur = node
+    let eaten: boolean
+    for (;;) {
+      if (memo !== null) {
+        const hit = memo.get(cur)
+        if (hit !== undefined) { eaten = hit; break }
+      } else if (chain.length > SHORT_WALK) {
+        return this.eatenEarlierByGhost(node, true)
+      }
+      const prev = cur.previousSibling
+      // The run starts (or is interrupted by visible content) here: nothing
+      // before it for a ghost to have eaten.
+      if (prev === null || !OsuSemanticModel.isNewlineNode(prev)) { eaten = false; break }
+      chain.push(cur)
+      if (this.eatenByGhostCloser(prev)) { eaten = true; break }
+      cur = prev
+    }
+    // Every node in the chain sits AFTER the newline that decided it, so they
+    // all share the answer — and none of the nodes walked past does (their own
+    // run may still start with a ghost-eaten newline).
+    memo?.set(cur, eaten)
+    for (const c of chain) memo?.set(c, eaten)
+    return eaten
+  }
+
+  /**
+   * Whether this newline leaf is eaten by a closer the render shows NOTHING
+   * for — a `discarded_tag`/`discarded_box_close` ghost, or the orphan
+   * `[/box]`/`[/spoilerbox]` text leaf standing in for one — rather than by a
+   * real `[/box]`, whose `</div>` reaches the page. Same two scans
+   * `isNewlineSwallowed` runs, read for WHO did the eating instead of whether
+   * anybody did.
+   */
+  private eatenByGhostCloser(node: RedNode): boolean {
+    const after = this.afterCloseState(node)
+    if (after.ghost && after.afterClose !== null && after.newlines < after.afterClose) return true
+    const before = this.closeState(node)
+    return before.ghost && (before.beforeClose === 'whitespace' || (before.beforeClose === 'all' && !before.blank))
   }
 
 
@@ -236,6 +329,7 @@ export class OsuSemanticModel {
   private readonly afterCloseMemo = new WeakMap<RedNode, AfterCloseState>()
   private readonly closeMemo = new WeakMap<RedNode, CloseState>()
   private readonly beforeOpenMemo = new WeakMap<RedNode, boolean>()
+  private readonly eatenBeforeRunMemo = new WeakMap<RedNode, boolean>()
 
   /** `\[box\]\n*`, `\[quote\]\s*`, `[centre]\n`. */
   private eatenByOpeningTag(node: RedNode): boolean {
@@ -330,20 +424,54 @@ export class OsuSemanticModel {
         if (OsuSemanticModel.isBlankText(next)) { chain.push(cur); blanks.push(true); cur = next; continue }
         // `discarded_box_close` is deliberately NOT paragraph-flushed (see
         // Parser.ts), so it can sit as the FIRST child of a `paragraph` —
-        // widthless on this side too — instead of always a direct sibling.
-        // `discarded_tag` never needs that descent (it IS flushed out of
+        // widthless on this side too — instead of always a direct sibling;
+        // and a box's own closer lands inside its `box_tail`, which is the
+        // last sibling of every box that ran into a crossing tag. Both are
+        // wrappers the SOURCE text runs straight through, so the walk does
+        // too (measured: `[box=][box=][notice][url=http://p][img]g[/img][/url]
+        // \n[/box][/box][/notice]\n\nh` — osu! eats that newline with the
+        // notice's or the box's own `\n*`, and stopping ON the `box_tail`
+        // made the preview publish a `<br>` inside the well instead).
+        // `discarded_tag` itself needs no descent (it IS flushed out of
         // paragraphs, see Parser.ts's root-normalization loop) but reusing
-        // the same helper is harmless: it is a no-op when `next` is not
-        // itself a paragraph/group.
-        const boundary = firstNonWidthlessOpenChild(next)
+        // the same helper is harmless: it is a no-op on a leaf.
+        const boundary = OsuSemanticModel.firstContent(next)
         state = this.isGhost(boundary)
-          ? { beforeClose: this.closingRule(boundary)?.beforeClose ?? null, blank: false }
+          ? { beforeClose: this.closingRule(boundary)?.beforeClose ?? null, blank: false, ghost: true }
           : NO_CLOSE
         memo?.set(cur, state)
         break
       }
       const parent = cur.parent
       if (!parent) { state = NO_CLOSE; memo?.set(cur, state); break }
+      // Un `box_tail` es lo que un cierre cruzado dejó tras el cuerpo, así que
+      // los saltos del final ya NO están dentro de nada: lo que los come es el
+      // `\n*` del cierre que venga después EN EL TEXTO, sea del propio box o
+      // de cualquier otra etiqueta (osu! corre una pasada por etiqueta, y la de
+      // `[/notice]` también empieza por `\n*`). Medido en los dos sentidos:
+      //
+      // - `[centre][box=t]x[/centre]\n\n[/box]\n\nb` → sigue el `[/box]`
+      //   propio → sus `\n*` se come los dos: 1 `<br>` en toda la costura.
+      // - `[box=t][centre]x[/box]\n\n[/centre]\n\nb` → el `[/box]` propio ya
+      //   llegó (se comió el cuerpo al cruzar a `[centre]`) y lo que sigue es
+      //   `[/centre]`, cuyo presupuesto es `none` → no come nada; solo el
+      //   `\n?` de su afterClose (uno) toca al primero, y el otro sobrevive
+      //   como el `<br>` que osu! deja dentro del wrapper: 2 en total.
+      //   `eatenAfterClosingTag` ya cuenta ese presupuesto desde el fantasma,
+      //   así que aquí solo hay que NO adelantarse.
+      //
+      // `closerAfter` encuentra ese cierre: el fantasma que mintió el cierre
+      // que popeo el frame, que `Parser.ts` dejó en el bucket activo (puede ser
+      // el `box_tail` de un box que lo envuelve, si el nuestro era su último
+      // hijo).
+      if (parent.kind === 'box_tail' && parent.parent !== null) {
+        const after = this.closerAfter(parent.parent)
+        state = after !== null && this.isGhost(after)
+          ? { beforeClose: this.closingRule(after)?.beforeClose ?? null, blank: false, ghost: true }
+          : NO_CLOSE
+        memo?.set(cur, state)
+        break
+      }
       if (WIDTHLESS_CLOSE.has(parent.kind)) { chain.push(cur); blanks.push(false); cur = parent; continue }
       // `pairing: 'osu'` crossing: a `notice`/`center`/`left`/`right` with NO
       // closing delimiter of its own (`trailingWidth === 0`) was closed by
@@ -368,16 +496,95 @@ export class OsuSemanticModel {
       if (CROSSABLE_DIV_KINDS.has(parent.kind) && parent.green.trailingWidth === 0) {
         chain.push(cur); blanks.push(false); cur = parent; continue
       }
+      // `quote`/`list` crossed by an ancestor's closer have no own closer at
+      // the end of this subtree (`trailingWidth === 0`): their `[/quote]` /
+      // `[/list]` is a discarded leaf later in the source, so the `\s*`
+      // before it cannot reach these newlines. Measured:
+      // `[centre][quote]x\n\n[/centre]\n\n[/quote]` publishes
+      // `x<br /><br />` inside the quote, not an eaten seam.
+      //
+      // `heading` entra aquí por la misma razón: un `[/heading]` que cruza un
+      // `[centre]`/`[box]` abierto se descarta y el `<h2>` lo cierra el cierre
+      // de fuera, así que los saltos de su cola son de ese cierre de fuera —
+      // `osu/20778568`, donde el `[/list]` que cierra el heading auto-cerrado
+      // se come los dos saltos finales que el preview publicaba como líneas
+      // vacías dentro del título de la lista.
+      if ((parent.kind === 'quote' || parent.kind === 'list' || parent.kind === 'heading') && parent.green.trailingWidth === 0) {
+        chain.push(cur); blanks.push(false); cur = parent; continue
+      }
+      // Un INLINE que quedó sin su propio `[/tag]` (`trailingWidth === 0`:
+      // lo cerró un cruce, y su cierre real es un fantasma más adelante en
+      // el texto) no tiene pasada propia en osu — ninguna regex de
+      // `BBCodeFromDB` menciona `[b]`, así que no hay presupuesto contra el
+      // que medir. Los saltos al final de su contenido los come quien venga
+      // después EN LA FUENTE, que es justo lo que encuentra el branch `next`
+      // una vez arriba. Medido en `osu/12264918`:
+      // `[notice]\n[b][box=…]…[/box]\n\n[b][box=…]…[/box]\n\n[/notice]` —
+      // sin subir, el preview dejaba dentro del `well` el `<br>` que el
+      // `\n*` de `[/notice]` se come (su cierre real quedó de
+      // `discarded_tag`, y el `bold` cruzado, el padre de los saltos).
+      if (newlineRule(parent.kind) === null && parent.green.trailingWidth === 0) {
+        chain.push(cur); blanks.push(false); cur = parent; continue
+      }
       const rule = newlineRule(parent.kind)
-      state = rule ? { beforeClose: rule.beforeClose, blank: false } : NO_CLOSE
+      state = rule ? { beforeClose: rule.beforeClose, blank: false, ghost: false } : NO_CLOSE
       memo?.set(cur, state)
       break
     }
     for (let i = chain.length - 1; i >= 0; i--) {
-      if (blanks[i] && !state.blank) state = { beforeClose: state.beforeClose, blank: true }
+      if (blanks[i] && !state.blank) state = { beforeClose: state.beforeClose, blank: true, ghost: state.ghost }
       memo?.set(chain[i], state)
     }
     return state
+  }
+
+  /**
+   * The closing text osu!'s own regex sees immediately after `node` in the
+   * SOURCE — the ghost leaf the parser minted for the closer that popped the
+   * frame (`discarded_tag`/`discarded_box_close`, or the orphan `[/box]`
+   * text the default pairing keeps), which is what a newline sitting at the
+   * very end of a `node` needs to be measured against.
+   *
+   * Not the same as `node.nextSibling`: the parser APPENDS a frame's
+   * `box_tail` after its ordinary children, so a box that was the last child
+   * of an enclosing box is followed in the source by the first child of that
+   * enclosing tail — where the ghost landed, since the bucket active when the
+   * closer popped the frame was the enclosing box's tail. Everything else is
+   * a genuine sibling (a crossing closer's ghost sits right where the box
+   * ended). Returns `null` at the end of the document, or when what follows is
+   * ordinary content instead of a ghost (a `paragraph`, some text, …).
+   */
+  private closerAfter(node: RedNode): RedNode | null {
+    let cur: RedNode = node
+    for (;;) {
+      const next = cur.nextSibling
+      if (next !== null) return OsuSemanticModel.firstContent(next)
+      const parent = cur.parent
+      if (parent === null) return null
+      // The frame's OWN closing text comes first: what follows `cur` in the
+      // source is that `[/tag]`, not whatever `parent` is followed by.
+      if (parent.green.trailingWidth > 0) return null
+      const last = parent.children[parent.children.length - 1]
+      if (last !== undefined && last !== cur && last.kind === 'box_tail') {
+        const first = last.children[0]
+        return first === undefined ? null : OsuSemanticModel.firstContent(first)
+      }
+      cur = parent
+    }
+  }
+
+  /**
+   * The first node of `node`'s own subtree — how `closerAfter` reaches the
+   * text inside a wrapper instead of the wrapper. `box_tail` is in here as
+   * well as the widthless kinds: a box that was the last child of another box
+   * is followed by that box's tail, and the ghost leaf sits inside it.
+   */
+  private static firstContent(node: RedNode): RedNode {
+    let cur = node
+    while (cur.children.length > 0 && (WIDTHLESS_OPEN.has(cur.kind) || cur.kind === 'box_tail')) {
+      cur = cur.children[0]
+    }
+    return cur
   }
 
   /** `\[/box\]\n?`, `\[/list\]\n?\n?`. */
@@ -420,12 +627,12 @@ export class OsuSemanticModel {
         closer = closer.children[closer.children.length - 1]
       }
       const rule = this.closingRule(closer)
-      state = rule ? { afterClose: rule.afterClose, newlines: 0 } : NO_AFTER_CLOSE
+      state = rule ? { afterClose: rule.afterClose, newlines: 0, ghost: this.isGhost(closer) } : NO_AFTER_CLOSE
       memo?.set(cur, state)
       break
     }
     for (let i = chain.length - 1; i >= 0; i--) {
-      if (counts[i]) state = { afterClose: state.afterClose, newlines: state.newlines + 1 }
+      if (counts[i]) state = { afterClose: state.afterClose, newlines: state.newlines + 1, ghost: state.ghost }
       memo?.set(chain[i], state)
     }
     return state

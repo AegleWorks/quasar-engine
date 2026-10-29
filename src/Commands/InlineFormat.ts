@@ -29,7 +29,7 @@
 import type { RedNode } from '../Syntax/RedNode'
 import type { NodeKind } from '../Types/core'
 import type { TextChange } from '../Incremental/ChangeTracker'
-import { isBlockKind } from '../BBCode/BBCodeToGreenNode'
+import { isBlockKind, tagToNodeKind } from '../BBCode/BBCodeToGreenNode'
 import { transformRange } from '../Collab/positions'
 
 export type ToggleFormat = 'bold' | 'italic' | 'underline' | 'strikethrough'
@@ -272,6 +272,46 @@ export function toggleInlineFormat(
   }
   const normal = normalise(changes)
   return { changes: normal, selection: selectionOf(range, runs, normal), action: 'unwrap' }
+}
+
+/**
+ * Wraps the selection in a bare inline tag, run by run.
+ *
+ * Unlike `toggleInlineFormat`, this always wraps: the caller asked for the
+ * tag, not for its absence. Use it for inline tags with no toggle of their
+ * own (`[font=…]`, `[size=…]`, a custom one); block tags are refused because a
+ * wrapper around three paragraphs is not the same edit as three wrapped
+ * runs, and the caller should insert the block already written.
+ *
+ * A collapsed selection applies to the word the caret is inside, as
+ * `toggleInlineFormat` does. `attrs` is the raw value of a parameterised tag
+ * (`size`, `font`, `color`): `wrapInTag(…, 'size', '150')` opens `[size=150]`.
+ */
+export function wrapInTag(
+  root: RedNode,
+  source: string,
+  selection: SourceSelection,
+  tag: string,
+  attrs?: string,
+): FormatEdit | null {
+  if (!/^[a-z][a-z0-9]*$/i.test(tag)) return null
+  if (isBlockKind(tagToNodeKind(tag))) return null
+  if (attrs !== undefined && /[\]\n\r]/.test(attrs)) return null
+  const range = selection.start === selection.end ? wordAt(root, source, selection.start) : selection
+  if (!range) return null
+  const start = Math.min(range.start, range.end)
+  const end = Math.max(range.start, range.end)
+  if (end <= start) return null
+
+  const runs: Run[] = []
+  runsIn(root, start, end, runs)
+  if (runs.length === 0) return null
+
+  const open = attrs === undefined || attrs === '' ? `[${tag}]` : `[${tag}=${attrs}]`
+  const changes: TextChange[] = []
+  wrapRuns(root, start, end, open, `[/${tag}]`, changes)
+  const normal = normalise(changes)
+  return { changes: normal, selection: selectionOf({ start, end }, runs, normal), action: 'wrap' }
 }
 
 /**

@@ -723,7 +723,10 @@ export class BBCodeExporter extends Visitor<string> {
 
     // Default BBCode serialization
     let tagName = this.kindToTagName(node.kind)
-    const attrs = this.getTagAttributes(node)
+    // osu!'s heading regex is the bare tag (`\[heading](.*?)\[/heading]`);
+    // `[heading=1]` does not match and the page publishes it as text. The
+    // level is a Markdown/HTML notion osu! does not have.
+    const attrs = this.target === 'osu' && node.kind === 'heading' ? '' : this.getTagAttributes(node)
     const content = this.exportChildren(node)
 
     if (!tagName) {
@@ -769,6 +772,11 @@ export class BBCodeExporter extends Visitor<string> {
     }
 
     const kindName: string = node.kind
+    if (kindName === 'separator' || kindName === 'br') {
+      // Self-closing in both dialects. `[separator][/separator]` used to leave
+      // the closer as literal text when re-imported.
+      return `[${tagName}${attrs}]`
+    }
     if (kindName === 'list_item') {
       return `[*]${content}`
     }
@@ -872,8 +880,9 @@ export class BBCodeExporter extends Visitor<string> {
         if (this.shouldResolveTokens() && color && color.startsWith('$')) {
           color = resolveTokenValue(color, this.tokenResolver)
         }
-        // A bare `[box]` has neither, and must stay bare.
-        if (titleVal === '' && !color) return ''
+        // A bare `[box]` has neither, and must stay bare. `[box=]` is the one
+        // empty title the author did write, so it keeps its `=`.
+        if (titleVal === '' && !color) return node.metadata.emptyTitle === true ? '=' : ''
         return `=${titleVal}${color ? `:${color}` : ''}`
       } else if ((node.kind === 'notice' || node.kind === 'wnotice') && node.metadata.color !== undefined) {
         let color = String(node.metadata.color)

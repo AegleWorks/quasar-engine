@@ -146,15 +146,15 @@ export type { Operation } from './Types/operations'
 export { UndoManager, type UndoEntry } from './Transactions/UndoManager'
 
 // ── Commands ──
-export { CommandRegistry } from './Commands/CommandRegistry'
-export type { Command, CommandContext, CommandResult } from './Commands/Command'
+export { CommandRegistry, createCommandRegistry } from './Commands'
+export type { Command, CommandContext, CommandResult, CommandInput } from './Commands/Command'
 export { InsertText } from './Commands/InsertText'
 export { DeleteNode } from './Commands/DeleteNode'
 export { WrapInTag } from './Commands/WrapInTag'
 export { SplitNode, MergeNode } from './Commands/SplitMerge'
 export { insertLineBreak, joinBackward, joinForward, deleteSelection } from './Commands/StructuralEdits'
 export { insertContent, isBlockContent, type ParseSource } from './Commands/InsertContent'
-export { toggleInlineFormat, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
+export { toggleInlineFormat, wrapInTag, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
 // ── Language service (Roslyn-shaped answers over one model) ──
 //
@@ -272,6 +272,14 @@ export * from './Edits'
 // ── BBCode Bridge ──
 export { BBCodeDocumentModel, renderForumBBCode } from './BBCode/BBCodeDocumentModel'
 export type { BBCodeDocumentModelOptions } from './BBCode/BBCodeDocumentModel'
+export {
+  BBCodeBatchRenderer,
+  renderBBCode,
+  renderBBCodeMany,
+  renderBBCodeStream,
+  type BBCodeRenderOptions,
+  type BBCodeRenderResult,
+} from './BBCode/BBCodeBatch'
 export { MAX_NESTING_DEPTH } from './BBCode/Parser'
 export {
   bbBlocksToRedTree,
@@ -301,21 +309,9 @@ export type { VisualThemeId } from './Visuals/index'
 export { bindBoxDrawer, toggleBoxWithDrawer, toggleSpoilerboxWithDrawer, BOX_TOGGLE_EVENT } from './Visuals/BoxDrawer'
 export type { BoxDrawerOptions, BoxToggleDetail } from './Visuals/BoxDrawer'
 
-// ── Tree Transformers (document-wide effects) ──
-export { applyGradient, applyGrow, applyRainbow, applyCentralGradient, applyMultiGradient, applyEffect, countTextLength } from './Utils/treeTransformers'
-export type { GradientEffect, GrowEffect, RainbowEffect, CentralGradientEffect, MultiGradientEffect, TreeEffect } from './Utils/treeTransformers'
-
 // ── DOM Utilities ──
 export { domToSVG, domToSVGResult } from './Utils/dom-to-svg'
 export type { DomToSVGOptions, DomToSVGResult, SVGLayerInfo } from './Utils/dom-to-svg'
-
-// ── Transformation Engine ──
-export type { Transformer } from './Transformers/Transformer'
-export { ASTOptimizer } from './Transformers/ASTOptimizer'
-export { SineWaveTransformer, type SineWaveOptions } from './Transformers/SineWaveTransformer'
-export { RainbowTransformer, type RainbowOptions } from './Transformers/RainbowTransformer'
-export { GradientTransformer, type GradientOptions } from './Transformers/GradientTransformer'
-export { GrowTransformer, type GrowOptions } from './Transformers/GrowTransformer'
 
 // ── MilHibri Unified Hybrid Language ──
 export { MilHibriDocumentModel, type MilHibriDocumentModelOptions } from './MilHibri/MilHibriDocumentModel'

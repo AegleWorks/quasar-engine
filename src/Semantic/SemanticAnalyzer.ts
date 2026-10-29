@@ -116,30 +116,30 @@ function detachRange(diagnostic: Diagnostic): Diagnostic {
   return { ...diagnostic, range: { start: range.start, end: range.end } }
 }
 
-function runValidator(
-  validator: Validator,
+/**
+ * A verdict worth keeping — the rare path of {@link validateNodes}.
+ *
+ * Out of line on purpose: the loop that calls a validator is the one that runs
+ * millions of times, and almost every verdict is `null`. Keeping this separate
+ * leaves that loop with nothing in it but the call and the test for `null`, so
+ * a validator that finds nothing costs a call and a compare.
+ */
+function recordVerdict(
   node: RedNode,
-  context: AnalyzerContext,
+  result: Diagnostic | Diagnostic[],
   diagnostics: DiagnosticCollection,
 ): void {
-  try {
-    const result = validator.validate(node, context)
-    if (result === null || result === undefined) return
-    if (Array.isArray(result)) {
-      for (let i = 0; i < result.length; i++) {
-        const own = detachRange(result[i])
-        addDiagnostic(diagnostics, own)
-        node.ownDiagnostics().push(own)
-      }
-    } else {
-      const own = detachRange(result)
+  if (Array.isArray(result)) {
+    for (let i = 0; i < result.length; i++) {
+      const own = detachRange(result[i])
       addDiagnostic(diagnostics, own)
       node.ownDiagnostics().push(own)
     }
-  } catch (error) {
-    // Validator error should not break the analysis
-    console.warn(`[DocumentEngine] Validator ${validator.code} error:`, error)
+    return
   }
+  const own = detachRange(result)
+  addDiagnostic(diagnostics, own)
+  node.ownDiagnostics().push(own)
 }
 
 // ─── Validator Interface ───────────────────────────────────────
@@ -1075,10 +1075,52 @@ function openingTagRange(node: RedNode, source: string): { start: number; end: n
   return { start: node.range.start, end: close + 1 }
 }
 
-/** Whether the opener carries a value: `[url=…]`, not `[url]`. */
+/**
+ * Whether the opener carries a value: `[url=…]`, not `[url]` — and not
+ * `[url=]` either, whose value is empty.
+ *
+ * La diferencia importa para quien REESCRIBE el tag: con el valor vacío el
+ * parser toma la dirección del cuerpo (`firstChildText`), así que un `https://`
+ * delante de la dirección cae dentro del texto visible.
+ */
 function openerHasValue(node: RedNode, source: string): boolean {
   const lead = node.green.leadingWidth
-  return lead > 0 && source.slice(node.range.start, node.range.start + lead).includes('=')
+  if (lead <= 0) return false
+  const opener = source.slice(node.range.start, node.range.start + lead)
+  const eq = opener.indexOf('=')
+  return eq >= 0 && opener.slice(eq + 1, -1).length > 0
+}
+
+/**
+ * La edición con la que `missing-url-protocol` repara un enlace sin esquema.
+ *
+ * El esquema no se escribe NUNCA delante del cuerpo: cuando la dirección vive
+ * ahí, el texto del enlace ES la dirección y prefijarla cambiaría lo que lee
+ * el lector. La dirección se mueve al atributo y el cuerpo se queda quieto
+ * (`[url]www.x[/url]` → `[url=https://www.x]www.x[/url]`).
+ *
+ * `[url=]T[/url]` es ese mismo caso con el `=` ya escrito: su dirección es el
+ * cuerpo, así que falta el valor entero — escribirlo delante del cuerpo
+ * (`[url=]https://T[/url]`) dejaría el `https://` a la vista, que es lo que
+ * `AutomaticFixesRenderNeutral` caza.
+ */
+function missingProtocolEdit(
+  node: RedNode,
+  source: string,
+  range: { start: number; end: number },
+  href: string,
+): { position: number; text: string } {
+  if (openerHasValue(node, source)) {
+    // `[url=osu.ppy.sh]x[/url]`: la dirección está escrita, el esquema va delante.
+    return { position: range.start, text: 'https://' }
+  }
+  // Sin valor — `[url]www.x[/url]` o `[url=]www.x[/url]`— el valor se escribe
+  // entero antes del `]` del tag de apertura.
+  const opener = source.slice(node.range.start, node.range.start + node.green.leadingWidth)
+  return {
+    position: node.range.start + node.green.leadingWidth - 1,
+    text: `${opener.includes('=') ? '' : '='}https://${href}`,
+  }
 }
 
 function hrefRange(node: RedNode, source: string, href: string): { start: number; end: number } {
@@ -1882,11 +1924,30 @@ export class SemanticAnalyzer {
 
       const specific = byKind.get(node.kind)
       for (let i = 0; i < always.length; i++) {
-        runValidator(always[i], node, context, diagnostics)
+        const validator = always[i]
+        let verdict: Diagnostic | Diagnostic[] | null
+        try {
+          verdict = validator.validate(node, context)
+        } catch (error) {
+          // Un validador que revienta no puede tumbar el análisis.
+          console.warn(`[DocumentEngine] Validator ${validator.code} error:`, error)
+          continue
+        }
+        // Falsy, not `!== null`: a validator may be plain JS and return nothing
+        // at all, and an empty array is truthy either way.
+        if (verdict) recordVerdict(node, verdict, diagnostics)
       }
       if (specific !== undefined) {
         for (let i = 0; i < specific.length; i++) {
-          runValidator(specific[i], node, context, diagnostics)
+          const validator = specific[i]
+          let verdict: Diagnostic | Diagnostic[] | null
+          try {
+            verdict = validator.validate(node, context)
+          } catch (error) {
+            console.warn(`[DocumentEngine] Validator ${validator.code} error:`, error)
+            continue
+          }
+          if (verdict) recordVerdict(node, verdict, diagnostics)
         }
       }
     }
@@ -2340,9 +2401,7 @@ export class SemanticAnalyzer {
               // When the address is the label (`[url]www.x[/url]`), prefixing
               // it would change the visible text: the scheme goes into an
               // attribute instead, `[url=https://www.x]www.x[/url]`.
-              data: openerHasValue(node, ctx.source)
-                ? { position: range.start }
-                : { position: node.range.start + node.green.leadingWidth - 1, text: `=https://${href}` },
+              data: missingProtocolEdit(node, ctx.source, range, href),
               equivalenceKey: 'missing-url-protocol',
             },
           )

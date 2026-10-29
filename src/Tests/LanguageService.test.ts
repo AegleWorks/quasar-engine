@@ -278,6 +278,19 @@ describe('LanguageService — semantic tokens and folding', () => {
 })
 
 describe('LanguageService — completion', () => {
+  /**
+   * Accept an item the way a host does: replace `replaceRange` with
+   * `insertText`. The resulting source is what the author actually sees, so
+   * the bracket question is asserted there instead of on the item fields.
+   */
+  function accept(source: string, label: string, offset = source.length): string {
+    const items = new LanguageService(model(source)).getCompletions(offset)
+    const item = items.find(c => c.label === label)
+    if (item === undefined) throw new Error(`no '${label}' offered in ${JSON.stringify(source)}`)
+    const range = item.replaceRange ?? { start: offset, end: offset }
+    return source.slice(0, range.start) + (item.insertText ?? item.label) + source.slice(range.end)
+  }
+
   it('offers tag names matching the typed prefix', () => {
     const source = '[co'
     const service = new LanguageService(model(source))
@@ -293,6 +306,19 @@ describe('LanguageService — completion', () => {
     const labels = service.getCompletions(source.length).map(c => c.label)
 
     expect(labels).toEqual(['glow'])
+  })
+
+  it('closes the delimiter when a tag name is accepted', () => {
+    expect(accept('[co', 'color')).toBe('[color]')
+  })
+
+  it('closes the delimiter when an attribute value is accepted', () => {
+    expect(accept('[effect=gl', 'glow')).toBe('[effect=glow]')
+  })
+
+  it('does not add a second bracket when the caret already sits before one', () => {
+    expect(accept('[co]', 'color', 3)).toBe('[color]')
+    expect(accept('[effect=gl]', 'glow', 10)).toBe('[effect=glow]')
   })
 
   it('offers the open ancestors as closing tags, nearest first', () => {

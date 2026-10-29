@@ -9,7 +9,7 @@
 
 import { DocumentModel } from '../Model/DocumentModel'
 import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
-import { CommandRegistry, type Command } from '../Commands'
+import { CommandRegistry, createCommandRegistry, type Command } from '../Commands'
 import { SemanticAnalyzer, type Validator } from '../Semantic/SemanticAnalyzer'
 import { Linter, type LintRule } from '../Linter/Linter'
 import { registerCodeFix } from '../Fixes/CodeFixRegistry'
@@ -42,7 +42,7 @@ export class PluginAPI {
   constructor(model: DocumentModel) {
     this.model = model
     this.tags = model.tagRegistry
-    this.commands = new CommandRegistry()
+    this.commands = createCommandRegistry()
     this.semantic = model.semanticAnalyzer
     this.linter = new Linter()
     this.renderer = new RenderPipeline()

@@ -66,6 +66,11 @@ export type BBCodeToken =
  * tokenising, an editor deciding whether to indent an inserted body — used to
  * carry their own copy of `['code', 'c']`, which is a second lexer waiting to
  * disagree with this one. Adding a raw tag here now reaches them.
+ *
+ * `pairing: 'osu'` is the ONE exception, and only for `c`: osu!'s own passes
+ * never escape a `[c]`'s content (see that branch below), so a tag typed
+ * inside one is a real tag there. `scanBBCode` is told the pairing; every
+ * caller of this list is not.
  */
 export const BBCODE_RAW_TAGS: readonly string[] = Object.freeze(['code', 'c'])
 
@@ -111,6 +116,10 @@ const CHAR_BRACKET_CLOSE = 93
 const CHAR_SLASH = 47
 const CHAR_LF = 10
 const CHAR_CR = 13
+/** Los tres únicos valores que puede llevar un token de salto. */
+const LF = '\n'
+const CR = '\r'
+const CRLF = '\r\n'
 
 /** Valid in a tag name: `a-z A-Z 0-9 _ * -` — the old `/[a-zA-Z0-9_*-]/`. */
 function isNameChar(c: number): boolean {
@@ -186,6 +195,24 @@ function attributeMayNest(source: string, attrStart: number, closeBracket: numbe
   let i = attrStart
   while (i < closeBracket && source.charCodeAt(i) === 32 /* space */) i++
   return source.charCodeAt(i) === 61 /* = */
+}
+
+/**
+ * ¿Empieza en `pos` un `[url=`/`[email=` con el `=` pegado al nombre?
+ *
+ * Es la forma en que osu! corta el atributo en el PRIMER `]` en vez de contar
+ * corchetes: `BBCodeForDB::parseUrl`/`parseEmail` lo capturan con un `.+?\]`
+ * perezoso, así que un corchete suelto dentro del valor no abre nada — el tag
+ * termina ahí. Medido con el harness (`.cache/url-close`, C03/C18/C30):
+ * `[url=https://x[/url]T[/url]` publica el href `https://x[/url]` y el texto
+ * `T`, y `[url=https://x[i:1]T[/url]` publica el href `https://x[i:1`.
+ *
+ * Sólo con el `=` PEGADO al nombre. `[url = x]` no es un `[url=` para osu! (su
+ * regex no admite el espacio), así que sus corchetes se cuentan como siempre y
+ * el conjunto acaba siendo texto plano — donde decide el autolink de dentro.
+ */
+function osuFlatAttrStart(source: string, pos: number): boolean {
+  return source.startsWith('[url=', pos) || source.startsWith('[email=', pos)
 }
 
 export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeToken[] {
@@ -330,14 +357,18 @@ export function createBBCodeScanner(source: string, options?: ScanBBCodeOptions)
       if (ch === CHAR_LF || ch === CHAR_CR) {
         const start = pos
         // Consume \r\n as a single token
-        if (ch === CHAR_CR && pos + 1 < length && source.charCodeAt(pos + 1) === CHAR_LF) {
+        const crlf = ch === CHAR_CR && pos + 1 < length && source.charCodeAt(pos + 1) === CHAR_LF
+        if (crlf) {
           pos += 2
         } else {
           pos++
         }
         tokens.push({
           kind: 'newline',
-          value: source.slice(start, pos),
+          // La cadena se toma del propio origen, no de una rebanada: un
+          // documento de 32 000 líneas gastaba 32 000 cadenas de una línea
+          // para decir `\n`, y eso era presión de recolector, no trabajo.
+          value: crlf ? CRLF : ch === CHAR_CR ? CR : LF,
           start,
           end: pos,
         })
@@ -380,7 +411,12 @@ export function createBBCodeScanner(source: string, options?: ScanBBCodeOptions)
         // ── Opening tags: [tag] or [tag=nested[bb]code[/bb]] ─
         // Bracket depth is tracked so nested BBCode in attributes
         // (e.g. [box=[b]title[/b]]) resolves to the right `]`.
-        const closeBracket = findMatchingBracket(pos)
+        // osu!'s `[url=`/`[email=` cut the attribute at the FIRST `]`: their
+        // value never balances brackets (see `osuFlatAttrStart`). The flat
+        // answer wins even when the balanced scan gives up, which is exactly
+        // the `[url=https://x[/url]T[/url]` shape.
+        const flatClose = options?.pairing === 'osu' && osuFlatAttrStart(source, pos) ? source.indexOf(']', pos) : -1
+        const closeBracket = flatClose !== -1 ? flatClose : findMatchingBracket(pos)
 
         // No matching closing bracket → lone '[' = plain text
         if (closeBracket === -1) {
@@ -442,20 +478,40 @@ export function createBBCodeScanner(source: string, options?: ScanBBCodeOptions)
 
             // ── RAW BLOCK HANDLING (see BBCODE_RAW_TAGS) ──
             // Contents of raw blocks are strictly literal. No inner tags or newline tokens.
-            if (RAW_TAG_SET.has(tagName)) {
+            //
+            // `c` is the exception, and only under `pairing: 'osu'`: osu!'s
+            // `parseInlineSimple` only WRAPS its content in the `:uid` markers
+            // (unlike `parseCode`, it escapes nothing), so a tag typed inside a
+            // sealed `[c]` keeps being a tag for every other pass — measured:
+            // `[c][url=https://x]T[/url][/c]` publishes
+            // `<code><a href="https://x">T</a></code>` while the same text
+            // inside `[code]` publishes the tags literally. Isolating the body
+            // here would make them text, so `c` is not a raw block in this
+            // mode: its pairing rule (bare `[c]`, non-dotall, empty content
+            // allowed) is the lazy family in `Osu/osuPairing.ts`, which needs
+            // the body tokenised to build an `inline_code` node with real
+            // children.
+            const isOsu = options?.pairing === 'osu'
+            if (RAW_TAG_SET.has(tagName) && !(isOsu && tagName === 'c')) {
               const endTag = `[/${tagName}]`
-              const closeIdx = lowerOf().indexOf(endTag, pos)
+              let closeIdx = lowerOf().indexOf(endTag, pos)
+
+              // Un cierre PEGADO deja el cuerpo vacío, y el `.+?` de osu! no lo
+              // acepta: su escaneo perezoso sigue creciendo hasta el PRIMER
+              // `[/tag]` que deje al menos un carácter de cuerpo. Así, un
+              // `[code][/code]` suelto no protege nada, pero
+              // `[code][/code]a[/code]` sí sella — con `[/code]a` como cuerpo
+              // literal — y `[code][/code]\n[code]x[/code]` publica un único
+              // `<pre>` con las dos etiquetas dentro (medido, `.cache/c-code2`,
+              // e01/e03/e04/e07). Sólo `pairing: 'osu'`: el dialecto de Quasar
+              // mantiene su aislamiento por el primer cierre.
+              if (isOsu && closeIdx === pos) closeIdx = lowerOf().indexOf(endTag, pos + 1)
 
               // Under `pairing: 'osu'`, only ISOLATE the block — protecting its
               // content from normal tokenising — when osu! itself would seal
-              // this occurrence: a closer must exist, and for `c` (non-dotall
-              // in osu!, see `Osu/osuPairing.ts`'s `OSU_FAMILY`) reaching it
-              // must not cross a newline. `code` is dotall, so only "no closer
-              // at all" applies to it.
-              const isOsu = options?.pairing === 'osu'
-              const crossesNewline =
-                isOsu && tagName === 'c' && closeIdx !== -1 && /[\r\n]/.test(source.slice(pos, closeIdx))
-              const isolate = closeIdx !== -1 && !crossesNewline
+              // this occurrence, i.e. when a closer exists at all (`code` is
+              // dotall in osu!; the only raw tag left here in this mode).
+              const isolate = closeIdx !== -1
 
               if (isolate) {
                 if (closeIdx > pos) {
@@ -476,9 +532,8 @@ export function createBBCodeScanner(source: string, options?: ScanBBCodeOptions)
               } else if (!isOsu) {
                 // Unclosed raw block consumes the rest of the document — only
                 // under the default 'quasar' pairing. Under 'osu' an opener
-                // that would not seal (no closer, or — for `c` — only a closer
-                // reachable across a newline) is left as the ordinary 'open'
-                // token already pushed above, and lexing just continues
+                // that would not seal (no closer) is left as the ordinary
+                // 'open' token already pushed above, and lexing just continues
                 // normally from here: `applyOsuPairing` demotes it to literal
                 // text once it fails to find a sealed contiguous pair,
                 // exactly like every other lazy-family tag, and everything

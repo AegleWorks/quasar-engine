@@ -17,12 +17,27 @@ const strip = (h: string) => h
   // A swallowed newline's marker carries its node's id, escaped inside effects too.
   .replace(/(data-bb-nl(?: |%20|%2520)hidden)(?: |%20|%2520)data-node-id(?:=|%3D|%253D)(?:&quot;|&amp;quot;|%22|%2522)n(?:&quot;|&amp;quot;|%22|%2522)/g, '$1')
 const DIALECTS = ['osu', 'miliastry', 'lyne'] as const
+
+/** Plain text of a red tree, including the newlines a spacing leaf carries. */
+const plainText = (n: any): string =>
+  n.kind === 'text' ? n.text
+  : n.kind === 'spacing' || n.kind === 'empty_line' ? '\n'
+  : n.children.map(plainText).join('')
+
+/**
+ * The effect kernel, not the tree transformers.
+ *
+ * `applyEffect` used to rewrite a red tree here; it was the only consumer of
+ * the pre-split tree transformers. The differential now reads the one
+ * implementation the tag handlers and the studio share, so these keys survive
+ * the removal of that API and keep covering the maths that actually renders.
+ */
 const EFFECTS = [
-  { kind: 'gradient', colors: ['#ff0000', '#0000ff'] },
-  { kind: 'grow' },
-  { kind: 'rainbow' },
-  { kind: 'central_gradient', colors: ['#ff0000', '#00ff00'] },
-  { kind: 'multi_gradient', colors: ['#ff0000', '#00ff00', '#0000ff'] },
+  { name: 'gradient', kind: 'gradient', params: { colors: ['#ff0000', '#0000ff'] } },
+  { name: 'gradient-radial', kind: 'gradient', params: { colors: ['#ff0000', '#00ff00'], axis: 'radial', wave: 'sine', cycles: 2 } },
+  { name: 'gradient-steps', kind: 'gradient', params: { colors: ['#ff0000', '#00ff00', '#0000ff'], steps: 4 } },
+  { name: 'grow', kind: 'grow', params: {} },
+  { name: 'rainbow', kind: 'rainbow', params: {} },
 ]
 
 export function outputs(source: string, html: string | null): Record<string, string> {
@@ -42,11 +57,16 @@ export function outputs(source: string, html: string | null): Record<string, str
   // What gets published, to each target.
   const m = model('miliastry')
   for (const target of DIALECTS) safe(`export.${target}`, () => new E.BBCodeExporter(m.tagRegistry, target).export(m.redRoot))
-  // Effects rewrite the tree; their export is the observable.
-  if (source.length < 20000) for (const e of EFFECTS) safe(`effect.${e.kind}`, () => {
-    const mm = model('miliastry')
-    return new E.BBCodeExporter(mm.tagRegistry, 'miliastry').export(E.applyEffect(mm.redRoot, e))
-  })
+  // The effect kernel on the document's plain text. Stable tuples rather than
+  // segment objects: key order is not an observable, and JSON.stringify would
+  // turn a harmless refactor into a differential failure.
+  if (source.length < 20000) {
+    const text = plainText(m.redRoot)
+    for (const e of EFFECTS) safe(`effect.${e.name}`, () =>
+      JSON.stringify(E.evaluateEffect(text, e.kind, e.params).map(
+        (s: { text: string; color?: string; size?: number }) => [s.text, s.color ?? null, s.size ?? null],
+      )))
+  }
   // The HTML importer, when the corpus has the page's HTML.
   if (html !== null) safe('import.html', () =>
     new E.BBCodeExporter(undefined, 'osu').export(new E.HTMLDocumentModel({ source: html }).redRoot))

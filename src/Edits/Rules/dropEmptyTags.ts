@@ -15,7 +15,7 @@
  * ## Outermost-first, so no second pass is needed
  *
  * `[b][i][/i][/b]` is empty all the way down. Dropping the inner tag would
- * leave `[b][/b]`, which is empty again — the classic reason `ASTOptimizer`
+ * leave `[b][/b]`, which is empty again — the classic reason the old tree optimizer
  * needs a fixpoint. Instead this rule asks whether a node renders nothing
  * *transitively* and deletes the outermost one it finds, in a single edit,
  * without descending into it.

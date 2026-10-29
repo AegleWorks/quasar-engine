@@ -145,6 +145,26 @@ export function morphElement(oldEl: Element, newEl: Element): void {
     }
   }
 
+  // El ORDEN de los atributos también es parte del render: el canvas se
+  // compara con él byte a byte. Un elemento creado cuando el nodo aún no
+  // tenía id y actualizado después lleva el `data-node-id` al final, y
+  // `setAttribute` no reordena. Raro (solo si el orden difiere), así que el
+  // camino caliente sigue sin asignar arrays.
+  {
+    const a = oldEl.attributes
+    const b = newEl.attributes
+    let ordered = a.length === b.length
+    if (ordered) {
+      for (let i = 0; i < a.length; i++) {
+        if (a[i].name !== b[i].name) { ordered = false; break }
+      }
+    }
+    if (!ordered) {
+      for (let i = a.length - 1; i >= 0; i--) oldEl.removeAttribute(a[i].name)
+      for (let i = 0; i < b.length; i++) oldEl.setAttribute(b[i].name, b[i].value)
+    }
+  }
+
   // Morph child nodes recursively
   morphNodes(oldEl, newEl)
 }

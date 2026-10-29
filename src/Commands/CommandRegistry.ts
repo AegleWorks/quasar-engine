@@ -11,7 +11,7 @@
  * - Menu integration
  */
 
-import type { Command, CommandContext, CommandResult } from './Command'
+import type { Command, CommandContext, CommandInput, CommandResult } from './Command'
 
 export class CommandRegistry {
   private commands: Map<string, Command> = new Map()
@@ -47,12 +47,12 @@ export class CommandRegistry {
   /**
    * Execute a command by ID.
    */
-  execute(id: string, ctx: CommandContext): CommandResult {
+  execute(id: string, ctx: CommandContext, input?: CommandInput): CommandResult {
     const command = this.commands.get(id)
     if (!command) {
       return { success: false, message: `Unknown command: ${id}` }
     }
-    return command.execute(ctx)
+    return command.execute(ctx, input)
   }
 
   /**

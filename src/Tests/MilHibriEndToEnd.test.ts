@@ -111,7 +111,9 @@ Content inside glass B
       expect(html).not.toContain('<strong>this is literal</strong>');
 
       const exportedBB = bbExporterOsu.export(doc.redRoot!);
-      expect(exportedBB).toContain('[code][b]this is literal[/b]');
+      // The BBCode engine keeps the source's own newline after `[code]`;
+      // the body is still literal, which is what this test is about.
+      expect(exportedBB).toContain('[code]\n[b]this is literal[/b]');
       expect(exportedBB).toContain('[c][color=#fff]not color[/color][/c]');
     });
 
@@ -176,7 +178,10 @@ Content inside glass B
   describe('4. Incremental Updates & Performance Benchmark', () => {
     it('applies fast incremental text updates without memory leaks or degradation', () => {
       const doc = MilHibriDocumentModel.fromSource('# Initial Document\n- Item 1\n- Item 2');
-      expect(doc.redRoot?.childCount).toBe(2);
+      // The heading's line ending is its own node now (BBCode line semantics),
+      // so count the two blocks, not every child.
+      const blocks = doc.redRoot?.children.filter(c => c.kind !== 'spacing' && c.kind !== 'empty_line');
+      expect(blocks).toHaveLength(2);
 
       const t0 = performance.now();
       for (let i = 0; i < 50; i++) {
