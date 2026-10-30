@@ -28,6 +28,17 @@ export interface BoxDrawerOptions {
   durationMs?: number
   /** CSS easing function. */
   easing?: string
+  /**
+   * Animate the box's body instead of the whole box.
+   *
+   * Off by default: hosts that dress the body themselves (the editor's
+   * `.bb-preview` transitions its own grid) expect the outer height to be the
+   * thing that moves. A host that renders osu's markup as-is wants this on:
+   * the body starts under the title and its 10px margin, so animating the
+   * container spends the first ~31px of the travel above the text and the
+   * text is already fully clipped halfway through the animation.
+   */
+  animateBody?: boolean
 }
 
 /** Time for the full collapsed↔expanded travel; shorter distances scale down. */
@@ -72,12 +83,13 @@ function prefersReducedMotion(): boolean {
  * "expand all" action) go through the same animation as a click.
  */
 function animateDrawer(
-  details: HTMLElement,
+  target: HTMLElement,
   isOpen: () => boolean,
   setOpen: (v: boolean) => void,
-  options: BoxDrawerOptions = {}
+  options: BoxDrawerOptions = {},
+  animateMarginTop = false
 ): boolean {
-  if (typeof details.animate !== 'function' || prefersReducedMotion()) {
+  if (typeof target.animate !== 'function' || prefersReducedMotion()) {
     const next = !isOpen()
     setOpen(next)
     return next
@@ -85,10 +97,17 @@ function animateDrawer(
 
   // Height as painted right now — read BEFORE cancelling, so an interrupted
   // animation resumes from where the eye last saw it instead of snapping.
-  const from = details.getBoundingClientRect().height
+  const from = target.getBoundingClientRect().height
 
-  const previous = running.get(details)
-  const restoreOverflow = previous ? previous.restoreOverflow : details.style.overflow
+  const previous = running.get(target)
+  const restoreOverflow = previous ? previous.restoreOverflow : target.style.overflow
+
+  // El cuerpo de una caja de osu lleva un margen superior que también se va
+  // con él; si la animación se interrumpe, se retoma desde el valor pintado.
+  const restMargin = animateMarginTop ? parseFloat(getComputedStyle(target).marginTop) || 0 : 0
+  const fromMargin = previous
+    ? parseFloat(getComputedStyle(target).marginTop) || 0
+    : isOpen() ? restMargin : 0
 
   // Direction comes from the running animation's intent, never from
   // `details.open`: a closing box is kept open so its content stays visible, so
@@ -104,18 +123,18 @@ function animateDrawer(
   let collapsed: number
   let expanded: number
   if (isOpen()) {
-    expanded = details.getBoundingClientRect().height
+    expanded = target.getBoundingClientRect().height
     setOpen(false)
-    collapsed = details.getBoundingClientRect().height
+    collapsed = target.getBoundingClientRect().height
     setOpen(true)
   } else {
-    collapsed = details.getBoundingClientRect().height
+    collapsed = target.getBoundingClientRect().height
     setOpen(true)
-    expanded = details.getBoundingClientRect().height
+    expanded = target.getBoundingClientRect().height
   }
 
   const to = opening ? expanded : collapsed
-  details.style.overflow = 'hidden'
+  target.style.overflow = 'hidden'
 
   // A reversal 90% of the way open only has 10% left to travel; running the
   // full duration over it would crawl.
@@ -126,11 +145,18 @@ function animateDrawer(
     MIN_DURATION_MS
   )
 
-  const animation = details.animate(
-    { height: [`${from}px`, `${to}px`] },
+  // Property-indexed keyframes: two stops per property, the shape the drawer
+  // has always handed to `Element.animate`.
+  const frames: PropertyIndexedKeyframes = { height: [`${from}px`, `${to}px`] }
+  if (animateMarginTop) {
+    frames.marginTop = [`${fromMargin}px`, `${opening ? restMargin : 0}px`]
+  }
+
+  const animation = target.animate(
+    frames,
     { duration, easing: options.easing ?? DEFAULT_EASING }
   )
-  running.set(details, { animation, opening, restoreOverflow })
+  running.set(target, { animation, opening, restoreOverflow })
 
   /**
    * `finish` and `cancel` are dispatched asynchronously, so by the time either
@@ -140,10 +166,10 @@ function animateDrawer(
    * freezes the box shut.
    */
   const settle = (finished: boolean) => {
-    if (running.get(details)?.animation !== animation) return
-    running.delete(details)
+    if (running.get(target)?.animation !== animation) return
+    running.delete(target)
     if (finished) setOpen(opening)
-    details.style.overflow = restoreOverflow
+    target.style.overflow = restoreOverflow
   }
 
   animation.addEventListener('finish', () => settle(true))
@@ -173,12 +199,16 @@ export function toggleSpoilerboxWithDrawer(
   box: HTMLElement,
   options: BoxDrawerOptions = {}
 ): boolean {
-  return animateDrawer(
-    box,
-    () => box.classList.contains(OSU_OPEN_CLASS),
-    (v) => box.classList.toggle(OSU_OPEN_CLASS, v),
-    options
-  )
+  const isOpen = () => box.classList.contains(OSU_OPEN_CLASS)
+  const setOpen = (v: boolean) => box.classList.toggle(OSU_OPEN_CLASS, v)
+
+  const body = options.animateBody
+    ? box.querySelector<HTMLElement>(':scope > .bbcode-spoilerbox__body')
+    : null
+
+  return body
+    ? animateDrawer(body, isOpen, setOpen, options, true)
+    : animateDrawer(box, isOpen, setOpen, options)
 }
 
 /**

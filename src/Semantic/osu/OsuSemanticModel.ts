@@ -33,13 +33,6 @@ interface CloseState { readonly beforeClose: NewlineRule['beforeClose'] | null; 
 interface AfterCloseState { readonly afterClose: number | null; readonly newlines: number; readonly ghost: boolean }
 
 /**
- * Steps a walk takes before it switches to the memoized one. Runs of a few
- * newlines are the norm, and a plain walk over them costs less than the
- * memo's lookups; a long run would cost k² without it.
- */
-const SHORT_WALK = 16
-
-/**
  * `trim()` de PHP: espacio, tab, saltos, NUL, \v. Ni U+3000 ni U+00A0 ni
  * U+FEFF, que el `trim()` de JS sí come y osu! cuenta como texto.
  */
@@ -266,22 +259,20 @@ export class OsuSemanticModel {
    * the line. Nothing here is dialect-gated: Miliastry breaks lines like osu!.
    */
   isBareLineBreak(node: RedNode): boolean {
-    return this.eatenEarlierByGhost(node, false)
+    return this.eatenEarlierByGhost(node)
   }
 
   /** Walking back along `node`'s run of newlines: was one of them eaten by a ghost? */
-  private eatenEarlierByGhost(node: RedNode, memoize: boolean): boolean {
-    const memo = memoize ? this.eatenBeforeRunMemo : null
+  private eatenEarlierByGhost(node: RedNode): boolean {
+    const memo = this.eatenBeforeRunMemo
+    const known = memo.get(node)
+    if (known !== undefined) return known
     const chain: RedNode[] = []
     let cur = node
     let eaten: boolean
     for (;;) {
-      if (memo !== null) {
-        const hit = memo.get(cur)
-        if (hit !== undefined) { eaten = hit; break }
-      } else if (chain.length > SHORT_WALK) {
-        return this.eatenEarlierByGhost(node, true)
-      }
+      const hit = memo.get(cur)
+      if (hit !== undefined) { eaten = hit; break }
       const prev = cur.previousSibling
       // The run starts (or is interrupted by visible content) here: nothing
       // before it for a ghost to have eaten.
@@ -293,8 +284,8 @@ export class OsuSemanticModel {
     // Every node in the chain sits AFTER the newline that decided it, so they
     // all share the answer — and none of the nodes walked past does (their own
     // run may still start with a ghost-eaten newline).
-    memo?.set(cur, eaten)
-    for (const c of chain) memo?.set(c, eaten)
+    memo.set(cur, eaten)
+    for (const c of chain) memo.set(c, eaten)
     return eaten
   }
 
@@ -325,6 +316,11 @@ export class OsuSemanticModel {
   // walked over once per scan, whatever the run's length. The memo is why a
   // model is valid for one tree snapshot.
 
+  //
+  // WeakMaps on purpose. A strong Map looks faster in isolation, but it keeps
+  // every node of the snapshot alive until the model itself dies, and the corpus
+  // measured 25% SLOWER end to end: the collector ends up copying trees that a
+  // WeakMap lets go of as soon as the render stops looking at them.
   private readonly openMemo = new WeakMap<RedNode, OpenState>()
   private readonly afterCloseMemo = new WeakMap<RedNode, AfterCloseState>()
   private readonly closeMemo = new WeakMap<RedNode, CloseState>()
@@ -344,41 +340,37 @@ export class OsuSemanticModel {
   }
 
   /** Walking back from `node`: the opener's rule, and what lies between. */
-  private openState(node: RedNode, memoize = false): OpenState {
-    // Short walks, the usual case, are not worth a memo: walk plainly, and
-    // switch to the memoized walk only past `SHORT_WALK` steps.
-    const memo = memoize ? this.openMemo : null
+  private openState(node: RedNode): OpenState {
+    const memo = this.openMemo
+    const known = memo.get(node)
+    if (known !== undefined) return known
     const chain: RedNode[] = []
     const steps: number[] = [] // 1 newline, 2 blank text, 0 climb
     let cur = node
     let state: OpenState
     for (;;) {
-      if (memo !== null) {
-        const hit = memo.get(cur)
-        if (hit !== undefined) { state = hit; break }
-      } else if (chain.length > SHORT_WALK) {
-        return this.openState(node, true)
-      }
+      const hit = memo.get(cur)
+      if (hit !== undefined) { state = hit; break }
       const prev = cur.previousSibling
       if (prev) {
         if (OsuSemanticModel.isNewlineNode(prev)) { chain.push(cur); steps.push(1); cur = prev; continue }
         if (OsuSemanticModel.isBlankText(prev)) { chain.push(cur); steps.push(2); cur = prev; continue }
         state = NO_OPEN
-        memo?.set(cur, state)
+        memo.set(cur, state)
         break
       }
       const parent = cur.parent
-      if (!parent) { state = NO_OPEN; memo?.set(cur, state); break }
+      if (!parent) { state = NO_OPEN; memo.set(cur, state); break }
       if (WIDTHLESS_OPEN.has(parent.kind)) { chain.push(cur); steps.push(0); cur = parent; continue }
       const rule = newlineRule(parent.kind)
       state = rule ? { afterOpen: rule.afterOpen, newlines: 0, blank: false } : NO_OPEN
-      memo?.set(cur, state)
+      memo.set(cur, state)
       break
     }
     for (let i = chain.length - 1; i >= 0; i--) {
       if (steps[i] === 1) state = { afterOpen: state.afterOpen, newlines: state.newlines + 1, blank: state.blank }
       else if (steps[i] === 2 && !state.blank) state = { afterOpen: state.afterOpen, newlines: state.newlines, blank: true }
-      memo?.set(chain[i], state)
+      memo.set(chain[i], state)
     }
     return state
   }
@@ -403,25 +395,33 @@ export class OsuSemanticModel {
   }
 
   /** Walking forward from `node`: the closer's `beforeClose`, and whether blank text came first. */
-  private closeState(node: RedNode, memoize = false): CloseState {
-    // Short walks, the usual case, are not worth a memo: walk plainly, and
-    // switch to the memoized walk only past `SHORT_WALK` steps.
-    const memo = memoize ? this.closeMemo : null
+  private closeState(node: RedNode): CloseState {
+    const memo = this.closeMemo
+    const known = memo.get(node)
+    if (known !== undefined) return known
     const chain: RedNode[] = []
     const blanks: boolean[] = []
     let cur = node
     let state: CloseState
     for (;;) {
-      if (memo !== null) {
-        const hit = memo.get(cur)
-        if (hit !== undefined) { state = hit; break }
-      } else if (chain.length > SHORT_WALK) {
-        return this.closeState(node, true)
-      }
+      const hit = memo.get(cur)
+      if (hit !== undefined) { state = hit; break }
       const next = cur.nextSibling
       if (next) {
         if (OsuSemanticModel.isNewlineNode(next)) { chain.push(cur); blanks.push(false); cur = next; continue }
         if (OsuSemanticModel.isBlankText(next)) { chain.push(cur); blanks.push(true); cur = next; continue }
+        // Visible text is not a ghost and carries no closing rule. Checking
+        // that here skips `firstContent` and the ancestor walk in `isGhost`
+        // for the most common boundary in the corpus. The two orphan closers
+        // are text but ARE rendered as ghosts, so they keep the slow path.
+        if (
+          next.kind === 'text' && next.children.length === 0 &&
+          next.text !== '[/box]' && next.text !== '[/spoilerbox]'
+        ) {
+          state = NO_CLOSE
+          memo.set(cur, state)
+          break
+        }
         // `discarded_box_close` is deliberately NOT paragraph-flushed (see
         // Parser.ts), so it can sit as the FIRST child of a `paragraph` —
         // widthless on this side too — instead of always a direct sibling;
@@ -439,11 +439,11 @@ export class OsuSemanticModel {
         state = this.isGhost(boundary)
           ? { beforeClose: this.closingRule(boundary)?.beforeClose ?? null, blank: false, ghost: true }
           : NO_CLOSE
-        memo?.set(cur, state)
+        memo.set(cur, state)
         break
       }
       const parent = cur.parent
-      if (!parent) { state = NO_CLOSE; memo?.set(cur, state); break }
+      if (!parent) { state = NO_CLOSE; memo.set(cur, state); break }
       // Un `box_tail` es lo que un cierre cruzado dejó tras el cuerpo, así que
       // los saltos del final ya NO están dentro de nada: lo que los come es el
       // `\n*` del cierre que venga después EN EL TEXTO, sea del propio box o
@@ -469,7 +469,7 @@ export class OsuSemanticModel {
         state = after !== null && this.isGhost(after)
           ? { beforeClose: this.closingRule(after)?.beforeClose ?? null, blank: false, ghost: true }
           : NO_CLOSE
-        memo?.set(cur, state)
+        memo.set(cur, state)
         break
       }
       if (WIDTHLESS_CLOSE.has(parent.kind)) { chain.push(cur); blanks.push(false); cur = parent; continue }
@@ -528,12 +528,12 @@ export class OsuSemanticModel {
       }
       const rule = newlineRule(parent.kind)
       state = rule ? { beforeClose: rule.beforeClose, blank: false, ghost: false } : NO_CLOSE
-      memo?.set(cur, state)
+      memo.set(cur, state)
       break
     }
     for (let i = chain.length - 1; i >= 0; i--) {
       if (blanks[i] && !state.blank) state = { beforeClose: state.beforeClose, blank: true, ghost: state.ghost }
-      memo?.set(chain[i], state)
+      memo.set(chain[i], state)
     }
     return state
   }
@@ -594,30 +594,35 @@ export class OsuSemanticModel {
   }
 
   /** Walking back from `node` over newlines: the closer's `afterClose` budget, and how much of it they spent. */
-  private afterCloseState(node: RedNode, memoize = false): AfterCloseState {
-    // Short walks, the usual case, are not worth a memo: walk plainly, and
-    // switch to the memoized walk only past `SHORT_WALK` steps.
-    const memo = memoize ? this.afterCloseMemo : null
+  private afterCloseState(node: RedNode): AfterCloseState {
+    const memo = this.afterCloseMemo
+    const known = memo.get(node)
+    if (known !== undefined) return known
     const chain: RedNode[] = []
     const counts: boolean[] = []
     let cur = node
     let state: AfterCloseState
     for (;;) {
-      if (memo !== null) {
-        const hit = memo.get(cur)
-        if (hit !== undefined) { state = hit; break }
-      } else if (chain.length > SHORT_WALK) {
-        return this.afterCloseState(node, true)
-      }
+      const hit = memo.get(cur)
+      if (hit !== undefined) { state = hit; break }
       const prev = cur.previousSibling
       if (!prev) {
         const parent = cur.parent
         if (parent && WIDTHLESS_OPEN.has(parent.kind)) { chain.push(cur); counts.push(false); cur = parent; continue }
         state = NO_AFTER_CLOSE
-        memo?.set(cur, state)
+        memo.set(cur, state)
         break
       }
       if (OsuSemanticModel.isNewlineNode(prev)) { chain.push(cur); counts.push(true); cur = prev; continue }
+      // Same fast path as `closeState`: visible text carries no closing rule.
+      if (
+        prev.kind === 'text' && prev.children.length === 0 &&
+        prev.text !== '[/box]' && prev.text !== '[/spoilerbox]'
+      ) {
+        state = NO_AFTER_CLOSE
+        memo.set(cur, state)
+        break
+      }
       // Descend to whatever real closing tag sits immediately to our left.
       // `discarded_tag`/`discarded_box_close` are leaves (no children), so
       // this stops on them unchanged — `closingRule` then resolves what they
@@ -628,29 +633,27 @@ export class OsuSemanticModel {
       }
       const rule = this.closingRule(closer)
       state = rule ? { afterClose: rule.afterClose, newlines: 0, ghost: this.isGhost(closer) } : NO_AFTER_CLOSE
-      memo?.set(cur, state)
+      memo.set(cur, state)
       break
     }
     for (let i = chain.length - 1; i >= 0; i--) {
       if (counts[i]) state = { afterClose: state.afterClose, newlines: state.newlines + 1, ghost: state.ghost }
-      memo?.set(chain[i], state)
+      memo.set(chain[i], state)
     }
     return state
   }
 
   /** `\s*\[\*\]` — the only pass that eats whitespace BEFORE an opening tag. */
-  private eatenBeforeOpeningTag(node: RedNode, memoize = false): boolean {
-    const memo = memoize ? this.beforeOpenMemo : null
+  private eatenBeforeOpeningTag(node: RedNode): boolean {
+    const memo = this.beforeOpenMemo
+    const known = memo.get(node)
+    if (known !== undefined) return known
     const chain: RedNode[] = []
     let cur = node
     let eaten: boolean
     for (;;) {
-      if (memo !== null) {
-        const hit = memo.get(cur)
-        if (hit !== undefined) { eaten = hit; break }
-      } else if (chain.length > SHORT_WALK) {
-        return this.eatenBeforeOpeningTag(node, true)
-      }
+      const hit = memo.get(cur)
+      if (hit !== undefined) { eaten = hit; break }
       const next = cur.nextSibling
       if (next) {
         if (OsuSemanticModel.isNewlineNode(next) || OsuSemanticModel.isBlankText(next)) { chain.push(cur); cur = next; continue }
@@ -663,10 +666,8 @@ export class OsuSemanticModel {
       eaten = false
       break
     }
-    if (memo !== null) {
-      memo.set(cur, eaten)
-      for (let i = chain.length - 1; i >= 0; i--) memo.set(chain[i], eaten)
-    }
+    memo.set(cur, eaten)
+    for (let i = chain.length - 1; i >= 0; i--) memo.set(chain[i], eaten)
     return eaten
   }
 }

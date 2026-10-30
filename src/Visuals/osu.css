@@ -33,6 +33,18 @@
   color: #94C8EA;
   border-bottom: 1px solid rgba(126,184,224,0.7);
 }
+/* Alineación de las imágenes.
+ *
+ * osu! no distingue entre una imagen suelta y una imagen dentro de `[url]`:
+ * el `img { vertical-align: middle }` de Bootstrap las alinea igual. Aquí el
+ * enlace es un inline-block y al principio solo su imagen iba centrada, así
+ * que en una misma línea la imagen enlazada caía casi media imagen más abajo
+ * que la suelta. En un collage hecho de trozos (`[img]…[/img][url=…][img]…
+ * [/img][/url][img]…[/img]`, lo habitual antes de `[imagemap]`) los trozos se
+ * separaban y aparecían huecos que osu! no tiene. Con `middle` en *todas* las
+ * imágenes el mosaico queda continuo, y además la imagen tampoco deja el hueco
+ * de 5 px que deja su descendente sobre la línea base entre una fila y la
+ * siguiente. El enlace se deja en la línea base para que su caja no baje. */
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(img),
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(.bb-img),
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(svg),
@@ -40,7 +52,7 @@
   border-bottom: none !important;
   text-decoration: none !important;
   display: inline-block;
-  vertical-align: middle;
+  vertical-align: baseline;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(img):hover,
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a:has(.bb-img):hover,
@@ -51,7 +63,6 @@
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a img,
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) a .bb-img {
-  vertical-align: middle;
   border: none;
   text-decoration: none;
 }
@@ -232,6 +243,8 @@
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) img {
   max-width: 100%;
   height: auto;
+  /* Bootstrap en osu!: las imágenes sueltas y las enlazadas comparten línea. */
+  vertical-align: middle;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) iframe {
   /* inline-block (no block): el preflight de Tailwind fuerza `iframe{display:block}`

@@ -52,6 +52,7 @@
     "prepublishOnly": "npm run verify && npm run build",
     "test": "vitest run",
     "bench": "node scripts/bench/run.mjs",
+    "bench:browser": "node scripts/browser-bench/build.mjs && node scripts/browser-bench/driver.mjs",
     "test:validate": "QUASAR_VALIDATE_TREES=1 vitest run --exclude src/Tests/IncrementalBudget.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify": "npm run typecheck && npm run test"

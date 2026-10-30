@@ -91,7 +91,41 @@ export interface HTMLRendererOptions {
    * `idMode: 'none'`, where there are no ids to carry.
    */
   lineHandles?: boolean
+  /**
+   * Collapse a run of visible newlines into one `<br>` plus a single spacer of
+   * `n - 1` line-heights, instead of one element per blank line.
+   *
+   * Only for READ-ONLY renders (`idMode: 'none'` and no `lineHandles`): the
+   * editor needs one element per line so a caret, a click or a highlight can
+   * target it, and this deliberately throws that away. Off by default.
+   *
+   * The height is written as `(n - 1) lh` (the `lh` unit, resolved against the
+   * spacer's inherited line-height), which is exactly what those `n - 1` line
+   * boxes occupy in a normal flow — measured against the uncollapsed HTML
+   * on the corpus' pathological page (51.909 newlines): same `scrollHeight`,
+   * 1,9 MB → 15 KB of HTML and 285 ms → 0,8 ms of layout. A host whose CSS
+   * gives `.bb-empty-line` a `min-height` or margins larger than its line box
+   * would need to style `.bb-blank-run` to match.
+   */
+  collapseBlankRuns?: boolean
 }
+
+/**
+ * Block containers where collapsing a run of blank lines is safe.
+ *
+ * The first newline of the run stays a `<br>` and the rest become one block
+ * spacer. That is only valid where a block element is allowed and where the
+ * run is laid out in normal flow: not inside an inline wrapper (`<span>`,
+ * `<em>`, an `<a>`), and not inside a list or a table, whose children have
+ * their own permitted content models. `heading` is excluded for the same
+ * reason (an `<h2>` only takes phrasing content). `container` is out too:
+ * its children are items of a flex/grid layout, not blocks in normal flow, so
+ * a run there is not the vertical stack this spacer reproduces.
+ */
+const BLANK_RUN_PARENTS: ReadonlySet<string> = new Set([
+  'document', 'box', 'boxw', 'spoilerbox', 'notice', 'wnotice', 'quote',
+  'center', 'left', 'right', 'align', 'box_tail', 'scroll',
+])
 
 /** Saltos de línea a convertir en `<br>` al pintar un efecto. */
 const NEWLINE_RE = /\n/g
@@ -125,6 +159,23 @@ const SWALLOWED_NEWLINE_RE = new RegExp(`<span ${SWALLOWED_NEWLINE_ATTR} hidden(
  */
 const SWALLOWED_NEWLINE_HEAD = `<span ${SWALLOWED_NEWLINE_ATTR} hidden`
 const NODE_ID_PREFIX = ' data-node-id="'
+/**
+ * `String.prototype.startsWith`, without flattening the rope.
+ *
+ * A rendered body is a cons string (`out += …` at every level). `startsWith`
+ * makes V8 flatten the WHOLE rope just to look at its first bytes, and
+ * `trimOsuEdges` runs that check on every box body that begins with `<` —
+ * which is most of them — then throws the flattened copy away. Reading the
+ * same characters with `charCodeAt` needs no flatten and allocates nothing.
+ */
+function startsWithAt(html: string, needle: string, at: number): boolean {
+  const end = at + needle.length
+  if (at < 0 || end > html.length) return false
+  for (let i = 0; i < needle.length; i++) {
+    if (html.charCodeAt(at + i) !== needle.charCodeAt(i)) return false
+  }
+  return true
+}
 /**
  * Lo más largo que puede llegar a medir un marcador de salto, contando un
  * `data-node-id` holgado. Un borde final no puede empezar más atrás que esto.
@@ -213,6 +264,10 @@ export class HTMLRenderer extends Visitor<string> {
   constructor(options: HTMLRendererOptions = {}) {
     super()
     this.noIds = options.idMode === 'none'
+    // Los ids de línea y los handles son justo lo que el colapso se lleva por
+    // delante: sin `idMode: 'none'` explícito no se activa aunque lo pidan.
+    this.collapseBlankRuns = options.collapseBlankRuns === true &&
+      options.idMode === 'none' && options.lineHandles !== true
     this.tokenResolver = toTokenResolver(options.tokens)
     this.options = {
       registry: options.registry,
@@ -226,6 +281,7 @@ export class HTMLRenderer extends Visitor<string> {
       boxTitleLineBreaks: options.boxTitleLineBreaks ?? true,
       idMode: options.idMode,
       lineHandles: options.lineHandles,
+      collapseBlankRuns: this.collapseBlankRuns,
     }
     this.semantic = new OsuSemanticModel(this.options.dialect)
   }
@@ -408,6 +464,9 @@ export class HTMLRenderer extends Visitor<string> {
    */
   private readonly osuPruned = new Set<RedNode>()
 
+  /** Ver `HTMLRendererOptions.collapseBlankRuns`. */
+  private readonly collapseBlankRuns: boolean
+
   /**
    * Cuántas listas aplanadas se están pintando (ver `renderOsuFlatList`):
    * mientras haya una, un `[*]` de dentro no abre `<li>`.
@@ -419,7 +478,7 @@ export class HTMLRenderer extends Visitor<string> {
     const n = html.length
     if (n === 0) return html
     const first = html.charCodeAt(0)
-    if (first === 10 || first === 13 || first === 9 || first === 32 || first === 60 /* < */) {
+    if (first === 10 || first === 13 || first === 9 || first === 32) {
       // El borde de entrada se buscaba con una expresión regular anclada; se
       // comprueba a mano. Son los mismos tres casos — espacios, un salto, o
       // el marcador de salto — sin recorrer el cuerpo entero del box para
@@ -438,6 +497,12 @@ export class HTMLRenderer extends Visitor<string> {
         else at = marker
       }
       if (at > 0) html = html.slice(at)
+    } else if (first === 60 /* < */ && startsWithAt(html, SWALLOWED_NEWLINE_HEAD, 0)) {
+      // Un `<` normal abre cualquier elemento; sólo el marcador de salto se
+      // recorta. Comprobarlo antes de `swallowedNewlineEnd` evita pagar el
+      // análisis del prefijo en cada box que empieza por HTML.
+      const marker = HTMLRenderer.swallowedNewlineEnd(html, 0)
+      if (marker !== -1) html = html.slice(marker)
     }
     return HTMLRenderer.trimTrailingOsuEdge(html)
   }
@@ -451,17 +516,17 @@ export class HTMLRenderer extends Visitor<string> {
    * rebanada que ésta necesitaba.
    */
   private static swallowedNewlineEnd(html: string, at: number): number {
-    if (!html.startsWith(SWALLOWED_NEWLINE_HEAD, at)) return -1
+    if (!startsWithAt(html, SWALLOWED_NEWLINE_HEAD, at)) return -1
     let p = at + SWALLOWED_NEWLINE_HEAD.length
     if (html.charCodeAt(p) !== 62 /* > */) {
-      if (!html.startsWith(NODE_ID_PREFIX, p)) return -1
+      if (!startsWithAt(html, NODE_ID_PREFIX, p)) return -1
       const quote = html.indexOf('"', p + NODE_ID_PREFIX.length)
       if (quote === -1 || html.charCodeAt(quote + 1) !== 62) return -1
       p = quote + 2
     } else {
       p += 1
     }
-    return html.startsWith('</span>', p) ? p + 7 : -1
+    return startsWithAt(html, '</span>', p) ? p + 7 : -1
   }
 
   /** El borde final: `[\t ]*` opcional tras un salto o su marcador, al final. */
@@ -486,7 +551,7 @@ export class HTMLRenderer extends Visitor<string> {
       // en un `>` (`<br>`, `</a>`, `</strong>`). Buscar el `<span ` anterior
       // recorría el cuerpo entero en cada llamada, para casi siempre
       // encontrar un span que no era el marcador.
-      if (!html.endsWith('</span>')) return html
+      if (!startsWithAt(html, '</span>', end - 7)) return html
       // El marcador mide siempre lo mismo (`<span data-bb-nl hidden…></span>`,
       // el `data-node-id` aparte), así que sólo puede empezar en los últimos
       // `MAX_MARKER` caracteres: buscarlo con `lastIndexOf` sobre el cuerpo
@@ -616,8 +681,33 @@ export class HTMLRenderer extends Visitor<string> {
     let open: OsuSpanLink | null = null
     let out = ''
     let forwards: string[] | null = null
+    const collapseRuns = this.collapseBlankRuns && spans === null && BLANK_RUN_PARENTS.has(parent.kind)
     for (let i = from; i < to; i++) {
       const child = children[i]
+      if (collapseRuns && (child.kind === 'spacing' || child.kind === 'empty_line')) {
+        // Una racha de saltos: el primero se pinta normal (cierra la línea
+        // actual o abre la primera vacía) y los demás son un solo espaciador.
+        // Los saltos que osu! se come no miden nada y se omiten: en un render
+        // de sólo lectura nadie los necesita (en el editor son el marcador que
+        // devuelve el salto al exportar).
+        let end = i
+        let firstVisible = -1
+        let visible = 0
+        while (end < to && (children[end].kind === 'spacing' || children[end].kind === 'empty_line')) {
+          if (!this.semantic.isNewlineSwallowed(children[end])) {
+            visible++
+            if (firstVisible < 0) firstVisible = end
+          }
+          end++
+        }
+        if (visible > 1) {
+          this.osuLinkForward = ''
+          if (firstVisible >= 0) out += this.renderNode(children[firstVisible])
+          out += `<div class="bb-blank-run" style="height:${visible - 1}lh"></div>`
+          i = end - 1
+          continue
+        }
+      }
       const span = spans?.get(i)
       if (open !== null && i === open.endsAt && open.endOffset !== undefined && span === undefined) {
         // El target acaba en medio de una hoja (una segunda URL detrás): el
@@ -2746,11 +2836,11 @@ export class HTMLRenderer extends Visitor<string> {
     // image URL and the closer carry `\s*` in front (ASCII, like PCRE), so an
     // indented body still builds the map — `osu/14981802`, `osu/36631973`,
     // `osu/18579521`; ` [/imagemap]` is `osu-cases/imagemap-indented-closer`.
-    if (lines[0] !== '[imagemap]' || !/^[ \t\f\v\r]*\[\/imagemap\]$/.test(lines[lines.length - 1])) return false
+    if (lines[0] !== '[imagemap]' || !HTMLRenderer.isIndentedLine(lines[lines.length - 1], '[/imagemap]')) return false
     let i = 1
     const last = lines.length - 1
     while (i < last && HTMLRenderer.isBlankLine(lines[i])) i++
-    if (i >= last || !/^[ \t\f\v\r]*https?:\/\/.+/.test(lines[i])) return false
+    if (i >= last || !HTMLRenderer.isHttpLine(lines[i])) return false
     i++
     // `(?<links>…)+`: at least one area; `\s*` between them allows blank lines.
     let areas = 0
@@ -2764,22 +2854,84 @@ export class HTMLRenderer extends Visitor<string> {
 
   /** `\s` as PCRE means it here: ASCII whitespace only (JS `\s` also eats NBSP and friends). */
   private static isBlankLine(line: string): boolean {
-    return /^[ \t\f\v\r]*$/.test(line)
+    const n = line.length
+    for (let i = 0; i < n; i++) {
+      const c = line.charCodeAt(i)
+      if (c !== 32 && c !== 9 && c !== 12 && c !== 11 && c !== 13) return false
+    }
+    return true
+  }
+
+  /** `^[ \t\f\v\r]*` + `text` + end — the closer's own shape. */
+  private static isIndentedLine(line: string, text: string): boolean {
+    const n = line.length
+    let at = 0
+    while (at < n) {
+      const c = line.charCodeAt(at)
+      if (c !== 32 && c !== 9 && c !== 12 && c !== 11 && c !== 13) break
+      at++
+    }
+    return line.length - at === text.length && startsWithAt(line, text, at)
+  }
+
+  /** `^[ \t\f\v\r]*https?:\/\/.+` — the image URL line. */
+  private static isHttpLine(line: string): boolean {
+    const n = line.length
+    let at = 0
+    while (at < n) {
+      const c = line.charCodeAt(at)
+      if (c !== 32 && c !== 9 && c !== 12 && c !== 11 && c !== 13) break
+      at++
+    }
+    return HTMLRenderer.hasScheme(line, at, 'https://') || HTMLRenderer.hasScheme(line, at, 'http://')
+  }
+
+  /** `text` at `at`, followed by at least one more character. */
+  private static hasScheme(line: string, at: number, scheme: string): boolean {
+    return line.length > at + scheme.length && startsWithAt(line, scheme, at)
   }
 
   /**
    * `(?:[0-9.]+ ){4}(?:#|https?:\/\/[^\s]+|mailto:[^\s]+)(?: .*)?`,
    * anchored at the line's first non-whitespace character.
+   *
+   * Read with char codes instead of five `RegExp.exec` calls and a `slice`
+   * per field: this runs once per area line of every imagemap, and a page in
+   * the corpus has 88 of them.
    */
   private static isOsuImagemapAreaLine(line: string): boolean {
-    let at = line.search(/\S/)
-    if (at === -1) return false
-    for (let field = 0; field < 4; field++) {
-      const number = /^[0-9.]+/.exec(line.slice(at))
-      if (!number || line[at + number[0].length] !== ' ') return false
-      at += number[0].length + 1
+    const n = line.length
+    let at = 0
+    while (at < n) {
+      const c = line.charCodeAt(at)
+      if (c !== 32 && c !== 9 && c !== 12 && c !== 11 && c !== 13) break
+      at++
     }
-    return /^(?:#|https?:\/\/\S+|mailto:\S+)/.test(line.slice(at))
+    if (at === n) return false
+    for (let field = 0; field < 4; field++) {
+      const start = at
+      while (at < n) {
+        const c = line.charCodeAt(at)
+        if ((c < 48 || c > 57) && c !== 46) break
+        at++
+      }
+      if (at === start || line.charCodeAt(at) !== 32) return false
+      at++
+    }
+    if (line.charCodeAt(at) === 35 /* # */) return true
+    for (const scheme of ['https://', 'http://', 'mailto:']) {
+      const from = at + scheme.length
+      if (!startsWithAt(line, scheme, at) || from >= n) continue
+      // `\S+`: the target runs to the next ASCII whitespace.
+      let i = from
+      while (i < n) {
+        const c = line.charCodeAt(i)
+        if (c === 32 || c === 9 || c === 12 || c === 11 || c === 13) break
+        i++
+      }
+      return i > from
+    }
+    return false
   }
 
   private renderImagemap(node: RedNode): string {
@@ -2891,32 +3043,45 @@ export class HTMLRenderer extends Visitor<string> {
     x: number; y: number; w: number; h: number; url: string; label: string
   } | null {
     const n = line.length
-    const next = (from: number): { value: string; at: number } => {
-      let end = from
+    // The fields are read into scalars rather than through five little
+    // `{ value, at }` objects: an area line is a legacy tab/space table and
+    // this runs for every one of them, so the objects were pure garbage.
+    let at = 0
+    let field = 0
+    let a = '', b = '', c = '', d = '', e = ''
+    let labelAt = n
+    while (field < 5) {
+      let end = at
       while (end < n) {
-        const c = line.charCodeAt(end)
-        if (c === 32 || c === 9) break
+        const ch = line.charCodeAt(end)
+        if (ch === 32 || ch === 9) break
         end += 1
       }
-      let at = end
+      const value = line.slice(at, end)
+      if (value === '') return null
+      switch (field) {
+        case 0: a = value; break
+        case 1: b = value; break
+        case 2: c = value; break
+        case 3: d = value; break
+        default: e = value
+      }
+      field++
+      at = end
       while (at < n) {
-        const c = line.charCodeAt(at)
-        if (c !== 32 && c !== 9) break
+        const ch = line.charCodeAt(at)
+        if (ch !== 32 && ch !== 9) break
         at += 1
       }
-      return { value: line.slice(from, end), at }
+      if (field >= 4) labelAt = at
     }
-    const a = next(0)
-    const b = next(a.at)
-    const c = next(b.at)
-    const d = next(c.at)
-    const e = next(d.at)
-    if (e.value === '' || a.value === '' || b.value === '' || c.value === '' || d.value === '') return null
-    const label = e.at >= n ? ''
-      : line.slice(e.at).includes('  ') || line.slice(e.at).includes('\t')
-        ? line.slice(e.at).split(/[ \t]+/).join(' ')
-        : line.slice(e.at)
-    return { x: parseFloat(a.value), y: parseFloat(b.value), w: parseFloat(c.value), h: parseFloat(d.value), url: e.value, label }
+    let label = ''
+    if (labelAt < n) {
+      label = line.slice(labelAt)
+      // `join(' ')`: only a run of separators needs the collapse.
+      if (label.includes('  ') || label.includes('\t')) label = label.split(/[ \t]+/).join(' ')
+    }
+    return { x: parseFloat(a), y: parseFloat(b), w: parseFloat(c), h: parseFloat(d), url: e, label }
   }
 
   private collectNodeText(node: RedNode): string {

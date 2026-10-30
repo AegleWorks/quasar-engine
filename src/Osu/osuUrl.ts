@@ -110,12 +110,18 @@ function asciiKeep(preserve: string): Uint8Array {
 function percentEncode(s: string, preserve: string): string {
   const keep = asciiKeep(preserve)
   let out = ''
+  // Most path/query/fragment pieces are already in the keep set; returning the
+  // original string then saves one copy (and one rope flatten) per URL part.
+  let changed = false
   for (let i = 0; i < s.length; i++) {
     const code = s.charCodeAt(i)
     if (code < 128) {
-      out += code !== 0x25 && keep[code] === 0
-        ? '%' + code.toString(16).toUpperCase().padStart(2, '0')
-        : s[i]
+      if (code !== 0x25 && keep[code] === 0) {
+        out += '%' + code.toString(16).toUpperCase().padStart(2, '0')
+        changed = true
+      } else {
+        out += s[i]
+      }
       continue
     }
     // A non-ASCII code point is always escaped, one UTF-8 byte at a time.
@@ -125,9 +131,10 @@ function percentEncode(s: string, preserve: string): string {
     for (const byte of utf8.encode(ch)) {
       out += '%' + byte.toString(16).toUpperCase().padStart(2, '0')
     }
+    changed = true
     if (ch.length === 2) i++
   }
-  return out
+  return changed ? out : s
 }
 
 /** `HTMLPurifier_AttrDef_URI_Host::validate`: `''`, IPv6, IPv4 o nombre DNS. */
@@ -176,9 +183,45 @@ function schemeShape(scheme: string | null) {
  * and over across a page and across pages. Pure function, bounded FIFO so a
  * long-lived renderer cannot grow without limit.
  */
-const HREF_CACHE_MAX = 4096
+const HREF_CACHE_MAX = 131072
 const HREF_CACHE_MAX_LENGTH = 4096
 const HREF_CACHE = new Map<string, string | null>()
+/**
+ * Insertion order, so eviction never has to ask the Map for its oldest key.
+ *
+ * `Map.keys().next()` LOOKS like an O(1) FIFO, and it is not: once the cache
+ * is full the oldest entry is deleted on every miss, so the iterator starts
+ * over a table full of holes and walks past all of them to find the next live
+ * entry. With a working set just above the cap — the corpus has 143,773
+ * distinct URLs against a cap of 131,072 — every single call missed and the
+ * eviction alone made the function **ten times slower** than computing the
+ * answer from scratch. A ring buffer of the keys keeps it at O(1).
+ */
+const HREF_CACHE_KEYS: string[] = []
+let HREF_CACHE_AT = 0
+
+/**
+ * The shape of a URL the purifier leaves byte-for-byte alone: lowercase
+ * http(s), a DNS/IPv4 host with no userinfo or port, and path/query/fragment
+ * characters all in the set `percentEncode` preserves. No `%` (its
+ * normalization can rewrite it), no brackets, quotes, backslashes, spaces or
+ * non-ASCII. This is the overwhelming majority of avatar and image URLs in a
+ * feed, and skipping the parser, normalizer and encoder for them removes most
+ * of the first-pass cost of the URL cache.
+ */
+const SIMPLE_HREF_RE =
+  /^(https?):\/\/((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)(\/[A-Za-z0-9._~!$&'()*+,;=:@\/-]*)?(\?[A-Za-z0-9._~!$&'()*+,;=:@\/?-]*)?(#[A-Za-z0-9._~!$&'()*+,;=:@\/?-]*)?$/
+
+function rememberHref(value: string, result: string | null): void {
+  if (HREF_CACHE_KEYS.length < HREF_CACHE_MAX) {
+    HREF_CACHE_KEYS.push(value)
+  } else {
+    HREF_CACHE.delete(HREF_CACHE_KEYS[HREF_CACHE_AT])
+    HREF_CACHE_KEYS[HREF_CACHE_AT] = value
+    HREF_CACHE_AT = (HREF_CACHE_AT + 1) % HREF_CACHE_MAX
+  }
+  HREF_CACHE.set(value, result)
+}
 
 /**
  * El valor final de un atributo URI de osu!, o `null` si el purificador lo
@@ -187,19 +230,27 @@ const HREF_CACHE = new Map<string, string | null>()
  */
 export function osuPurifiedHref(value: string): string | null {
   if (value.length > HREF_CACHE_MAX_LENGTH) return purifyHref(value)
-  if (HREF_CACHE.has(value)) return HREF_CACHE.get(value) ?? null
-  const result = purifyHref(value)
-  if (HREF_CACHE.size >= HREF_CACHE_MAX) {
-    const oldest = HREF_CACHE.keys().next().value
-    if (oldest !== undefined) HREF_CACHE.delete(oldest)
+  // One lookup: `null` is a real cached answer (the purifier dropped the
+  // attribute), so `undefined` is the only miss marker. The corpus calls this
+  // 253k times over 8.7k pages; a `has` + `get` pair made every hit twice as
+  // expensive as it needed to be.
+  const cached = HREF_CACHE.get(value)
+  if (cached !== undefined) return cached
+  const simple = SIMPLE_HREF_RE.exec(value)
+  if (simple !== null && validHost(simple[2]) !== false) {
+    rememberHref(value, value)
+    return value
   }
-  HREF_CACHE.set(value, result)
+  const result = purifyHref(value)
+  rememberHref(value, result)
   return result
 }
 
 function purifyHref(value: string): string | null {
   const text = phpTrim(value).replace(/[\n\t\r]/g, ' ')
-  const normalized = normalizePercent(text)
+  // `normalizePercent` splits on `%` and allocates an array even when there is
+  // none, which is the vast majority of URLs; the scan below is the check.
+  const normalized = text.indexOf('%') === -1 ? text : normalizePercent(text)
 
   // Appendix B del RFC 3986, con `"` y `<>` de más: son delimitadores externos.
   const m = /^(([A-Za-z0-9.+-]+):)?(\/\/([^/?#"<>]*))?([^?#"<>]*)(\?([^#"<>]*))?(#([^"<>]*))?/.exec(normalized)

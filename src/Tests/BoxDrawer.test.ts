@@ -238,3 +238,67 @@ describe('BoxDrawer', () => {
     expect(announced).toBe(0)
   })
 })
+
+/**
+ * La caja del dialecto osu, con su cuerpo como hijo directo: el caso que
+ * `animateBody` mueve en vez del contenedor.
+ */
+function makeOsuBox() {
+  const host = document.createElement('div')
+  host.innerHTML = `
+    <div class="js-spoilerbox bbcode-spoilerbox js-spoilerbox--open">
+      <a class="js-spoilerbox__link" href="#">title</a>
+      <div class="bbcode-spoilerbox__body" style="margin-top: 10px"><p>content</p></div>
+    </div>`
+  const box = host.querySelector<HTMLElement>('.js-spoilerbox')!
+  const body = box.querySelector<HTMLElement>('.bbcode-spoilerbox__body')!
+
+  body.getBoundingClientRect = () => ({
+    height: box.classList.contains('js-spoilerbox--open') ? 105 : 0,
+  }) as DOMRect
+
+  const anims: Array<{ keyframes: PropertyIndexedKeyframes; fire: (type: 'finish' | 'cancel') => void }> = []
+  body.animate = ((keyframes: PropertyIndexedKeyframes) => {
+    const listeners: Record<string, Array<() => void>> = {}
+    const anim = {
+      keyframes,
+      cancel: () => {},
+      addEventListener: (type: string, cb: () => void) => { (listeners[type] ||= []).push(cb) },
+      fire: (type: 'finish' | 'cancel') => { (listeners[type] || []).forEach((cb) => cb()) },
+    }
+    anims.push(anim)
+    return anim as unknown as Animation
+  }) as typeof body.animate
+
+  return { host, box, body, anims }
+}
+
+describe('osu box drawer', () => {
+  it('animateBody moves the body and its margin, and closes the box when it lands', () => {
+    const osu = makeOsuBox()
+    const dispose = bindBoxDrawer(osu.host, { animateBody: true })
+    const click = () => osu.box.querySelector('a')!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+
+    click()
+
+    expect(osu.anims[0].keyframes).toEqual({
+      height: ['105px', '0px'],
+      marginTop: ['10px', '0px'],
+    })
+    // Stays open while it shrinks, so the text is there to be clipped.
+    expect(osu.box.classList.contains('js-spoilerbox--open')).toBe(true)
+
+    osu.anims[0].fire('finish')
+    expect(osu.box.classList.contains('js-spoilerbox--open')).toBe(false)
+
+    click()
+    expect(osu.anims[1].keyframes).toEqual({
+      height: ['0px', '105px'],
+      marginTop: ['0px', '10px'],
+    })
+
+    dispose()
+  })
+})

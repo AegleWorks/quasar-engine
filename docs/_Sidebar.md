@@ -16,3 +16,4 @@
 - [13. WYSIWYG canvas](./13-WYSIWYG.md)
 - [14. Engineering audit 2026-10-21](./14-Engineering-Audit-2026-10-21.md)
 - [15. Language service and restyle performance](./15-Language-Service-and-Restyle-Performance.md)
+- [16. Renderer benchmarks, workers y DOM](./16-Renderer-Benchmarks-and-Workers.md)
