@@ -31,6 +31,17 @@ import type { FormatEdit, SourceSelection } from './InlineFormat'
 import type { NodeKind } from '../Types/core'
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode'
 
+/** Kinds whose content is raw text: nothing in it means anything, and spaces stay as written. */
+const RAW: ReadonlySet<string> = new Set(['code', 'inline_code'])
+
+export function inRaw(root: RedNode, at: number): boolean {
+  const here = root.findNodeAtOffset(at) ?? (at > 0 ? root.findNodeAtOffset(at - 1) : null)
+  for (const n of ancestors(here)) {
+    if (RAW.has(n.kind) && at >= n.innerStart && at <= n.innerEnd) return true
+  }
+  return false
+}
+
 /** Kinds that hold exactly one line: Enter inside them is a way out. */
 const ONE_LINE: ReadonlySet<string> = new Set(['heading'])
 
@@ -136,11 +147,17 @@ export function insertLineBreak(root: RedNode, source: string, selection: Source
   }
 
   // Right at a block's edge a single `\n` would be swallowed as layout and the
-  // Enter would show nothing: it takes a second one to make a line.
-  const edge = blockEdgeAt(root, at)
+  // Enter would show nothing: it takes a second one to make a line. Raw content
+  // shows every line it has, and the same goes for the outer edge of a block.
+  const raw = inRaw(root, at)
+  const edge = raw ? null : blockEdgeAt(root, at)
   if (edge && !isEdgeNewline(root, at === edge.innerStart ? at : at - 1)) {
     const lands = at === edge.innerStart && at !== edge.innerEnd ? at + 2 : at + 1
     return { changes: [{ start: at, end: at, text: '\n\n' }], selection: caret(lands), action: 'break' }
+  }
+  const next = root.findNodeAtOffset(at)
+  if (!raw && next && at > 0 && source[at - 1] !== '\n' && next.range.start === at && next.range.start < next.innerStart && isBlockKind(next.kind as NodeKind)) {
+    return { changes: [{ start: at, end: at, text: '\n\n' }], selection: caret(at + 1), action: 'break' }
   }
 
   return { changes: [{ start: at, end: at, text: '\n' }], selection: caret(at + 1), action: 'break' }
@@ -153,7 +170,7 @@ export function insertLineBreak(root: RedNode, source: string, selection: Source
  * reconciler already turns into a surgical edit.
  */
 export function joinBackward(root: RedNode, source: string, selection: SourceSelection): FormatEdit | null {
-  if (selection.start !== selection.end) return deleteSelection(root, source, selection)
+  if (selection.start !== selection.end) return deleteRange(root, source, selection)
   const at = selection.start
   if (at === 0) return { changes: [], selection: caret(0), action: 'join' }
 
@@ -178,7 +195,7 @@ export function joinBackward(root: RedNode, source: string, selection: SourceSel
 
 /** Delete at a caret: joins a line with the one after it. The mirror of `joinBackward`. */
 export function joinForward(root: RedNode, source: string, selection: SourceSelection): FormatEdit | null {
-  if (selection.start !== selection.end) return deleteSelection(root, source, selection)
+  if (selection.start !== selection.end) return deleteRange(root, source, selection)
   const at = selection.start
   if (at >= source.length) return { changes: [], selection: caret(at), action: 'join' }
 
@@ -193,6 +210,81 @@ export function joinForward(root: RedNode, source: string, selection: SourceSele
   if (source[at] !== '\n') return null
   if (isEdgeNewline(root, at)) return { changes: [], selection: caret(at), action: 'join' }
   return { changes: [{ start: at, end: at + 1, text: '' }], selection: caret(at), action: 'join' }
+}
+
+/** The inline tag that holds exactly `[s, e)`: deleting all it holds leaves no tag to keep. */
+function emptiedInline(root: RedNode, s: number, e: number): RedNode | null {
+  let found: RedNode | null = null
+  for (const n of ancestors(nodeAt(root, s))) {
+    if (n.parent === null || n.range.start === n.innerStart) continue
+    if (n.innerStart !== s || n.innerEnd !== e || isBlockKind(n.kind as NodeKind)) break
+    found = n
+    s = n.range.start
+    e = n.range.end
+  }
+  return found
+}
+
+/**
+ * Deletes what the browser would: a character, a word, up to the line's edge.
+ * The range comes from the keystroke (`beforeinput`'s target range), so graphemes,
+ * words and bidirectional text are its call and only the edit is ours. Like
+ * `deleteSelection`, plus two things a person expects of a character going away:
+ * a format emptied by it goes too, and a space it leaves on the edge of a line
+ * stays on screen.
+ */
+export function deleteRange(root: RedNode, source: string, selection: SourceSelection): FormatEdit | null {
+  const emptied = emptiedInline(root, Math.min(selection.start, selection.end), Math.max(selection.start, selection.end))
+  const edit = deleteSelection(root, source, emptied ? { start: emptied.range.start, end: emptied.range.end } : selection)
+  if (!edit || edit.changes.length !== 1) return edit
+  const [change] = edit.changes
+  const start = change.start
+  const end = change.end
+  if (change.text === '' && source[start - 1] === ' ' && collapses(root, source, end)) {
+    return { ...edit, changes: [{ start: start - 1, end, text: NBSP }] }
+  }
+  if (change.text === '' && source[end] === ' ' && collapsesBefore(root, source, start)) {
+    return { ...edit, changes: [{ start, end: end + 1, text: NBSP }] }
+  }
+  return edit
+}
+
+/** What a browser writes for a space HTML would otherwise collapse. */
+export const NBSP = '\u00A0'
+
+
+type Neighbour = 'edge' | 'space' | 'char'
+
+/**
+ * What is next to `at` on screen, tags aside, walking `step` (±1): a line's edge,
+ * a space, or anything else. HTML collapses a space next to the first two.
+ */
+function neighbour(root: RedNode, source: string, at: number, step: 1 | -1): Neighbour {
+  let i = step === 1 ? at : at - 1
+  while (i >= 0 && i < source.length) {
+    const n = root.findNodeAtOffset(i)
+    if (!n) return 'edge'
+    if (n.kind === 'spacing' || n.kind === 'empty_line') return 'edge'
+    if (n.kind === 'text' || (i >= n.innerStart && i < n.innerEnd)) {
+      return source[i] === ' ' || source[i] === NBSP || source[i] === '\t' ? 'space' : 'char'
+    }
+    // On a tag's delimiter: a block ends the line, an inline one is transparent.
+    if (isBlockKind(n.kind as NodeKind)) return 'edge'
+    const opener = i < n.innerStart
+    if (step === 1) i = opener ? n.innerStart : n.range.end
+    else i = (opener ? n.range.start : n.innerEnd) - 1
+  }
+  return 'edge'
+}
+
+/** A space right before `at` would collapse. */
+export function collapses(root: RedNode, source: string, at: number): boolean {
+  return neighbour(root, source, at, 1) !== 'char'
+}
+
+/** A space right after `at` would collapse. */
+export function collapsesBefore(root: RedNode, source: string, at: number): boolean {
+  return neighbour(root, source, at, -1) !== 'char'
 }
 
 /** Every tagged node overlapping `[s, e)`, in source order. */

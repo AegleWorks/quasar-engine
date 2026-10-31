@@ -25,7 +25,8 @@ import { STYLE_PROP_WHITELIST, stripStyleValue, isDangerousStyleValue } from '..
 
 import { isBlockKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
-import { SWALLOWED_NEWLINE_ATTR } from './domMarkers'
+import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR } from './domMarkers'
+import { isTerminalNewline } from './terminalLine'
 import { bearsLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
 import { clampFontSizeForRender, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { osuPurifiedHref } from '../Osu/osuUrl'
@@ -91,6 +92,20 @@ export interface HTMLRendererOptions {
    * `idMode: 'none'`, where there are no ids to carry.
    */
   lineHandles?: boolean
+  /**
+   * Paint the line after a flow's last newline.
+   *
+   * HTML draws nothing after a last `<br>`, so a text ending in `\n` shows one
+   * line fewer than it has, and that last line is where the caret is after
+   * Enter. Lexical keeps a managed `<br>` there for the same reason. With this
+   * the newline paints with a second `<br>` that holds that line, so every line
+   * of the source is on screen whether or not the caret is on it. Inline, so it
+   * opens no line of its own inside a padded inline parent (a gradient).
+   *
+   * Only for an editable surface: a published page ends where its text ends,
+   * and a preview stays what the reader gets. Off unless asked for.
+   */
+  terminalLines?: boolean
   /**
    * Collapse a run of visible newlines into one `<br>` plus a single spacer of
    * `n - 1` line-heights, instead of one element per blank line.
@@ -247,9 +262,10 @@ interface OsuSpanLink {
 
 export class HTMLRenderer extends Visitor<string> {
   private tokenResolver?: TokenResolverFn
-  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode' | 'lineHandles'>> & {
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode' | 'lineHandles' | 'terminalLines'>> & {
     idMode?: 'blocks' | 'all' | 'none'
     lineHandles?: boolean
+    terminalLines?: boolean
     registry?: TagRegistry
     mediaProxy?: (url: string) => string
     entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
@@ -281,6 +297,7 @@ export class HTMLRenderer extends Visitor<string> {
       boxTitleLineBreaks: options.boxTitleLineBreaks ?? true,
       idMode: options.idMode,
       lineHandles: options.lineHandles,
+      terminalLines: options.terminalLines,
       collapseBlankRuns: this.collapseBlankRuns,
     }
     this.semantic = new OsuSemanticModel(this.options.dialect)
@@ -571,6 +588,15 @@ export class HTMLRenderer extends Visitor<string> {
   /** A swallowed newline's marker, with its node's id (see `SWALLOWED_NEWLINE_RE`). */
   private swallowedNewline(node: RedNode): string {
     return `<span ${SWALLOWED_NEWLINE_ATTR} hidden${this.idAttr(node)}></span>`
+  }
+
+  private paintsTerminalLine(node: RedNode): boolean {
+    return this.options.terminalLines === true && isTerminalNewline(node, n => this.semantic.isNewlineSwallowed(n))
+  }
+
+  /** A flow's last newline with the line after it (see `terminalLines`): one element, as every newline is. */
+  private terminalLine(node: RedNode): string {
+    return `<span ${TERMINAL_LINE_ATTR}${this.idAttr(node)}><br><br></span>`
   }
 
   private idAttr(node: RedNode): string {
@@ -1031,9 +1057,11 @@ export class HTMLRenderer extends Visitor<string> {
       case 'paint': return this.renderEffectSegments(node, 'paint')
       case 'spacing':
         if (this.semantic.isNewlineSwallowed(node)) return this.swallowedNewline(node)
+        if (this.paintsTerminalLine(node)) return this.terminalLine(node)
         return `<br${this.idAttr(node)}>`
       case 'empty_line':
         if (this.semantic.isNewlineSwallowed(node)) return this.swallowedNewline(node)
+        if (this.paintsTerminalLine(node)) return this.terminalLine(node)
         // A run of newlines whose HEAD was eaten starts its visible part on a
         // line nothing closed yet: osu! leaves a bare `<br />` there, not the
         // empty line the div draws (`a[/box]\n\nb` → `a<br />b`). The div stays
@@ -2772,6 +2800,12 @@ export class HTMLRenderer extends Visitor<string> {
 
   private renderCode(node: RedNode): string {
     let content = node.children.map(c => c.text || '').join('')
+    // On a canvas the block is being written: the lines osu! would strip are
+    // lines the caret can be on, and a last `\n` paints none of its own.
+    if (this.options.terminalLines) {
+      const tail = content.endsWith('\n') ? `<br ${TERMINAL_LINE_ATTR}>` : ''
+      return `<pre${this.idAttr(node)}><code>${this.escapeHtml(content)}${tail}</code></pre>`
+    }
     // osu! quirk: strip leading and trailing empty lines inside [code]
     const leadingMatch = content.match(/^(?:[\t ]*[\r\n])+/)
     if (leadingMatch) content = content.slice(leadingMatch[0].length)
@@ -3195,6 +3229,7 @@ export class HTMLRenderer extends Visitor<string> {
     let nextBreak = 0
     const br = () => {
       const owner = breaks[nextBreak++]
+      if (owner && this.paintsTerminalLine(owner)) return this.terminalLine(owner)
       return owner ? `<br${this.idAttr(owner)}>` : '<br>'
     }
 

@@ -152,8 +152,8 @@ export { InsertText } from './Commands/InsertText'
 export { DeleteNode } from './Commands/DeleteNode'
 export { WrapInTag } from './Commands/WrapInTag'
 export { SplitNode, MergeNode } from './Commands/SplitMerge'
-export { insertLineBreak, joinBackward, joinForward, deleteSelection } from './Commands/StructuralEdits'
-export { insertContent, isBlockContent, type ParseSource } from './Commands/InsertContent'
+export { insertLineBreak, joinBackward, joinForward, deleteSelection, deleteRange } from './Commands/StructuralEdits'
+export { insertContent, insertTypedText, replaceWithLineBreak, isBlockContent, type ParseSource } from './Commands/InsertContent'
 export { toggleInlineFormat, wrapInTag, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
 
 // ── Language service (Roslyn-shaped answers over one model) ──
@@ -214,7 +214,8 @@ export { repairNesting, type NestingRepair, type OrphanCloser, type UnclosedOpen
 
 // ── Reconciler ──
 export { reconcileVisualDOMToBBCode, computeTextDelta, type SurgicalEdit as QuasarSurgicalEdit, type ReconcileResult, type ReconcileRoute, type ReconcileFullReason, type ReconcileCounts, type ReconcileOptions } from './Reconciler/SurgicalReconciler'
-export { sourceOffsetOfDomPoint, domPointOfSourceOffset, revealLine, REVEALED_LINE_ATTR } from './Reconciler/CanvasPositions'
+export { sourceOffsetOfDomPoint, exactSourceOffset, domPointOfSourceOffset, revealLine, textOffsetOfSource, sourceOffsetOfText, REVEALED_LINE_ATTR } from './Reconciler/CanvasPositions'
+export { CanvasHistory, type HistoryStep } from './Reconciler/CanvasHistory'
 export { CanvasDocument, OwnedCanvasHost, spanOf, changeBetween, type CanvasHost, type CanvasSnapshot, type CanvasModel, type CanvasDocumentOptions, type ShowOptions } from './Reconciler/CanvasDocument'
 
 // ── Lightbulb Engine (fixes, refactorings, fix-all, host) ──

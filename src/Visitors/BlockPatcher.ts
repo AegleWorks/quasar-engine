@@ -42,6 +42,7 @@
 import { RedNode } from '../Syntax/RedNode'
 import { HTMLRenderer } from './HTMLRenderer'
 import { morphHTML, morphElement } from './DOMMorpher'
+import { isNewlineNode } from './terminalLine'
 import type { TextChangeRange } from '../Incremental/ChangeTracker'
 
 export interface PatchBlocksOptions {
@@ -229,7 +230,14 @@ function blockKey(node: RedNode, index: number): string {
  * the patched DOM equal to a full render, which is the whole contract.
  */
 function isContextSensitive(node: RedNode): boolean {
-  return node.kind === 'spacing' || node.kind === 'empty_line'
+  if (isNewlineNode(node)) return true
+  if (node.kind !== 'paragraph') return false
+  // `[b]a⏎[/b]`: whether its last newline ends the document (`terminalLines`)
+  // depends on what comes after the paragraph.
+  for (let d: RedNode | undefined = node; d; d = d.children[d.children.length - 1]) {
+    if (isNewlineNode(d)) return true
+  }
+  return false
 }
 
 /**

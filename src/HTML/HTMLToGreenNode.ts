@@ -2,7 +2,7 @@ import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode';
 import { RedNode } from '../Syntax/RedNode';
 import type { NodeKind } from '../Types/core';
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode';
-import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers';
+import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR } from '../Visitors/domMarkers';
 import { MAX_NESTING_DEPTH } from '../BBCode/Parser';
 
 /**
@@ -118,7 +118,9 @@ function domToGreenTree(root: HTMLElement): GreenNode {
         const parentTag = el.parentNode ? el.parentNode.nodeName.toLowerCase() : '';
         if (['ul', 'ol', 'table', 'tbody', 'tr'].includes(parentTag)) return [] as any;
       }
-      const tag = el.hasAttribute(SWALLOWED_NEWLINE_ATTR) ? 'br' : el.tagName.toLowerCase();
+      // A flow's last newline reads back as that one newline, however many `<br>` hold its line.
+      const lastBreak = el.hasAttribute(TERMINAL_LINE_ATTR) && (el.textContent ?? '').replace(/\u200B/g, '') === '';
+      const tag = el.hasAttribute(SWALLOWED_NEWLINE_ATTR) || lastBreak ? 'br' : el.tagName.toLowerCase();
       
       switch (tag) {
         case 'b':

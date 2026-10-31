@@ -1,8 +1,8 @@
 import { RedNode } from '../Syntax/RedNode'
 import type { NodeId } from '../Types/core'
 import { HTMLDocumentModel } from '../HTML/HTMLDocumentModel'
-import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers'
-import { REVEALED_LINE_ATTR, REVEALED_AFTER_ATTR } from './CanvasPositions'
+import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR } from '../Visitors/domMarkers'
+import { REVEALED_LINE_ATTR } from './CanvasPositions'
 import { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 
@@ -302,6 +302,29 @@ function fillRevealedLine(
   return [{ start: at, end: at, text: typed }]
 }
 
+/**
+ * What the browser wrote into a flow's last line (a format chosen at the caret
+ * goes through the DOM). Its first `<br>` is the newline: what comes before it
+ * belongs before that newline, the rest after.
+ */
+function fillTerminalLine(node: RedNode, el: HTMLElement, exporter: BBCodeExporter): SurgicalEdit[] {
+  const pivot = Array.from(el.children).find(c => c.tagName === 'BR')
+  const head = el.ownerDocument.createElement('div')
+  const rest = el.ownerDocument.createElement('div')
+  let past = false
+  for (const child of Array.from(el.childNodes)) {
+    if (child === pivot) past = true
+    else if (child.nodeName !== 'BR') (past ? rest : head).appendChild(child.cloneNode(true))
+  }
+  const edits: SurgicalEdit[] = []
+  const before = typedIn(head, exporter)
+  const after = typedIn(rest, exporter)
+  if (before !== '') edits.push({ start: node.range.start, end: node.range.start, text: before })
+  if (after !== '') edits.push({ start: node.range.end, end: node.range.end, text: after })
+  counts.filledLines += edits.length
+  return edits
+}
+
 /** Parses one rendered fragment and returns its single top-level node, or null. */
 function singleNodeOf(html: string, doc: Document): Node | null {
   const probe = doc.createElement('div')
@@ -431,20 +454,8 @@ function descend(
   const slots = expectedSlots(node, renderer, el.ownerDocument)
   if (!slots || slots.length === 0) return null
 
-  // Lines the canvas opened after a `<br>` (`revealLine`) have no node: what
-  // is typed in one goes right after that break, and it pairs with nothing.
   const opened: SurgicalEdit[] = []
-  let actual: Node[] = Array.from(el.childNodes).filter(n => {
-    const after = n.nodeType === 1 ? (n as Element).getAttribute(REVEALED_AFTER_ATTR) : null
-    if (after === null) return true
-    const br = node.children.find(c => c.id === after)
-    const typed = br ? typedIn(n as HTMLElement, exporter) : ''
-    if (br && typed !== '') {
-      counts.filledLines++
-      opened.push({ start: br.range.end, end: br.range.end, text: typed })
-    }
-    return false
-  })
+  let actual: Node[] = Array.from(el.childNodes)
   // A dialect may drop a container's edge-newline markers where the children
   // are rendered in place (osu!'s box body): those slots have nothing to pair.
   const marks = (n: Node | null | undefined) => n?.nodeType === 1 && (n as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)
@@ -570,36 +581,34 @@ function contentHost(node: RedNode, el: HTMLElement, renderer: HTMLRenderer): HT
 }
 
 /**
- * Lines `revealLine` opened anywhere inside `el`, when they are its only change.
+ * Text written into flow-ending lines inside `el`, when that is all that changed.
  *
- * `descend` finds one among the children it pairs, but an effect painted per
- * letter has no children to pair: Enter at its end opened a line inside the
- * effect, and typing there rebuilt the whole effect from its DOM (a gradient
- * came back as one `[color]` per letter). Each line is an insertion right
- * after its break. Null when anything else changed too.
+ * `descend` finds such a line among the children it pairs, but an effect painted
+ * per letter has no children to pair, and typing there rebuilt the whole effect
+ * from its DOM (a gradient came back as one `[color]` per letter). Null when
+ * anything else changed too.
  */
-function fillLinesOpenedInside(
+function fillTerminalLinesInside(
   node: RedNode,
   el: HTMLElement,
   exporter: BBCodeExporter,
+  renderer: HTMLRenderer,
   rendered: string,
 ): SurgicalEdit[] | null {
-  const lines = Array.from(el.querySelectorAll<HTMLElement>(`[${REVEALED_AFTER_ATTR}]`))
+  const lines = Array.from(el.querySelectorAll<HTMLElement>(`[${TERMINAL_LINE_ATTR}]`))
   if (lines.length === 0) return null
-  const copy = el.cloneNode(true) as HTMLElement
-  for (const line of Array.from(copy.querySelectorAll(`[${REVEALED_AFTER_ATTR}]`))) line.remove()
-  if (domHtml(copy) !== rendered) return null
-
   const edits: SurgicalEdit[] = []
-  for (const line of lines) {
-    const br = node.findById(line.getAttribute(REVEALED_AFTER_ATTR) as NodeId)
-    if (!br) return null
-    const typed = typedIn(line, exporter)
-    if (typed === '') continue
-    counts.filledLines++
-    edits.push({ start: br.range.end, end: br.range.end, text: typed })
+  const copy = el.cloneNode(true) as HTMLElement
+  const copies = Array.from(copy.querySelectorAll(`[${TERMINAL_LINE_ATTR}]`))
+  for (let i = 0; i < lines.length; i++) {
+    const line = node.findById(lines[i].getAttribute('data-node-id') as NodeId)
+    if (!line) return null
+    edits.push(...fillTerminalLine(line, lines[i], exporter))
+    const probe = el.ownerDocument.createElement('div')
+    probe.innerHTML = renderer.render(line)
+    copies[i].replaceWith(probe.firstChild as Node)
   }
-  return edits
+  return domHtml(copy) === rendered ? edits : null
 }
 
 /**
@@ -621,9 +630,10 @@ function editsForNode(
 
   const side = el.getAttribute(REVEALED_LINE_ATTR)
   if (side === 'start' || side === 'end') return fillRevealedLine(node, side, el, exporter)
+  if (el.hasAttribute(TERMINAL_LINE_ATTR)) return fillTerminalLine(node, el, exporter)
   if (node.kind === 'empty_line') return fillEmptyLine(node, cleanHtml, exporter)
-  const opened = fillLinesOpenedInside(node, el, exporter, rendered)
-  if (opened) return opened
+  const written = fillTerminalLinesInside(node, el, exporter, renderer, rendered)
+  if (written) return written
 
   const host = contentHost(node, el, renderer)
   const probe = el.ownerDocument.createElement('div')

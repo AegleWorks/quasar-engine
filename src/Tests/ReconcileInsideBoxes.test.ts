@@ -68,12 +68,11 @@ describe('an opened box is not an edit', () => {
 })
 
 describe('a line with no layout yet (revealLine)', () => {
-  // After Enter at the end of a notice, or of the document, the new line is in
-  // the source but the renderer draws nothing for it — a swallowed newline's
-  // hidden marker, or a last `<br>` — so the canvas opens one to type into.
+  // After Enter at the end of a notice the new line is in the source but the
+  // renderer draws a swallowed newline's hidden marker for it, so the canvas
+  // opens one to type into.
   const cases = [
     ['[notice]aviso\n\n[/notice]\nfin', '[notice]aviso\n'.length, '[notice]aviso\nZ\n[/notice]\nfin'],
-    ['uno\nfin\n', 'uno\nfin\n'.length, 'uno\nfin\nZ'],
   ] as const
 
   for (const dialect of ['miliastry', 'osu'] as const) {
@@ -97,4 +96,39 @@ describe('a line with no layout yet (revealLine)', () => {
       expect(r.resultingSource).toBe(expected)
     })
   }
+})
+
+describe('the line after the last newline (terminalLines)', () => {
+  const cases = [
+    ['uno\nfin\n', 'uno\nfin\n'.length, 'uno\nfin\nZ'],
+    ['uno\n\n', 'uno\n\n'.length, 'uno\n\nZ'],
+    ['\n', 1, '\nZ'],
+    ['[b]uno\n[/b]', '[b]uno\n'.length, '[b]uno\nZ[/b]'],
+  ] as const
+
+  for (const dialect of ['miliastry', 'osu'] as const) {
+    it.each(cases)(`${dialect}: %j is on screen whole, and a caret there reads back`, (source, caret, expected) => {
+      const root = new BBCodeDocumentModel({ source, dialect, autoAnalyze: false }).redRoot!
+      const renderer = new HTMLRenderer({ dialect, terminalLines: true })
+      const container = document.createElement('div')
+      container.innerHTML = renderer.render(root)
+
+      const point = domPointOfSourceOffset(root, container, caret)!
+      expect((point.node as Element).hasAttribute('data-bb-tail'), 'the caret is on the painted line').toBe(true)
+      expect(sourceOffsetOfDomPoint(root, container, point.node, point.offset)).toBe(caret)
+      // Painted and left empty, it is no edit at all.
+      const exporter = new BBCodeExporter(undefined, dialect)
+      expect(reconcileVisualDOMToBBCode(source, root, container, exporter, renderer).resultingSource).toBe(source)
+
+      point.node.insertBefore(document.createTextNode('Z'), point.node.childNodes[point.offset])
+      const r = reconcileVisualDOMToBBCode(source, root, container, exporter, renderer)
+      expect(r.route).toBe('surgical')
+      expect(r.resultingSource).toBe(expected)
+    })
+  }
+
+  it('is the editable surface\'s alone: a published render ends where its text ends', () => {
+    const root = new BBCodeDocumentModel({ source: 'uno\n', dialect: 'osu', autoAnalyze: false }).redRoot!
+    expect(new HTMLRenderer({ dialect: 'osu' }).render(root)).not.toContain('data-bb-tail')
+  })
 })

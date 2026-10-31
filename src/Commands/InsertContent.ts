@@ -39,16 +39,13 @@ import type { NodeKind } from '../Types/core'
 import type { TextChange } from '../Incremental/ChangeTracker'
 import type { FormatEdit, SourceSelection } from './InlineFormat'
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode'
-import { deleteSelection } from './StructuralEdits'
+import { collapses, collapsesBefore, deleteSelection, inRaw, insertLineBreak, NBSP } from './StructuralEdits'
 
 /** Parses a source the way the document is parsed (its dialect, its pairing). */
 export type ParseSource = (source: string) => RedNode
 
 /** Block kinds that are only layout: content made of these alone is inline. */
 const LAYOUT: ReadonlySet<string> = new Set(['document', 'paragraph', 'spacing', 'empty_line'])
-
-/** Kinds whose content is raw text: anything pasted there is literal. */
-const RAW: ReadonlySet<string> = new Set(['code', 'inline_code'])
 
 /** Whether `content`, once parsed, holds a block — a box, a notice, a list… */
 export function isBlockContent(content: string, parse: ParseSource): boolean {
@@ -103,13 +100,6 @@ function blockTarget(root: RedNode, source: string, at: number): { at: number; b
     end = siblings[i].range.end
   }
   return { at: end, before: '', after: '' }
-}
-
-function inRaw(root: RedNode, at: number): boolean {
-  for (let n: RedNode | null = nodeAround(root, at); n; n = n.parent) {
-    if (RAW.has(n.kind) && at >= n.innerStart && at <= n.innerEnd) return true
-  }
-  return false
 }
 
 /** The one change that turns `a` into `b`: their common prefix and suffix kept. */
@@ -171,4 +161,66 @@ export function insertContent(
   const text = place.before + content + place.after
   const caret = place.at + place.before.length + content.length
   return { changes: [{ start: place.at, end: place.at, text }], selection: { start: caret, end: caret }, action: 'insert' }
+}
+
+function applied(source: string, changes: readonly TextChange[]): string {
+  let out = source
+  for (const c of [...changes].sort((a, b) => b.start - a.start)) out = out.slice(0, c.start) + c.text + out.slice(c.end)
+  return out
+}
+
+/**
+ * A break on the canvas leaves the spaces around it on a line's edge, where HTML
+ * collapses them: the caret would sit past one, unseen, and what is typed next
+ * would land there. The text editor shows every space and needs none of this.
+ */
+function keepingEdgeSpaces(root: RedNode, source: string, edit: FormatEdit | null): FormatEdit | null {
+  const change = edit?.changes.length === 1 ? edit.changes[0] : null
+  if (!edit || !change || change.text !== '\n' || change.start !== change.end || inRaw(root, change.start)) return edit
+  const before = source[change.start - 1] === ' '
+  const after = source[change.start] === ' '
+  if (!before && !after) return edit
+  const text = `${before ? NBSP : ''}\n${after ? NBSP : ''}`
+  return { ...edit, changes: [{ start: change.start - (before ? 1 : 0), end: change.end + (after ? 1 : 0), text }] }
+}
+
+/**
+ * Enter on the canvas: the selection goes (keeping the tags it cuts) and the line
+ * breaks where that leaves the caret, as one change.
+ */
+export function replaceWithLineBreak(root: RedNode, source: string, selection: SourceSelection, parse: ParseSource): FormatEdit | null {
+  if (selection.start === selection.end) return keepingEdgeSpaces(root, source, insertLineBreak(root, source, selection))
+  const del = deleteSelection(root, source, selection)
+  if (!del) return null
+  const cleared = applied(source, del.changes)
+  const after = parse(cleared)
+  const broken = keepingEdgeSpaces(after, cleared, insertLineBreak(after, cleared, del.selection))
+  if (!broken) return null
+  return { changes: [difference(source, applied(cleared, broken.changes))], selection: broken.selection, action: 'break' }
+}
+
+/**
+ * One keystroke's text at the selection.
+ *
+ * The canvas lays its text out as HTML does, so it has the browser's problem
+ * with spaces and solves it the browser's way: a space that would collapse (at
+ * either edge of a line, next to another space) is written as a no-break space,
+ * and it goes back to a plain one when the next character makes it a plain gap
+ * between two words. Inside raw content spaces are literal.
+ */
+export function insertTypedText(root: RedNode, source: string, selection: SourceSelection, text: string, parse: ParseSource): FormatEdit | null {
+  if (selection.start !== selection.end) return insertContent(root, source, selection, text, parse)
+  const at = selection.start
+  const caret = at + text.length
+  const landed = (changes: TextChange[], end: number): FormatEdit => ({ changes, selection: { start: end, end }, action: 'insert' })
+  if (inRaw(root, at)) return landed([{ start: at, end: at, text }], caret)
+
+  if (text === ' ') {
+    const nbsp = collapsesBefore(root, source, at) || collapses(root, source, at)
+    return landed([{ start: at, end: at, text: nbsp ? NBSP : ' ' }], caret)
+  }
+  if (source[at - 1] === NBSP && !collapsesBefore(root, source, at - 1) && !/^\s/.test(text)) {
+    return landed([{ start: at - 1, end: at, text: ` ${text}` }], caret)
+  }
+  return landed([{ start: at, end: at, text }], caret)
 }

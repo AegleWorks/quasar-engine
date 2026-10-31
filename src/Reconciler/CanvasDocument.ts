@@ -50,6 +50,7 @@ import type { TextChange, TextChangeRange } from '../Incremental/ChangeTracker'
 import type { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import type { BBCodeExporter } from '../Visitors/BBCodeExporter'
 import { patchBlocksInto, type PatchBlocksStats } from '../Visitors/BlockPatcher'
+import { morphHTML } from '../Visitors/DOMMorpher'
 import { reconcileVisualDOMToBBCode, type ReconcileResult } from './SurgicalReconciler'
 
 /** A document as the canvas sees it: a text and the tree parsed from exactly it. */
@@ -176,6 +177,11 @@ export interface ShowOptions {
   repaint?: boolean
 }
 
+/** A detached element to parse a block's HTML in. */
+function container(like: HTMLElement): HTMLElement {
+  return like.ownerDocument.createElement('div')
+}
+
 export class CanvasDocument {
   /** The snapshot the canvas is the render of; null before the first `show`. */
   private painted: CanvasSnapshot | null = null
@@ -274,6 +280,35 @@ export class CanvasDocument {
     this.dirty.clear()
     this.structural = false
     return result
+  }
+
+  /**
+   * Puts the blocks the browser changed back as painted.
+   *
+   * For a composition: an IME needs the DOM to itself while it runs and cannot be
+   * interrupted, so it writes there, and when it ends what it produced goes to the
+   * document like any other text. Its DOM has served its purpose.
+   */
+  discardDomEdits(): void {
+    this.collect()
+    const root = this.root
+    if (!root || this.structural) {
+      this.patch({ forceRebuild: true })
+      return
+    }
+    for (const block of this.dirty) {
+      const id = block.nodeType === 1 ? (block as Element).getAttribute('data-node-id') : null
+      const node = id ? root.children.find(c => c.id === id) : undefined
+      if (!node) {
+        this.patch({ forceRebuild: true })
+        return
+      }
+      const wrapper = container(block as HTMLElement)
+      wrapper.innerHTML = this.options.renderer.render(node)
+      morphHTML(block as HTMLElement, (wrapper.firstElementChild as HTMLElement).innerHTML)
+    }
+    this.observer?.takeRecords()
+    this.dirty.clear()
   }
 
   /** Stops watching the DOM. */

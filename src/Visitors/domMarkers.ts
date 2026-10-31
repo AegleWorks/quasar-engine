@@ -9,3 +9,10 @@
  * layout (osu! deletes it), but it reads back as the source `\n`.
  */
 export const SWALLOWED_NEWLINE_ATTR = 'data-bb-nl'
+
+/**
+ * A flow's last newline on an editable canvas, with the line after it
+ * (`HTMLRendererOptions.terminalLines`): `<span data-bb-tail …><br><br></span>`.
+ * The first `<br>` is the newline and the second holds the last line open.
+ */
+export const TERMINAL_LINE_ATTR = 'data-bb-tail'

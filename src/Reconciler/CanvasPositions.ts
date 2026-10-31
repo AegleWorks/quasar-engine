@@ -23,7 +23,7 @@
 
 import type { RedNode } from '../Syntax/RedNode'
 import type { NodeId } from '../Types/core'
-import { SWALLOWED_NEWLINE_ATTR } from '../Visitors/domMarkers'
+import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR } from '../Visitors/domMarkers'
 
 const ZWSP = /​/g
 
@@ -128,6 +128,21 @@ function visibleBefore(value: string, offset: number): number {
  * when the point is outside the canvas.
  */
 export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, node: Node, offset: number): number | null {
+  return locate(root, container, node, offset)?.offset ?? null
+}
+
+/**
+ * The same offset, only when text typed there would land exactly at that point
+ * of the source. Null on text the source does not spell out at that spot: a
+ * title held in a tag's attribute, a box's default heading, a quote's author
+ * line. Those are edited through the DOM.
+ */
+export function exactSourceOffset(root: RedNode, container: HTMLElement, node: Node, offset: number): number | null {
+  const found = locate(root, container, node, offset)
+  return found?.exact ? found.offset : null
+}
+
+function locate(root: RedNode, container: HTMLElement, node: Node, offset: number): { offset: number; exact: boolean } | null {
   if (node !== container && !container.contains(node)) return null
 
   // An element boundary: the text right after it, or the end of the text before.
@@ -135,7 +150,7 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
   let at = 0
   if (node.nodeType === 1) {
     const structural = structuralOffset(root, container, node as Element, offset)
-    if (structural !== null) return structural
+    if (structural !== null) return { offset: structural, exact: true }
   }
   if (node.nodeType === 3) {
     text = node as Text
@@ -152,7 +167,7 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
       text = before[before.length - 1] ?? null
       at = text?.nodeValue?.length ?? 0
     }
-    if (!text) return root.range.start
+    if (!text) return { offset: root.range.start, exact: true }
   }
 
   const { el, node: scope } = scopeOf(root, container, text)
@@ -161,7 +176,7 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
   if (piece) {
     const { leaf, from } = piece
     const width = leaf.range.end - leaf.range.start
-    return leaf.range.start + Math.min(width, from + visibleBefore(text.nodeValue ?? '', at))
+    return { offset: leaf.range.start + Math.min(width, from + visibleBefore(text.nodeValue ?? '', at)), exact: true }
   }
 
   // A heading painted from the opener's attribute — `[box=Mi Caja]` — is text
@@ -170,23 +185,31 @@ export function sourceOffsetOfDomPoint(root: RedNode, container: HTMLElement, no
   const value = (text.nodeValue ?? '').replace(ZWSP, '')
   const attr = scope.parent && scope.range.start < scope.innerStart ? scope.text : ''
   const inAttr = value.trim() !== '' ? attr.indexOf(value) : -1
-  if (inAttr > 0) return scope.innerStart - 1 - attr.length + inAttr + visibleBefore(text.nodeValue ?? '', at)
+  if (inAttr > 0) return { offset: scope.innerStart - 1 - attr.length + inAttr + visibleBefore(text.nodeValue ?? '', at), exact: false }
 
   // Made-up text: the nearest paired text before it, else after it.
   const texts = domTexts(el)
   const i = texts.indexOf(text)
   for (let k = i - 1; k >= 0; k--) {
     const l = pairs.get(texts[k])?.leaf
-    if (l) return l.range.end
+    if (l) return { offset: l.range.end, exact: false }
   }
   for (let k = i + 1; k < texts.length; k++) {
     const l = pairs.get(texts[k])?.leaf
-    if (l) return l.range.start
+    if (l) return { offset: l.range.start, exact: false }
   }
-  return scope.parent ? scope.innerStart : scope.range.start
+  return { offset: scope.parent ? scope.innerStart : scope.range.start, exact: false }
 }
 
 const isBreak = (n: RedNode | null) => n !== null && (n.kind === 'spacing' || n.kind === 'empty_line')
+
+/**
+ * The `<br>` holding the line after raw text's last newline. That newline is in
+ * the text, where no line follows it, so a caret past it stands before this.
+ */
+function isRawTail(node: Node | null): boolean {
+  return node?.nodeName === 'BR' && (node as Element).hasAttribute(TERMINAL_LINE_ATTR)
+}
 
 /**
  * A caret where there is no text to pair: right before a rendered line break,
@@ -194,15 +217,25 @@ const isBreak = (n: RedNode | null) => n !== null && (n.kind === 'spacing' || n.
  * created by Enter. Null when the point is ordinary.
  */
 function structuralOffset(root: RedNode, container: HTMLElement, el: Element, offset: number): number | null {
-  // A line opened after a `<br>` (`revealLine`) sits at that break's end.
-  const after = el.closest(`[${REVEALED_AFTER_ATTR}]`)?.getAttribute(REVEALED_AFTER_ATTR)
-  const br = after ? root.findById(after as NodeId) : null
-  if (br && (el.textContent ?? '').replace(ZWSP, '').trim() === '') return br.range.end
+  // A flow's last newline: before its `<br>` is the end of the line it ends, and
+  // everything else is the line after it.
+  const tail = el.closest(`[${TERMINAL_LINE_ATTR}]`)
+  const last = tail ? root.findById(tail.getAttribute('data-node-id') as NodeId) : null
+  if (tail && last && (tail.textContent ?? '').replace(ZWSP, '') === '') {
+    return el === tail && offset === 0 ? last.range.start : last.range.end
+  }
   const boundary = el.childNodes[offset]
   if (boundary && boundary.nodeType === 1) {
+    if (isRawTail(boundary)) return scopeOf(root, container, el).node.innerEnd
     const id = (boundary as Element).getAttribute('data-node-id')
     const n = id ? root.findById(id as NodeId) : null
     if (isBreak(n)) return n!.range.start
+  }
+  // Past a break that ends its element, the mirror of `pointIn`.
+  const passed = boundary ? null : el.childNodes[offset - 1]
+  if (passed?.nodeType === 1) {
+    const n = root.findById((passed as Element).getAttribute('data-node-id') as NodeId)
+    if (isBreak(n)) return n!.range.end
   }
   if ((el.textContent ?? '').replace(ZWSP, '').trim() !== '') return null
   const { node: scope } = scopeOf(root, container, el)
@@ -225,12 +258,15 @@ function leafHolding(root: RedNode, offset: number): RedNode | null {
   return null
 }
 
-/** Where a caret goes in a break's element: inside an empty line, before a `<br>`, on a marker. */
-function pointIn(el: Element): { node: Node; offset: number } {
-  // A break rendered as `<br>` holds no caret: stand right before it.
-  if (el.tagName === 'BR' && el.parentNode) {
-    return { node: el.parentNode, offset: Array.prototype.indexOf.call(el.parentNode.childNodes, el) }
-  }
+/**
+ * Where a caret goes in a break's element: inside an empty line, on a marker,
+ * before a `<br>` (which holds no caret), or, for an offset past its newline,
+ * right after the element: the start of the next line.
+ */
+function pointIn(el: Element, past = false): { node: Node; offset: number } {
+  const index = () => Array.prototype.indexOf.call(el.parentNode!.childNodes, el)
+  if (past && el.parentNode && (el.tagName === 'BR' || el.classList.contains('bb-empty-line'))) return { node: el.parentNode, offset: index() + 1 }
+  if (el.tagName === 'BR' && el.parentNode) return { node: el.parentNode, offset: index() }
   return { node: el, offset: 0 }
 }
 
@@ -248,13 +284,14 @@ function structuralPoint(root: RedNode, container: HTMLElement, offset: number):
     if (!isBreak(n) || (n === here && n!.range.start !== offset) || (n === before && n!.range.end !== offset)) continue
     const el = container.querySelector(`[data-node-id="${n!.id}"]`)
     if (!el) continue
+    if (el.hasAttribute(TERMINAL_LINE_ATTR)) return { node: el, offset: n!.range.end === offset ? 1 : 0 }
     // A marker in an element with nothing else to show — an empty list item —
     // leaves the caret to that element, which holds one on its own.
     const host = el.parentElement
     if (el.hasAttribute(SWALLOWED_NEWLINE_ATTR) && host && host !== container && (host.textContent ?? '').replace(ZWSP, '').trim() === '') {
       return { node: host, offset: Array.prototype.indexOf.call(host.childNodes, el) }
     }
-    return pointIn(el)
+    return pointIn(el, n!.range.end === offset)
   }
   for (let n: RedNode | null = here; n && n.parent; n = n.parent) {
     const el = container.querySelector(`[data-node-id="${n.id}"]`)
@@ -263,62 +300,107 @@ function structuralPoint(root: RedNode, container: HTMLElement, offset: number):
   return null
 }
 
-/** Whether anything visible follows `br` in its block — then the line after it shows on its own. */
-function hasLineAfter(br: Element): boolean {
-  for (let n = br.nextSibling; n; n = n.nextSibling) {
-    if (n.nodeType === 3 && (n.nodeValue ?? '').trim() !== '') return true
-    if (n.nodeType === 1 && !(n as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)) return true
-  }
-  return false
-}
-
 /** Marks a line `revealLine` made editable, and on which side of its break typing goes. */
 export const REVEALED_LINE_ATTR = 'data-bb-at'
-/** A line `revealLine` opened after a `<br>`: the id of that break, whose end is where typing goes. */
-export const REVEALED_AFTER_ATTR = 'data-bb-after'
 
 /**
- * Makes the line at `offset` editable when it has no layout of its own.
+ * Makes the line at `offset` editable when a swallowed newline hides it.
  *
- * A newline the renderer swallows — the last lines of a box, the end of the
- * document — paints as a hidden marker, and a hidden element holds no caret:
- * after Enter there, typing landed on the next line that had one, outside the
- * box. The marker becomes an empty line carrying the same node id and the side
- * of that break the caret is on (`start`: typing goes before its `\n`; `end`:
- * after it), which is all the reconciler needs to insert what is typed there
- * at exactly that offset. Only the canvas changes; the source already has the
- * line.
+ * A newline the renderer swallows — the last lines of a box — paints as a hidden
+ * marker, and a hidden element holds no caret: after Enter there, typing landed
+ * on the next line that had one, outside the box. The marker becomes an empty
+ * line carrying the same node id and the side of that break the caret is on
+ * (`start`: typing goes before its `\n`; `end`: after it), and so do the swallowed
+ * newlines right before it, or a second Enter would show no second line. The
+ * first newline after text only ends that text's line, so it stays hidden. Only
+ * the canvas changes; the source already has the lines. The next paint takes them
+ * back, which keeps a box's layout newlines off the page once the caret is gone.
  *
  * Returns the point to put the caret at, or null when `point` is not on a marker.
  */
 export function revealLine(root: RedNode, point: { node: Node; offset: number }, offset: number): { node: Node; offset: number } | null {
-  // After a trailing `<br>` — the end of the document — the line exists in the
-  // source but a last `<br>` makes none in HTML: open one right after it.
-  const beforeBr = point.node.childNodes[point.offset] as Element | undefined
-  if (beforeBr && beforeBr.nodeType === 1 && beforeBr.tagName === 'BR') {
-    const id = beforeBr.getAttribute('data-node-id')
-    const brNode = id ? root.findById(id as NodeId) : null
-    if (brNode && brNode.range.end === offset && !hasLineAfter(beforeBr)) {
-      const line = beforeBr.ownerDocument.createElement('div')
-      line.className = 'bb-empty-line'
-      line.setAttribute(REVEALED_AFTER_ATTR, id!)
-      line.appendChild(beforeBr.ownerDocument.createElement('br'))
-      beforeBr.after(line)
-      return { node: line, offset: 0 }
-    }
-  }
   const marker = point.node
   if (marker.nodeType !== 1 || !(marker as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)) return null
   const id = (marker as Element).getAttribute('data-node-id')
   const node = id ? root.findById(id as NodeId) : null
   if (!node) return null
-  const line = marker.ownerDocument!.createElement('div')
-  line.className = 'bb-empty-line'
-  line.setAttribute('data-node-id', id!)
-  line.setAttribute(REVEALED_LINE_ATTR, offset === node.range.start ? 'start' : 'end')
-  line.appendChild(marker.ownerDocument!.createElement('br'))
+
+  const isMarker = (n: Node | null): n is Element => n?.nodeType === 1 && (n as Element).hasAttribute(SWALLOWED_NEWLINE_ATTR)
+  const run: Element[] = []
+  for (let n = marker.previousSibling; isMarker(n); n = n.previousSibling) run.unshift(n)
+  const ended = run[0]?.previousSibling ?? null
+  if (ended && !endsLine(ended)) run.shift()
+  for (const hidden of run) {
+    const held = root.findById(hidden.getAttribute('data-node-id') as NodeId)
+    if (held) hidden.parentNode!.replaceChild(emptyLine(hidden, 'start'), hidden)
+  }
+
+  const side = offset === node.range.start ? 'start' : 'end'
+  const line = emptyLine(marker as Element, side)
+  // Past a newline that is not the first of its run (a dialect drops the marker
+  // after it): the line it ends and the caret's are both on screen.
+  const before = marker.previousSibling
+  const emptyBefore = side === 'end' && (endsLine(before) || isMarker(before))
+  if (emptyBefore) line.appendChild(marker.ownerDocument!.createElement('br'))
   marker.parentNode!.replaceChild(line, marker)
-  return { node: line, offset: 0 }
+  return { node: line, offset: emptyBefore ? 1 : 0 }
+}
+
+function endsLine(node: Node | null): boolean {
+  return node?.nodeType === 1 && ((node as Element).tagName === 'BR' || (node as Element).classList.contains('bb-empty-line'))
+}
+
+/** An editable empty line standing for a swallowed newline. */
+function emptyLine(marker: Element, side: 'start' | 'end'): Element {
+  const line = marker.ownerDocument.createElement('div')
+  line.className = 'bb-empty-line'
+  line.setAttribute('data-node-id', marker.getAttribute('data-node-id')!)
+  line.setAttribute(REVEALED_LINE_ATTR, side)
+  line.appendChild(marker.ownerDocument.createElement('br'))
+  return line
+}
+
+/**
+ * Where `offset` falls in the document's text with its markup taken out: the
+ * coordinate two sources share when only their tags differ. Newlines count, so
+ * the start of a line is not the end of the one above it.
+ */
+export function textOffsetOfSource(root: RedNode, offset: number): number {
+  let seen = 0
+  for (const leaf of contentLeaves(root)) {
+    const { start, end } = leaf.range
+    if (offset <= start) break
+    seen += Math.min(offset, end) - start
+  }
+  return seen
+}
+
+/**
+ * The inverse of `textOffsetOfSource`. Past a newline the offset goes to what
+ * follows it, inside any tag that opens the line, so it stays on that line.
+ */
+export function sourceOffsetOfText(root: RedNode, offset: number): number {
+  let seen = 0
+  let last = root.range.start
+  for (const leaf of contentLeaves(root)) {
+    const { start, end } = leaf.range
+    const width = end - start
+    if (offset < seen + width) return start + (offset - seen)
+    if (offset === seen + width && leaf.kind === 'text') return end
+    seen += width
+    last = end
+  }
+  return last
+}
+
+/** The text and newline leaves under `node`, in source order. */
+function contentLeaves(node: RedNode, out: RedNode[] = []): RedNode[] {
+  if (node.kind === 'text' || isBreak(node)) {
+    out.push(node)
+    return out
+  }
+  for (const child of node.children) contentLeaves(child, out)
+  return out
 }
 
 /** The text leaf holding `offset`, else the next one after it, else the last one before it. */
@@ -364,6 +446,9 @@ export function domPointOfSourceOffset(root: RedNode, container: HTMLElement, of
     // earlier one on a seam, so typing goes on in the letter just typed.
     const within = Math.max(0, Math.min(offset, leaf.range.end) - leaf.range.start) - from
     if (within > visible(text).length) continue
+    if (within === visible(text).length && isRawTail(text.nextSibling)) {
+      return { node: text.parentNode!, offset: Array.prototype.indexOf.call(text.parentNode!.childNodes, text.nextSibling) }
+    }
     // Back from visible characters to a DOM offset, stepping over zero-width spaces.
     const value = text.nodeValue ?? ''
     let seen = 0
