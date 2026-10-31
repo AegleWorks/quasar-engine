@@ -122,6 +122,10 @@ export function morphElement(oldEl: Element, newEl: Element): void {
   if (oldEl.classList.contains('is-open')) {
     newEl.classList.add('is-open')
   }
+  // osu!'s spoilerbox: the same state as a class, and its caret would go with it.
+  if (oldEl.classList.contains('js-spoilerbox--open')) {
+    newEl.classList.add('js-spoilerbox--open')
+  }
 
   // Sync attributes in-place.
   //
