@@ -497,3 +497,6 @@ export {
   toSelector, fromSelector, restoreAnchors, SELECTOR_CONTEXT, MIN_CONTEXT_SCORE, DISTANCE_SCALE, DISTANCE_WEIGHT,
   type AnchorSelector, type Reanchored,
 } from './Anchors/selector'
+export { convertMarkdownToOsu, type MarkdownToOsuResult } from './Markdown/MarkdownToOsu'
+export { type MarkdownLoss } from './Markdown/MarkdownLoss'
+export { exportPortableMarkdown, type PortableMarkdownResult } from './Visitors/PortableMarkdownExporter'

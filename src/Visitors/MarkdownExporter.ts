@@ -140,7 +140,10 @@ export class MarkdownExporter extends Visitor<string> {
         const alt = (node.metadata?.alt as string) || (content && content !== src ? content : 'Image')
         return `![${alt}](${src})`
       }
-      case 'video': return `[🎥 YouTube Video](https://youtube.com/watch?v=${node.text || ''})`
+      case 'video': {
+        const id = (node.metadata?.videoId as string) || content.trim() || node.text || ''
+        return `[🎥 YouTube Video](https://youtube.com/watch?v=${id})`
+      }
       case 'audio': return `[🎵 Audio](${node.text || ''})`
       case 'quote': {
         const source = (node.metadata?.source as string) || this.extractValue(node)
