@@ -25,7 +25,7 @@ import { STYLE_PROP_WHITELIST, stripStyleValue, isDangerousStyleValue } from '..
 
 import { isBlockKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
-import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR } from './domMarkers'
+import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR, TEXT_LEAF_ATTR, TITLE_LEAF_PREFIX } from './domMarkers'
 import { isTerminalNewline } from './terminalLine'
 import { bearsLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
 import { clampFontSizeForRender, maxFontSizeFor } from '../Utils/FontSizeLimits'
@@ -106,6 +106,16 @@ export interface HTMLRendererOptions {
    * and a preview stays what the reader gets. Off unless asked for.
    */
   terminalLines?: boolean
+  /**
+   * Wrap each text leaf in `<span data-bb-leaf="id">`, so a point in the text
+   * resolves to its leaf by lookup instead of by matching text.
+   *
+   * For an editable surface that paints with this renderer and maps every
+   * caret back to a source offset (Folio). The span carries no style, so the
+   * page lays out as the preview does. Off unless asked for: a published
+   * render and the preview stay byte-identical.
+   */
+  textLeafIds?: boolean
   /**
    * Collapse a run of visible newlines into one `<br>` plus a single spacer of
    * `n - 1` line-heights, instead of one element per blank line.
@@ -262,10 +272,11 @@ interface OsuSpanLink {
 
 export class HTMLRenderer extends Visitor<string> {
   private tokenResolver?: TokenResolverFn
-  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode' | 'lineHandles' | 'terminalLines'>> & {
+  private options: Required<Omit<HTMLRendererOptions, 'registry' | 'mediaProxy' | 'entityLinkResolver' | 'mentionResolver' | 'timestampResolver' | 'tokens' | 'idMode' | 'lineHandles' | 'terminalLines' | 'textLeafIds'>> & {
     idMode?: 'blocks' | 'all' | 'none'
     lineHandles?: boolean
     terminalLines?: boolean
+    textLeafIds?: boolean
     registry?: TagRegistry
     mediaProxy?: (url: string) => string
     entityLinkResolver?: (kind: string, value: string) => { href: string; external?: boolean } | null
@@ -298,6 +309,7 @@ export class HTMLRenderer extends Visitor<string> {
       idMode: options.idMode,
       lineHandles: options.lineHandles,
       terminalLines: options.terminalLines,
+      textLeafIds: options.textLeafIds,
       collapseBlankRuns: this.collapseBlankRuns,
     }
     this.semantic = new OsuSemanticModel(this.options.dialect)
@@ -378,6 +390,22 @@ export class HTMLRenderer extends Visitor<string> {
    */
   private textWrap(node: RedNode, inner: string): string {
     return inner
+  }
+
+  /** A text leaf's own element, under `textLeafIds` (see there). Nothing otherwise. */
+  private markLeaf(node: RedNode, inner: string): string {
+    if (this.options.textLeafIds !== true || inner === '') return inner
+    // A leaf an osu! autolink runs through carries an `<a>` (or half of one, when
+    // the link spans its siblings). Around a nested anchor the HTML parser
+    // rearranges whatever wraps it, so such a leaf keeps the preview's markup.
+    if (inner.includes('<a') || inner.includes('</a>')) return inner
+    return `<span ${TEXT_LEAF_ATTR}="${node.id}">${inner}</span>`
+  }
+
+  /** A box's plain title as a leaf of its own, under `textLeafIds` (see `TITLE_LEAF_PREFIX`). */
+  private markTitle(node: RedNode, html: string): string {
+    if (this.options.textLeafIds !== true || html === '' || !this.hasOwnTitle(node)) return html
+    return `<span ${TEXT_LEAF_ATTR}="${TITLE_LEAF_PREFIX}${node.id}">${html}</span>`
   }
 
   /**
@@ -916,7 +944,7 @@ export class HTMLRenderer extends Visitor<string> {
           return resolved !== undefined ? resolved : match
         })
       }
-      return this.wrapTextLeaf(node, this.renderTextLeafInner(rawText, context, forward, true))
+      return this.markLeaf(node, this.wrapTextLeaf(node, this.renderTextLeafInner(rawText, context, forward, true)))
     }
 
     // Document root
@@ -1098,7 +1126,7 @@ export class HTMLRenderer extends Visitor<string> {
       // se renderiza suelto).
       case 'title_div': return this.renderTitleDiv(node)
       case 'text':
-        return this.textWrap(node, this.escapeHtml(node.text || ''))
+        return this.markLeaf(node, this.textWrap(node, this.escapeHtml(node.text || '')))
       default:
         if (this.options.registry) {
           const tagDef = this.options.registry.getByKind(node.kind)
@@ -2278,7 +2306,7 @@ export class HTMLRenderer extends Visitor<string> {
     const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
     const rawAttr = node.metadata?.rawAttr
     if ((!titleNodes || titleNodes.length === 0) && typeof rawAttr === 'string' && rawAttr !== '') {
-      return this.breakTitleLines(this.escapeHtml(rawAttr))
+      return this.markTitle(node, this.breakTitleLines(this.escapeHtml(rawAttr)))
     }
     return this.hasOwnTitle(node) ? this.renderTitle(node, 'SPOILER') : 'SPOILER'
   }
@@ -2376,7 +2404,7 @@ export class HTMLRenderer extends Visitor<string> {
         return resolved !== undefined ? resolved : match
       })
     }
-    return this.breakTitleLines(this.escapeHtml(title))
+    return this.markTitle(node, this.breakTitleLines(this.escapeHtml(title)))
   }
 
   /** See {@link HTMLRendererOptions.boxTitleLineBreaks}. */
