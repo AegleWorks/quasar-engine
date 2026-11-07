@@ -77,6 +77,12 @@ const MILIASTRY_TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
   'paint': 'paint',
   'svg': 'svg',
   'group': 'group',
+  'profilecard': 'profilecard',
+  'profile-card': 'profilecard',
+  'beatmap': 'beatmap',
+  'progress': 'progress',
+  'divider': 'divider',
+  'score': 'score',
 }
 
 /**
@@ -126,6 +132,11 @@ const LYNE_CANONICAL_TAG_TO_KIND: Record<string, NodeKind> = {
   'align': 'align',
   'hr': 'separator',
   'separator': 'separator',
+  'profilecard': 'profilecard',
+  'beatmap': 'beatmap',
+  'progress': 'progress',
+  'divider': 'divider',
+  'score': 'score',
   'scroll': 'scroll',
   'empty_line': 'empty_line',
 
@@ -256,8 +267,7 @@ const RENDERED_AS_BLOCK = new Set<NodeKind>([
   'notice', 'wnotice', 'spoilerbox', 'box', 'boxw', 'list', 'quote', 'code', 'svg',
   'heading', 'center', 'right', 'left', 'align', 'imagemap', 'document',
   'list_item', 'spacing', 'empty_line', 'paragraph',
-  'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll',
-  'container',
+  'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll',    'container', 'profilecard', 'beatmap', 'progress', 'divider', 'score',
 ])
 
 export function isBlockKind(kind: NodeKind): boolean {
@@ -379,6 +389,17 @@ function stripBBCode(raw: string): string {
   return raw.replace(BBCODE_TAG_RE, '')
 }
 
+/** Parse `k=v` pairs separated by spaces, honouring quotes: `label="Mi meta"`. */
+function parseKeyValueParams(raw: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const re = /([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s]+))/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(raw)) !== null) {
+    out[m[1].toLowerCase()] = m[3] ?? m[4] ?? m[5] ?? ''
+  }
+  return out
+}
+
 export function extractGreenNodeMetadata(green: GreenNode): Record<string, unknown> {
   const kind = green.kind as NodeKind
   if (kind === 'text') return NO_METADATA
@@ -497,6 +518,63 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       return color ? { ...base, color } : base
     }
     case 'separator':return value ? { variant: value } : {}
+    case 'profilecard': {
+      // `[profilecard=hxovc]` or `[profilecard user=hxovc rank=.. pp=..]`:
+      // the attr may come with a leading `=` or as bare `k=v` pairs, so read
+      // the raw text, not the `=`-stripped `value` (which drops the first key).
+      const attr = rawText.trim().startsWith('=') ? value : rawText.trim()
+      if (!attr) return NO_METADATA
+      const res: Record<string, unknown> = {}
+      const params = parseKeyValueParams(attr)
+      if (params.user) res.user = params.user
+      else if (attr && !attr.includes('=')) res.user = attr
+      if (params.rank) res.rank = params.rank
+      if (params.pp) res.pp = params.pp
+      if (params.country) res.country = params.country
+      if (params.avatar) res.avatar = params.avatar
+      if (params.cover) res.cover = params.cover
+      return res
+    }
+    case 'beatmap': {
+      const attr = rawText.trim().startsWith('=') ? value : rawText.trim()
+      if (!attr) return NO_METADATA
+      const params = parseKeyValueParams(attr)
+      const res: Record<string, unknown> = {}
+      for (const k of ['artist', 'title', 'diff', 'mapper', 'sr', 'status', 'cover', 'id']) {
+        if (params[k]) res[k] = params[k]
+      }
+      if (!params.artist && !params.title && attr && !attr.includes('=')) res.title = attr
+      return res
+    }
+    case 'progress': {
+      const attr = rawText.trim().startsWith('=') ? value : rawText.trim()
+      const params = parseKeyValueParams(attr)
+      const res: Record<string, unknown> = {}
+      // `[progress=72]` or `[progress=72 label="Ranked" level=102]`
+      const bare = attr.split(/\s+/)[0]
+      const num = parseFloat(bare.replace('=', ''))
+      if (Number.isFinite(num)) res.value = Math.max(0, Math.min(100, num))
+      if (params.label) res.label = params.label
+      if (params.level) res.level = params.level
+      if (params.color) res.color = params.color
+      return res
+    }
+    case 'divider': {
+      // `[divider]` → hairline · `[divider=Top Plays]` → section header.
+      if (!value) return NO_METADATA
+      return { label: value.trim() }
+    }
+    case 'score': {
+      // `[score grade=S artist=.. title=.. diff=.. mapper=.. mods=HDHR acc=98.5 combo=1234x/1500x pp=456]`
+      const attr = rawText.trim().startsWith('=') ? value : rawText.trim()
+      if (!attr) return NO_METADATA
+      const params = parseKeyValueParams(attr)
+      const res: Record<string, unknown> = {}
+      for (const k of ['grade', 'artist', 'title', 'diff', 'mapper', 'mods', 'acc', 'combo', 'pp']) {
+        if (params[k]) res[k] = params[k]
+      }
+      return res
+    }
     case 'scroll':   return value ? { height: value } : {}
     case 'abbr':     return value ? { title: value } : {}
     case 'tooltip':  return value ? { tip: value } : {}

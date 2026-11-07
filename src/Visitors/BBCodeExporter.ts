@@ -198,6 +198,7 @@ class FrozenSet<T> extends Set<T> {
 
 export const MILIASTRY_ONLY_TAGS: ReadonlySet<string> = new FrozenSet([
   'font', 'zalgo', 'aesthetic', 'sparkle', 'bubble', 'flower', 'svg', 'group',
+  'profilecard', 'beatmap', 'progress', 'divider', 'score',
 ])
 
 export const LYNE_ONLY_TAGS: ReadonlySet<string> = new FrozenSet([
@@ -307,6 +308,11 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   glass: 'glass',
   'neon-box': 'neon-box',
   square: 'square',
+  profilecard: 'profilecard',
+  beatmap: 'beatmap',
+  progress: 'progress',
+  divider: 'divider',
+  score: 'score',
 }
 
 
@@ -772,10 +778,12 @@ export class BBCodeExporter extends Visitor<string> {
     }
 
     const kindName: string = node.kind
-    if (kindName === 'separator' || kindName === 'br') {
+    if (kindName === 'separator' || kindName === 'divider' || kindName === 'score' || kindName === 'br') {
       // Self-closing in both dialects. `[separator][/separator]` used to leave
-      // the closer as literal text when re-imported.
-      return `[${tagName}${attrs}]`
+      // the closer as literal text when re-imported. Trailing children (the
+      // parser keeps collecting after a closer-less tag) are emitted as
+      // siblings so no text is ever silently dropped.
+      return `[${tagName}${attrs}]${content}`
     }
     if (kindName === 'list_item') {
       return `[*]${content}`
@@ -932,6 +940,56 @@ export class BBCodeExporter extends Visitor<string> {
           color = resolveTokenValue(color, this.tokenResolver)
         }
         return `=${node.metadata.containerType}${color ? `:${color}` : ''}`
+      } else if (node.kind === 'profilecard') {
+        const m = node.metadata as Record<string, unknown>
+        const parts: string[] = []
+        for (const k of ['user', 'rank', 'pp', 'country', 'avatar', 'cover']) {
+          if (m[k] !== undefined && String(m[k]) !== '') parts.push(`${k}=${String(m[k])}`)
+        }
+        if (parts.length === 0) return ''
+        if (parts.length === 1 && parts[0].startsWith('user=')) {
+          const bare = attributeAsParsed(node)
+          const wasBare = bare && (bare as Record<string, unknown>).user === undefined
+          if (wasBare) return `=${String(m.user)}`
+        }
+        // Canonical: space form `[profilecard user=.. rank=..]`, bare only for `=name`.
+        return ` ${parts.join(' ')}`
+      } else if (node.kind === 'beatmap') {
+        const m = node.metadata as Record<string, unknown>
+        const parts: string[] = []
+        for (const k of ['artist', 'title', 'diff', 'mapper', 'sr', 'status', 'cover', 'id']) {
+          if (m[k] !== undefined && String(m[k]) !== '') {
+            const v = String(m[k])
+            parts.push(v.includes(' ') ? `${k}="${v}"` : `${k}=${v}`)
+          }
+        }
+        if (parts.length === 0) return ''
+        if (parts.length === 1 && parts[0].startsWith('title=')) {
+          const bare = attributeAsParsed(node)
+          if (bare && (bare as Record<string, unknown>).title === undefined) return `=${String(m.title)}`
+        }
+        return ` ${parts.join(' ')}`
+      } else if (node.kind === 'progress') {
+        const m = node.metadata as Record<string, unknown>
+        const v = m.value ?? ''
+        const label = m.label ? ` label="${String(m.label)}"` : ''
+        const level = m.level ? ` level=${String(m.level)}` : ''
+        const color = m.color ? ` color=${String(m.color)}` : ''
+        return `=${String(v)}${label}${level}${color}`
+      } else if (node.kind === 'divider') {
+        const label = node.metadata.label as string | undefined
+        return label ? `=${label}` : ''
+      } else if (node.kind === 'score') {
+        const m = node.metadata as Record<string, unknown>
+        const parts: string[] = []
+        for (const k of ['grade', 'artist', 'title', 'diff', 'mapper', 'mods', 'acc', 'combo', 'pp']) {
+          if (m[k] !== undefined && String(m[k]) !== '') {
+            const v = String(m[k])
+            parts.push(v.includes(' ') ? `${k}="${v}"` : `${k}=${v}`)
+          }
+        }
+        if (parts.length === 0) return ''
+        return ` ${parts.join(' ')}`
       } else if (node.kind === 'style_tag' && node.metadata.style !== undefined) {
         let style = String(node.metadata.style)
         if (this.shouldResolveTokens()) {

@@ -311,6 +311,18 @@ export type { VisualThemeId } from './Visuals/index'
 export { bindBoxDrawer, toggleBoxWithDrawer, toggleSpoilerboxWithDrawer, BOX_TOGGLE_EVENT } from './Visuals/BoxDrawer'
 export type { BoxDrawerOptions, BoxToggleDetail } from './Visuals/BoxDrawer'
 
+// ── Raster tags (osu!-native cards exported as images) ──
+export {
+  RASTERIZABLE_TAGS,
+  isRasterizable,
+  collectRasterNodes,
+  hashRasterNode,
+  replaceRasterInExport,
+  describeRasterNode,
+  type RasterizableTag,
+  type RasterReplacement,
+} from './Raster/rasterTags'
+
 // ── DOM Utilities ──
 export { domToSVG, domToSVGResult } from './Utils/dom-to-svg'
 export type { DomToSVGOptions, DomToSVGResult, SVGLayerInfo } from './Utils/dom-to-svg'
