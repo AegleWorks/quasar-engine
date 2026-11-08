@@ -11,7 +11,7 @@
  */
 
 import { RedNode, NO_DIAGNOSTICS } from '../Syntax/RedNode'
-import { getBBCodeTagNames, tagToNodeKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { getBBCodeTagNames, isBlockKind, tagToNodeKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { MAX_NESTING_DEPTH } from '../BBCode/Parser'
 import type { NodeKind } from '../Types/core'
 import type { Range } from '../Types/tokens'
@@ -1014,7 +1014,25 @@ function isLineBreakNode(node: RedNode | null): boolean {
  */
 function emptyTagDeletesInvisibly(node: RedNode): boolean {
   if (!INVISIBLE_WHEN_EMPTY.has(node.kind as NodeKind) || node.green.trailingWidth === 0) return false
-  return !(isLineBreakNode(node.previousSibling) && isLineBreakNode(node.nextSibling))
+  return !(edgeIsLineBreak(node, 'previous') && edgeIsLineBreak(node, 'next'))
+}
+
+/**
+ * What sits on one side of `node` on its line. A missing sibling is a line
+ * edge only at a block (paragraph, document, box…): inside an inline span the
+ * line goes on past the parent, so look at the parent's own neighbour. Without
+ * this the empty `[i]` of `[b][i][/i][/b] text` counted as alone on its line
+ * and never got the automatic fix.
+ */
+function edgeIsLineBreak(node: RedNode, side: 'previous' | 'next'): boolean {
+  let current: RedNode = node
+  for (;;) {
+    const sibling = side === 'previous' ? current.previousSibling : current.nextSibling
+    if (sibling !== null) return isLineBreakNode(sibling)
+    const parent = current.parent
+    if (!parent || isBlockKind(parent.kind as NodeKind)) return true
+    current = parent
+  }
 }
 
 const SELF_NESTING_REDUNDANT = new Set<NodeKind>([
@@ -2150,6 +2168,16 @@ export class SemanticAnalyzer {
     this.register({
       code: 'empty-tag',
       severity: 'hint',
+      // The automatic verdict reads what sits next to the tag on its line
+      // (`edgeIsLineBreak`): its siblings, or past an inline parent the
+      // parent's. So an edit next to `node` can flip the verdict of its
+      // siblings and of the empty tags at their edge facing it.
+      neighbours: (node) => {
+        const out: RedNode[] = []
+        for (let n = node.previousSibling; n; n = isBlockKind(n.kind as NodeKind) ? null : (n.children[n.children.length - 1] ?? null)) out.push(n)
+        for (let n = node.nextSibling; n; n = isBlockKind(n.kind as NodeKind) ? null : (n.children[0] ?? null)) out.push(n)
+        return out
+      },
       validate: (node) => {
         // Cheap gate first. This validator runs on every node, and the
         // valued-but-empty test reads two lazy range getters and a Set — it

@@ -95,6 +95,45 @@ describe('the fixes the render-neutral rule forced', () => {
     expect(items.map(d => [d.nodeKind, isAutomaticFix(d)])).toEqual([['box', false], ['bold', true]])
   })
 
+  it('an empty tag alone inside an inline span looks past the span for its line', () => {
+    registerValidatorFixes()
+    const automatic = (source: string) =>
+      new BBCodeDocumentModel({ source }).diagnostics!.items
+        .filter(d => d.code === 'empty-tag')
+        .map(d => [d.nodeKind, isAutomaticFix(d)])
+    // `[b]` is inline: the line goes on past it, so the `[i]` is not alone.
+    expect(automatic('[b][i][/i][/b] text')).toEqual([['italic', true]])
+    expect(automatic('text [b][u][i][/i][/u][/b]')).toEqual([['italic', true]])
+    // A block edge is a line edge, and so are line breaks past the span.
+    expect(automatic('[box=t][b][i][/i][/b][/box]')).toEqual([['italic', false]])
+    expect(automatic('a\n[b][i][/i][/b]\nb')).toEqual([['italic', false]])
+  })
+
+  it('Fix-All clears nested empty inline tags in passes', () => {
+    registerValidatorFixes()
+    const model = new BBCodeDocumentModel({ source: '[b][i][/i][/b] text' })
+    model.fixAll('empty-tag')
+    expect(model.source).toBe(' text')
+    expect(visible(model.source)).toBe(visible('[b][i][/i][/b] text'))
+  })
+
+  it('an edit next to an inline span refreshes the verdict of the empty tag inside', () => {
+    registerValidatorFixes()
+    const filler = Array.from({ length: 200 }, (_, i) => `Parrafo ${i} con [b]negrita[/b].`).join('\n\n')
+    const before = `${filler}\n\na\n[b][i][/i][/b]\nb\n\n${filler}`
+    const at = before.indexOf('a\n[b]') + 2
+    const after = before.slice(0, at) + 'x' + before.slice(at)
+    const model = new BBCodeDocumentModel({ source: before })
+    const verdict = (m: BBCodeDocumentModel) =>
+      m.asFixAllTarget().getDiagnostics().filter(d => d.code === 'empty-tag').map(isAutomaticFix)
+    expect(verdict(model)).toEqual([false])
+    model.applyChange({ start: at, end: at, text: 'x' })
+    expect(model.source).toBe(after)
+    expect(model.lastReparsePath).toBe('incremental')
+    expect(verdict(model)).toEqual([true])
+    expect(verdict(model)).toEqual(verdict(new BBCodeDocumentModel({ source: after })))
+  })
+
   it('Fix-All deletes only the empty tags nobody can see', () => {
     registerValidatorFixes()
     const model = new BBCodeDocumentModel({ source: '[list][*]a[*][*]b[/list] [box][/box] x [b][/b]' })
