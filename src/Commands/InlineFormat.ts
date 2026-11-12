@@ -32,7 +32,7 @@ import type { TextChange } from '../Incremental/ChangeTracker'
 import { isBlockKind, tagToNodeKind } from '../BBCode/BBCodeToGreenNode'
 import { transformRange } from '../Collab/positions'
 
-export type ToggleFormat = 'bold' | 'italic' | 'underline' | 'strikethrough'
+export type ToggleFormat = 'bold' | 'italic' | 'underline' | 'strikethrough' | 'inlineCode'
 
 export interface SourceSelection {
   start: number
@@ -47,8 +47,76 @@ export interface FormatEdit {
   action: 'wrap' | 'unwrap' | 'recolor' | 'break' | 'join' | 'delete' | 'insert'
 }
 
-const OPEN: Record<ToggleFormat, string> = { bold: '[b]', italic: '[i]', underline: '[u]', strikethrough: '[s]' }
-const CLOSE: Record<ToggleFormat, string> = { bold: '[/b]', italic: '[/i]', underline: '[/u]', strikethrough: '[/s]' }
+const OPEN: Record<ToggleFormat, string> = { bold: '[b]', italic: '[i]', underline: '[u]', strikethrough: '[s]', inlineCode: '[c]' }
+const CLOSE: Record<ToggleFormat, string> = { bold: '[/b]', italic: '[/i]', underline: '[/u]', strikethrough: '[/s]', inlineCode: '[/c]' }
+
+/** El kind del nodo de cada formato: el tag y el kind no siempre se llaman igual. */
+const KIND: Record<ToggleFormat, string> = {
+  bold: 'bold',
+  italic: 'italic',
+  underline: 'underline',
+  strikethrough: 'strikethrough',
+  inlineCode: 'inline_code',
+}
+
+/** The inverse map, for reading a node's kind back into a toolbar format. */
+const FORMAT_OF_KIND: Readonly<Record<string, ToggleFormat>> = Object.fromEntries(
+  (Object.entries(KIND) as [ToggleFormat, string][]).map(([format, kind]) => [kind, format]),
+)
+
+/** The toolbar's order, so the active set never depends on the walk. */
+const FORMATS: readonly ToggleFormat[] = ['bold', 'italic', 'underline', 'strikethrough', 'inlineCode']
+
+/**
+ * The formats that already cover `[start, end]`, for marking the toolbar's
+ * buttons. Only a tag that fully contains the range counts: a selection that
+ * crosses out of `[b]` is not bold — that is the same rule the toggle uses to
+ * decide between ON and OFF, so the button never lies about what a click does.
+ */
+export function inlineFormatsAt(root: RedNode | null, start: number, end = start): ToggleFormat[] {
+  if (!root) return []
+  const from = Math.min(start, end)
+  const to = Math.max(start, end)
+  if (to <= from) return []
+  const runs: Run[] = []
+  runsIn(root, from, to, runs)
+  if (runs.length === 0) return []
+  // The same question the toggle asks: if every run is already covered, the
+  // button is pressed and a click takes the format off. This counts a tag
+  // INSIDE the node too (a [color] whose whole content is [i] is italic).
+  return FORMATS.filter((format) => runs.every((run) => covered(run, KIND[format])))
+}
+
+/**
+ * The `kind` tag that gives `[start, end)` its format, as the range of its
+ * CONTENT — the whole inside of the tag, even beyond the range.
+ *
+ * The preview's node menu asks this before turning a format OFF: a line inside
+ * a `[b]` that wraps several lines IS bold, and un-toggling it must remove
+ * that tag, not split it and leave a relocated `[b]` around what it still
+ * covers. Selecting the whole tag in the editor produces the same edit.
+ *
+ * Null when no enclosing tag of `kind` covers the range: the coverage then
+ * comes from wrappers inside it, which `toggleInlineFormat` already strips.
+ */
+export function inlineFormatHostAt(
+  root: RedNode | null,
+  start: number,
+  end = start,
+  format: ToggleFormat,
+): SourceSelection | null {
+  if (!root) return null
+  const from = Math.min(start, end)
+  const to = Math.max(start, end)
+  if (to <= from) return null
+  const kind = KIND[format]
+  for (let node: RedNode | null = root.findNodeAtOffset(from); node && node.parent; node = node.parent) {
+    if (node.kind === kind && node.innerStart <= from && to <= node.innerEnd) {
+      return { start: node.innerStart, end: node.innerEnd }
+    }
+  }
+  return null
+}
 
 /** Children that separate runs without being containers to descend into. */
 function isLineBreak(kind: string): boolean {
@@ -124,17 +192,32 @@ function allOfKind(node: RedNode, kind: string, out: RedNode[]): void {
   for (const child of node.children) allOfKind(child, kind, out)
 }
 
+/** Whether every character of the run's text sits inside a `kind` node. */
+function textCovered(run: Run, kind: string): boolean {
+  let covered = true
+  const visit = (node: RedNode, inside: boolean): void => {
+    if (!covered || node.range.end <= run.start || node.range.start >= run.end) return
+    const next = inside || node.kind === kind
+    if (node.kind === 'text') {
+      const s = Math.max(node.range.start, run.start)
+      const e = Math.min(node.range.end, run.end)
+      if (e > s && !next) covered = false
+      return
+    }
+    if (isLineBreak(node.kind)) return
+    for (const child of node.children) visit(child, next)
+  }
+  visit(run.parent, false)
+  return covered
+}
+
 /** Whether all the text a run holds is already formatted with `kind`. */
 function covered(run: Run, kind: string): boolean {
   if (nearest(run.parent, kind)) return true
-  // No enclosing tag: the run is covered only when it is nothing but whole
-  // elements of that kind (a selection hugging `[b]x[/b]` from outside).
-  let pos = run.start
-  for (const w of run.whole) {
-    if (w.range.start !== pos || w.kind !== kind) return false
-    pos = w.range.end
-  }
-  return pos === run.end
+  // No enclosing tag: the text must still all be inside one, as happens when
+  // the run is a whole `[b]x[/b]` hugged from outside, or a [color] that
+  // contains nothing but [i].
+  return textCovered(run, kind)
 }
 
 /**
@@ -205,8 +288,8 @@ function selectionOf(requested: SourceSelection, runs: Run[], changes: TextChang
 }
 
 /**
- * Bold, italic, underline or strikethrough ON the selection, or OFF it when
- * every character in it already has that format.
+ * Bold, italic, underline, strikethrough or inline code ON the selection, or
+ * OFF it when every character in it already has that format.
  *
  * A collapsed selection applies to the word the caret is inside, as document
  * editors do; anywhere else it answers null and the caller decides.
@@ -225,15 +308,15 @@ export function toggleInlineFormat(
   if (runs.length === 0) return null
 
   const changes: TextChange[] = []
-  const allCovered = runs.every(run => covered(run, format))
+  const allCovered = runs.every(run => covered(run, KIND[format]))
 
   if (!allCovered) {
     for (const run of runs) {
-      if (covered(run, format)) continue
+      if (covered(run, KIND[format])) continue
       // Same-format elements inside the run would nest in the new wrapper.
       for (const w of run.whole) {
         const inner: RedNode[] = []
-        allOfKind(w, format, inner)
+        allOfKind(w, KIND[format], inner)
         for (const n of inner) strip(n, changes)
       }
       changes.push({ start: run.start, end: run.start, text: OPEN[format] })
@@ -247,16 +330,15 @@ export function toggleInlineFormat(
   // formatted inside it, spelled as the author spelled that tag.
   const enclosing = new Map<RedNode, Run[]>()
   for (const run of runs) {
-    const host = nearest(run.parent, format)
+    const host = nearest(run.parent, KIND[format])
     if (host) {
       const list = enclosing.get(host)
       if (list) list.push(run)
       else enclosing.set(host, [run])
     }
-    for (const w of run.whole) {
-      const inner: RedNode[] = []
-      allOfKind(w, format, inner)
-      for (const n of inner) strip(n, changes)
+    for (const w of run.whole) {        const inner: RedNode[] = []
+        allOfKind(w, KIND[format], inner)
+        for (const n of inner) strip(n, changes)
     }
   }
   for (const [host, inside] of enclosing) {

@@ -10,6 +10,8 @@ export { InsertText } from './InsertText'
 export { DeleteNode } from './DeleteNode'
 export { WrapInTag } from './WrapInTag'
 export { SplitNode, MergeNode } from './SplitMerge'
+export { alignmentAt, alignmentOf, toggleAlignment, type Alignment } from './Alignment'
+export { inlineFormatsAt, inlineFormatHostAt } from './InlineFormat'
 
 /** Every command this package ships. */
 export const BUILTIN_COMMANDS = [InsertText, DeleteNode, WrapInTag, SplitNode, MergeNode] as const

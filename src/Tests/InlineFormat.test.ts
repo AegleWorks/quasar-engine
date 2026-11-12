@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { HTMLRenderer } from '../Visitors/HTMLRenderer'
 import { REFERENCE_DOCUMENT } from './referenceDocument'
-import { toggleInlineFormat, applyColor, type ToggleFormat, type FormatEdit } from '../Commands/InlineFormat'
+import { toggleInlineFormat, inlineFormatsAt, inlineFormatHostAt, applyColor, type ToggleFormat, type FormatEdit } from '../Commands/InlineFormat'
 import type { TextChange } from '../Incremental/ChangeTracker'
 
 /**
@@ -75,6 +75,55 @@ describe('toggleInlineFormat — on', () => {
     expect(toggle('«x»', 'italic')!.result).toBe('[i]x[/i]')
     expect(toggle('«x»', 'underline')!.result).toBe('[u]x[/u]')
     expect(toggle('«x»', 'strikethrough')!.result).toBe('[s]x[/s]')
+    expect(toggle('«x»', 'inlineCode')!.result).toBe('[c]x[/c]')
+  })
+
+  it('inline code toggles off like every other format', () => {
+    expect(toggle('a [c]«x»[/c] b', 'inlineCode')!.result).toBe('a x b')
+    expect(toggle('a [c]«x»[/c] b', 'inlineCode')!.action).toBe('unwrap')
+  })
+})
+
+describe('inlineFormatsAt', () => {
+  const at = (input: string) => {
+    const { source, start, end } = marked(input)
+    const root = new BBCodeDocumentModel({ source, autoAnalyze: false }).redRoot!
+    return inlineFormatsAt(root, start, end)
+  }
+
+  it('marks the formats that wrap the whole selection', () => {
+    expect(at('[b]«x»[/b]')).toEqual(['bold'])
+    expect(at('[b][i]«x»[/i][/b]')).toEqual(['bold', 'italic'])
+    expect(at('a [c]«x»[/c] b')).toEqual(['inlineCode'])
+    expect(at('«x»')).toEqual([])
+  })
+
+  it('does not mark a format that only covers part of the selection', () => {
+    expect(at('[b]a[/b]«b»')).toEqual([])
+    expect(at('[b]a«b»c[/b]')).toEqual(['bold'])
+    expect(at('[b]«a[/b]b»')).toEqual([])
+  })
+})
+
+describe('inlineFormatHostAt', () => {
+  const host = (input: string, format: ToggleFormat = 'bold') => {
+    const { source, start, end } = marked(input)
+    const root = new BBCodeDocumentModel({ source, autoAnalyze: false }).redRoot!
+    return inlineFormatHostAt(root, start, end, format)
+  }
+
+  it('answers with the whole content of the tag that gives the range its format', () => {
+    // A line inside a [b] that spans two lines: the tag reaches past the line,
+    // and turning bold off must remove all of it.
+    expect(host('[b]«uno»\ndos[/b]')).toEqual({ start: 3, end: 10 })
+    expect(host('[b]«uno»[/b] y')).toEqual({ start: 3, end: 6 })
+    expect(host('[color=red][i]«uno»\ndos[/i][/color]', 'italic')).toEqual({ start: 14, end: 21 })
+  })
+
+  it('answers null when no enclosing tag of that kind covers the range', () => {
+    expect(host('«uno» dos')).toBeNull()
+    expect(host('[b]uno[/b] «dos»')).toBeNull()
+    expect(host('[b]«uno»[/b] y', 'italic')).toBeNull()
   })
 })
 

@@ -611,8 +611,11 @@ export function parseTokensToGreen(
       return
     }
 
-    if (openKind === 'separator') {
-      addToParent(createLeaf('separator', tok.attrs, tok.end - tok.start))
+    // Tags with nothing to wrap are leaves. As containers, `[score …]` and
+    // `[divider]` (never closed, by design) took the rest of the page as
+    // children, and their renderers draw no children: the page vanished.
+    if (openKind === 'separator' || openKind === 'score' || openKind === 'divider') {
+      addToParent(createLeaf(openKind, tok.attrs, tok.end - tok.start))
       return
     }
 

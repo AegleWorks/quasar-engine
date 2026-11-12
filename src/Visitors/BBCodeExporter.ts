@@ -1050,7 +1050,7 @@ export class BBCodeExporter extends Visitor<string> {
       } else if (node.kind === 'profilecard') {
         const m = node.metadata as Record<string, unknown>
         const parts: string[] = []
-        for (const k of ['user', 'rank', 'pp', 'country', 'avatar', 'cover']) {
+        for (const k of ['user', 'rank', 'pp', 'country', 'avatar', 'cover', 'crank', 'acc']) {
           if (m[k] !== undefined && String(m[k]) !== '') parts.push(`${k}=${String(m[k])}`)
         }
         if (parts.length === 0) return ''
@@ -1064,7 +1064,7 @@ export class BBCodeExporter extends Visitor<string> {
       } else if (node.kind === 'beatmap') {
         const m = node.metadata as Record<string, unknown>
         const parts: string[] = []
-        for (const k of ['artist', 'title', 'diff', 'mapper', 'sr', 'status', 'cover', 'id']) {
+        for (const k of ['artist', 'title', 'diff', 'mapper', 'sr', 'status', 'cover', 'id', 'bpm', 'length']) {
           if (m[k] !== undefined && String(m[k]) !== '') {
             const v = String(m[k])
             parts.push(v.includes(' ') ? `${k}="${v}"` : `${k}=${v}`)

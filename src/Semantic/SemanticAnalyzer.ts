@@ -344,7 +344,7 @@ const OPENING_TAG_RE = /\[\/?([a-zA-Z0-9_*-]+)/y
  * `[*]` does have a content slot, so an empty one is a real (if minor)
  * observation and stays reportable as `empty-tag`.
  */
-const CONTENTLESS_BY_NATURE = new Set<NodeKind>(['separator'])
+const CONTENTLESS_BY_NATURE = new Set<NodeKind>(['separator', 'score', 'divider'])
 
 /**
  * Kinds no closing tag is ever expected for, held in one set because the check

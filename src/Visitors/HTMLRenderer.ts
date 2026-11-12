@@ -19,6 +19,7 @@ import {
   maxFontSizeScale,
 } from '../Syntax/nodeAttr'
 import { Visitor } from './Visitor'
+import { beatmapCardHTML, profileCardHTML, progressHTML, scoreHTML } from './osuCards'
 import type { TagRegistry } from '../Model/TagRegistry'
 import { RenderTree, engineHTML } from '../RenderPipeline/RenderTree'
 import { STYLE_PROP_WHITELIST, stripStyleValue, isDangerousStyleValue } from '../Utils/safeStyle'
@@ -1894,132 +1895,82 @@ export class HTMLRenderer extends Visitor<string> {
     return `<div${this.idAttr(node)} class="bb-scroll" style="max-height:${maxH}px;">${content}</div>`
   }
 
-  // ── Raster cards: look osu!/mania-tracker/cpol, inline styles so domToSVG ──
-  // is faithful. Palette: page-dark card #2B2839, hairline #453E5E, pink
-  // #FF66AB, dim #B3AED0, faint #7E7A9C, mono numerals like the trackers.
+  // ── Raster cards: osu!-native look, inline styles so domToSVG is faithful.
+  // The four osu! cards live in `osuCards.ts`; this only reads the node.
   private static readonly rasterFont =
-    'font-family:Torus,Inter,"Helvetica Neue",Tahoma,Arial,sans-serif;'
-  private static readonly rasterNum = 'font-variant-numeric:tabular-nums;'
-  private static readonly rasterShadow = 'text-shadow:0 1px 3px rgba(0,0,0,.5);'
+    'font-family:Torus,Inter,Helvetica Neue,Tahoma,Arial,sans-serif;'
 
-  /** Colores oficiales de rank de osu-web (`@colour-rank-*` en colors.less). */
-  private gradeColor(grade: string): { bg: string; fg: string } {
-    switch (grade.trim().toUpperCase()) {
-      case 'X': return { bg: '#EDEDF2', fg: '#1F1A20' }
-      case 'SS':
-      case 'SH': return { bg: '#DE31AE', fg: '#FFFFFF' }
-      case 'S': return { bg: '#02B5C3', fg: '#FFFFFF' }
-      case 'A': return { bg: '#88DA20', fg: '#1F1A20' }
-      case 'B': return { bg: '#E3B130', fg: '#1F1A20' }
-      case 'C': return { bg: '#FF8E5D', fg: '#1F1A20' }
-      case 'D': return { bg: '#FF5A5A', fg: '#FFFFFF' }
-      default: return { bg: '#A3909A', fg: '#1F1A20' }
-    }
-  }
-
-  /**
-   * Color oficial de dificultad de osu-web (`getDiffColour` en
-   * beatmap-helper.ts): espectro por nodos, aquí en bandas.
-   */
-  private srColor(sr: number): { bg: string; fg: string } {
-    const dark = '#1A1826'
-    if (!Number.isFinite(sr) || sr < 0.1) return { bg: '#AAAAAA', fg: dark }
-    if (sr < 1.25) return { bg: '#4290FB', fg: '#FFFFFF' }
-    if (sr < 2) return { bg: '#4FC0FF', fg: dark }
-    if (sr < 2.5) return { bg: '#4FFFD5', fg: dark }
-    if (sr < 3.3) return { bg: '#7CFF4F', fg: dark }
-    if (sr < 4.2) return { bg: '#F6F05C', fg: dark }
-    if (sr < 4.9) return { bg: '#FF8068', fg: dark }
-    if (sr < 5.8) return { bg: '#FF4E6F', fg: '#FFFFFF' }
-    if (sr < 6.7) return { bg: '#C645B8', fg: '#FFFFFF' }
-    if (sr < 7.7) return { bg: '#6563DE', fg: '#FFFFFF' }
-    if (sr < 9) return { bg: '#18158E', fg: '#FFFFFF' }
-    return { bg: '#000000', fg: '#F6F05C' }
-  }
-
-  /** Beatmap status pill colour (listing / cpol titles). */
-  private statusColor(status: string): string {
-    switch (status.trim().toLowerCase()) {
-      case 'ranked': return '#FF66AB'
-      case 'loved': return '#FF8A3D'
-      case 'qualified': return '#66CCFF'
-      case 'pending':
-      case 'wip': return '#A3909A'
-      case 'graveyard': return '#5A5460'
-      default: return '#FF66AB'
-    }
+  private cardMeta(node: RedNode): (key: string) => string {
+    const m = node.metadata as Record<string, unknown> | undefined ?? {}
+    return (key) => String(m[key] ?? '')
   }
 
   private renderProfileCard(node: RedNode): string {
-    const m = node.metadata as Record<string, unknown> | undefined ?? {}
-    const user = this.escapeHtml(String(m.user ?? '') || 'player')
-    const rank = String(m.rank ?? '').replace(/^#/, '')
-    const pp = String(m.pp ?? '')
-    const country = this.escapeHtml(String(m.country ?? ''))
-    const body = this.renderChildren(node)
-    const initial = this.escapeHtml((String(m.user ?? 'o')).slice(0, 1).toUpperCase() || 'O')
-    const stat = (label: string, value: string) =>
-      `<div style="flex:1;background:#55434E;border-radius:8px;padding:7px 4px;text-align:center;"><div style="font-size:9px;font-weight:800;letter-spacing:.1em;color:#A3909A;">${label}</div><div style="font-size:15px;font-weight:800;color:#fff;margin-top:2px;${HTMLRenderer.rasterNum}">${value}</div></div>`
-    const stats = [rank ? stat('GLOBAL', `#${this.escapeHtml(rank)}`) : '', pp ? stat('PP', `${this.escapeHtml(pp)}pp`) : '', country ? stat('COUNTRY', country) : ''].filter(Boolean).join('')
-    return `<div${this.idAttr(node)} class="bb-profilecard" style="${HTMLRenderer.rasterFont}background:#453842;border-radius:10px;overflow:hidden;color:#fff;max-width:620px;box-shadow:0 1px 3px rgba(0,0,0,.25);"><div style="height:64px;background:linear-gradient(120deg,#FF66AB,#8866EE);"></div><div style="padding:0 14px 14px;"><div style="display:flex;gap:10px;align-items:center;margin-top:-24px;"><div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#FF66AB,#8866EE);box-shadow:0 1px 3px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:#fff;flex:none;${HTMLRenderer.rasterShadow}">${initial}</div><div style="min-width:0;flex:1;padding-top:24px;"><div style="font-size:20px;font-weight:700;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${HTMLRenderer.rasterShadow}">${user}</div>${country ? `<div style="font-size:12px;color:#D9CBD6;margin-top:2px;">${country}</div>` : ''}</div></div>${stats ? `<div style="display:flex;gap:8px;margin-top:12px;">${stats}</div>` : ''}${body ? `<div style="font-size:13px;color:#fff;margin-top:10px;line-height:1.5;">${body}</div>` : ''}</div></div>`
+    const m = this.cardMeta(node)
+    return profileCardHTML({
+      id: this.idAttr(node),
+      user: m('user'),
+      rank: m('rank'),
+      countryRank: m('crank'),
+      pp: m('pp'),
+      acc: m('acc'),
+      country: m('country'),
+      avatar: m('avatar'),
+      cover: m('cover'),
+      body: this.renderChildren(node),
+    }, (text) => this.escapeHtml(text))
   }
 
   private renderBeatmapCard(node: RedNode): string {
-    const m = node.metadata as Record<string, unknown> | undefined ?? {}
-    const artist = this.escapeHtml(String(m.artist ?? ''))
-    const title = this.escapeHtml(String(m.title ?? 'Untitled'))
-    const diff = this.escapeHtml(String(m.diff ?? ''))
-    const mapper = this.escapeHtml(String(m.mapper ?? ''))
-    const srNum = parseFloat(String(m.sr ?? ''))
-    const srTxt = Number.isFinite(srNum) ? srNum.toFixed(2) : ''
-    const status = String(m.status ?? 'ranked')
-    const statusBg = this.statusColor(status)
-    const diffC = this.srColor(srNum)
-    const head = [artist, title].filter(Boolean).join(' — ') || title
-    const body = this.renderChildren(node)
-    return `<div${this.idAttr(node)} class="bb-beatmap" style="${HTMLRenderer.rasterFont}display:flex;background:#55434E;border-radius:10px;overflow:hidden;color:#fff;max-width:620px;min-height:100px;font-size:12px;box-shadow:0 1px 3px rgba(0,0,0,.25);"><div style="width:100px;flex:none;background:linear-gradient(150deg,${diffC.bg},#1F1A20 135%);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;"><div style="font-size:22px;color:#fff;line-height:1;${HTMLRenderer.rasterShadow}">★</div><div style="font-size:14px;font-weight:700;color:#fff;${HTMLRenderer.rasterNum}${HTMLRenderer.rasterShadow}">${srTxt || '–'}</div></div><div style="min-width:0;flex:1;display:flex;flex-direction:column;padding:6px 10px 8px;background:linear-gradient(0.25turn,#55434E,rgba(85,67,78,.55));"><div style="display:flex;align-items:baseline;gap:8px;"><div style="font-size:18px;font-weight:600;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;${HTMLRenderer.rasterShadow}">${title}</div><div style="flex:none;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:${statusBg};color:#fff;border-radius:4px;padding:3px 7px;">${this.escapeHtml(status)}</div></div><div style="font-size:14px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${HTMLRenderer.rasterShadow}">${artist || ' '}</div>${mapper ? `<div style="font-size:12px;font-weight:600;color:#D9CBD6;margin-top:auto;padding-top:4px;">mapped by ${mapper}</div>` : ''}<div style="display:flex;gap:4px;margin-top:4px;align-items:center;"><span style="width:6px;height:12px;border-radius:10000px;background:${diffC.bg};flex:none;"></span>${diff ? `<span style="font-size:12px;font-weight:600;color:#fff;">${diff}</span>` : ''}${srTxt ? `<span style="font-size:12px;color:#D9CBD6;${HTMLRenderer.rasterNum}">★ ${srTxt}</span>` : ''}</div>${body ? `<div style="font-size:13px;color:#fff;margin-top:6px;line-height:1.5;">${body}</div>` : ''}</div></div>`
+    const m = this.cardMeta(node)
+    return beatmapCardHTML({
+      id: this.idAttr(node),
+      artist: m('artist'),
+      title: m('title'),
+      diff: m('diff'),
+      mapper: m('mapper'),
+      sr: m('sr'),
+      status: m('status'),
+      cover: m('cover'),
+      bpm: m('bpm'),
+      length: m('length'),
+      body: this.renderChildren(node),
+    }, (text) => this.escapeHtml(text))
   }
 
   private renderProgress(node: RedNode): string {
     const m = node.metadata as Record<string, unknown> | undefined ?? {}
     const raw = parseFloat(String(m.value ?? nodeAttrValue(node) ?? '50'))
-    const pct = Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 50))
-    const label = m.label ? this.escapeHtml(String(m.label)) : ''
-    const level = m.level ? this.escapeHtml(String(m.level)) : ''
-    const pctTxt = `${Math.round(pct * 10) / 10}%`
-    const bar = `<div style="height:10px;border-radius:6px;background:#1F1A20;overflow:hidden;"><div style="height:100%;width:${pct}%;border-radius:6px;background:linear-gradient(180deg,#FF8FCC,#FF66AB);"></div></div>`
-    const head = `<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;"><span style="font-size:12px;font-weight:700;color:#fff;">${label || (level ? `Level ${level}` : 'Progress')}</span><span style="font-size:12px;font-weight:800;color:#FF66AB;${HTMLRenderer.rasterNum}">${pctTxt}</span></div>`
-    if (!level) return `<div${this.idAttr(node)} class="bb-progress" style="${HTMLRenderer.rasterFont}max-width:620px;color:#fff;">${head}${bar}</div>`
-    return `<div${this.idAttr(node)} class="bb-progress" style="${HTMLRenderer.rasterFont}display:flex;gap:12px;align-items:center;max-width:620px;color:#fff;"><div style="width:42px;height:42px;flex:none;border-radius:50%;background:#FF66AB;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:#1F1A20;${HTMLRenderer.rasterNum}">${level}</div><div style="flex:1;min-width:0;">${head}${bar}</div></div>`
+    return progressHTML({
+      id: this.idAttr(node),
+      percent: Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 50)),
+      label: String(m.label ?? ''),
+      level: String(m.level ?? ''),
+      color: String(m.color ?? ''),
+    }, (text) => this.escapeHtml(text))
   }
 
   private renderDivider(node: RedNode): string {
-    // mania-tracker section header: pink label + hairline. Bare = plain line.
+    // mania-tracker section header: label + hairline. Bare = plain line.
     const label = String(node.metadata?.label ?? '').trim()
     if (!label) return `<div${this.idAttr(node)} class="bb-divider" style="margin:14px 0;border-top:1px solid #55434E;"></div>`
     return `<div${this.idAttr(node)} class="bb-divider" style="${HTMLRenderer.rasterFont}display:flex;align-items:center;gap:10px;margin:14px 0;"><span style="font-size:14px;font-weight:800;color:#fff;white-space:nowrap;">${this.escapeHtml(label)}</span><span style="flex:1;border-top:1px solid #55434E;"></span></div>`
   }
 
   private renderScore(node: RedNode): string {
-    // cpol / tracker top-play row: grade badge + song + mods/acc/combo + pp.
-    const m = node.metadata as Record<string, unknown> | undefined ?? {}
-    const grade = String(m.grade ?? 'S').trim().toUpperCase() || 'S'
-    const { bg, fg } = this.gradeColor(grade)
-    const artist = this.escapeHtml(String(m.artist ?? ''))
-    const title = this.escapeHtml(String(m.title ?? 'Untitled'))
-    const diff = String(m.diff ?? '')
-    const mapper = this.escapeHtml(String(m.mapper ?? ''))
-    const mods = String(m.mods ?? '').trim().toUpperCase()
-    const accRaw = String(m.acc ?? '').trim().replace(/%$/, '')
-    const accNum = parseFloat(accRaw)
-    const acc = Number.isFinite(accNum) ? `${accNum.toFixed(2)}%` : (accRaw ? this.escapeHtml(accRaw) : '')
-    const combo = String(m.combo ?? '').trim()
-    const pp = String(m.pp ?? '').trim()
-    const head = [artist, title].filter(Boolean).join(' – ') || title
-    const modsHtml = mods
-      ? `<span style="display:inline-block;font-size:9px;font-weight:800;background:#1F1A20;color:#fff;border-radius:4px;padding:2px 6px;margin-right:4px;letter-spacing:.04em;">${this.escapeHtml(mods)}</span>`
-      : ''
-    return `<div${this.idAttr(node)} class="bb-score" style="${HTMLRenderer.rasterFont}display:flex;align-items:center;background:#453842;border-radius:10px;color:#fff;max-width:620px;min-height:60px;box-shadow:0 1px 3px rgba(0,0,0,.25);font-size:12px;"><div style="width:60px;flex:none;display:flex;align-items:center;justify-content:center;"><div style="width:40px;height:40px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:${grade.length > 1 ? '15px' : '20px'};font-weight:800;color:${fg};">${this.escapeHtml(grade)}</div></div><div style="min-width:0;flex:1;background:#55434E;border-radius:10px 0 0 10px;padding:6px 12px;align-self:stretch;display:flex;flex-direction:column;justify-content:center;"><div style="font-size:14px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${head}${diff ? ` <span style="color:#EEAA00;">[${this.escapeHtml(diff)}]</span>` : ''}</div><div style="margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#D9CBD6;">${modsHtml}${mapper ? `mapped by ${mapper} · ` : ''}${acc ? `<span style="color:#FFCC22;font-weight:600;">${acc}</span>` : ''}${combo ? ` · ${this.escapeHtml(combo)}` : ''}</div></div>${pp ? `<div style="flex:none;min-width:110px;text-align:center;align-self:stretch;display:flex;flex-direction:column;align-items:center;justify-content:center;"><div style="font-size:16px;font-weight:700;color:#FF66B3;${HTMLRenderer.rasterNum}">${this.escapeHtml(pp)}<span style="font-size:12px;color:#A3909A;font-weight:400;">pp</span></div></div>` : ''}</div>`
+    const m = this.cardMeta(node)
+    return scoreHTML({
+      id: this.idAttr(node),
+      grade: m('grade'),
+      artist: m('artist'),
+      title: m('title'),
+      diff: m('diff'),
+      mapper: m('mapper'),
+      mods: m('mods'),
+      acc: m('acc'),
+      combo: m('combo'),
+      pp: m('pp'),
+    }, (text) => this.escapeHtml(text))
   }
 
   private renderAbbr(node: RedNode): string {

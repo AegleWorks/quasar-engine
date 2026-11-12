@@ -131,7 +131,7 @@ export function domToSVGResult(
   }
 
   try {
-    const state: WalkState = { rootRect, scale, parts: [], layerCount: 0, layersList: [], maxHeight }
+    const state: WalkState = { root, rootRect, scale, parts: [], layerCount: 0, layersList: [], maxHeight }
 
     const fontFamilies = collectFontFamilies(root, maxHeight, rootRect.top)
 
@@ -190,6 +190,8 @@ export function domToSVGResult(
 // ────────────────────────────────────────────────────────────
 
 interface WalkState {
+  /** The element being exported: never clipped, it IS the canvas. */
+  root: Element
   rootRect: DOMRect
   scale: number
   parts: string[]
@@ -201,6 +203,8 @@ interface WalkState {
 // ────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────
+
+const clipsOverflow = (overflow: string): boolean => overflow === "hidden" || overflow === "clip"
 
 function px(value: number): string {
   return value.toFixed(2)
@@ -433,7 +437,7 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
     if (src && hasArea) {
       const rx = parseFloat(cs.borderRadius) || 0
       state.parts.push(
-        `${ind(depth)}<image id="${layerId}"${opacityAttr} x="${px(x)}" y="${px(y)}" width="${px(w)}" height="${px(h)}" href="${escapeXml(src)}" preserveAspectRatio="xMidYMid meet"${rx > 0 ? ` clip-path="inset(0 round ${px(rx * scale)})"` : ""} />`,
+        `${ind(depth)}<image id="${layerId}"${opacityAttr} x="${px(x)}" y="${px(y)}" width="${px(w)}" height="${px(h)}" href="${escapeXml(src)}" preserveAspectRatio="${cs.objectFit === "cover" ? "xMidYMid slice" : cs.objectFit === "fill" ? "none" : "xMidYMid meet"}"${rx > 0 ? ` clip-path="inset(0 round ${px(rx * scale)})"` : ""} />`,
       )
       state.layersList.push({
         id: layerId,
@@ -570,7 +574,18 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
 
   const hasChildren = el.childNodes.length > 0
   if (hasChildren) {
-    state.parts.push(`${ind(depth)}<g id="${layerId}">`)
+    // `overflow: hidden` cuts the children to the box (and its rounded
+    // corners): a cover image or a fill bar must not poke out of its card.
+    let clipAttr = ""
+    if (hasArea && el !== state.root && clipsOverflow(cs.overflowX) && clipsOverflow(cs.overflowY)) {
+      const clipId = `clip-${state.layerCount}`
+      const rx = (parseFloat(cs.borderRadius) || 0) * scale
+      state.parts.push(
+        `${ind(depth)}<defs><clipPath id="${clipId}"><rect x="${px(x)}" y="${px(y)}" width="${px(w)}" height="${px(h)}" rx="${px(rx)}" /></clipPath></defs>`,
+      )
+      clipAttr = ` clip-path="url(#${clipId})"`
+    }
+    state.parts.push(`${ind(depth)}<g id="${layerId}"${clipAttr}>`)
     state.layersList.push({
       id: layerId,
       tag: "g",

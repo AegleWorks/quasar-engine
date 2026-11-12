@@ -533,6 +533,8 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       if (params.country) res.country = params.country
       if (params.avatar) res.avatar = params.avatar
       if (params.cover) res.cover = params.cover
+      if (params.crank) res.crank = params.crank
+      if (params.acc) res.acc = params.acc
       return res
     }
     case 'beatmap': {
@@ -540,7 +542,7 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
       if (!attr) return NO_METADATA
       const params = parseKeyValueParams(attr)
       const res: Record<string, unknown> = {}
-      for (const k of ['artist', 'title', 'diff', 'mapper', 'sr', 'status', 'cover', 'id']) {
+      for (const k of ['artist', 'title', 'diff', 'mapper', 'sr', 'status', 'cover', 'id', 'bpm', 'length']) {
         if (params[k]) res[k] = params[k]
       }
       if (!params.artist && !params.title && attr && !attr.includes('=')) res.title = attr

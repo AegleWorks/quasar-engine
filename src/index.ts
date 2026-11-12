@@ -155,7 +155,8 @@ export { WrapInTag } from './Commands/WrapInTag'
 export { SplitNode, MergeNode } from './Commands/SplitMerge'
 export { insertLineBreak, joinBackward, joinForward, deleteSelection, deleteRange } from './Commands/StructuralEdits'
 export { insertContent, insertTypedText, replaceWithLineBreak, isBlockContent, type ParseSource } from './Commands/InsertContent'
-export { toggleInlineFormat, wrapInTag, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
+export { toggleInlineFormat, inlineFormatsAt, inlineFormatHostAt, wrapInTag, applyColor, type ToggleFormat, type FormatEdit, type SourceSelection } from './Commands/InlineFormat'
+export { alignmentAt, alignmentOf, toggleAlignment, type Alignment } from './Commands/Alignment'
 
 // ── Language service (Roslyn-shaped answers over one model) ──
 //
@@ -322,6 +323,7 @@ export {
   type RasterizableTag,
   type RasterReplacement,
 } from './Raster/rasterTags'
+export { splitMods, starColor, flagUrl, formatLength, groupNumber, cardImageUrl } from './Visitors/osuCards'
 
 // ── DOM Utilities ──
 export { domToSVG, domToSVGResult } from './Utils/dom-to-svg'
