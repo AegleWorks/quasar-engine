@@ -11,12 +11,12 @@
 import { RedNode } from '../Syntax/RedNode'
 import { Visitor } from './Visitor'
 import type { VisitorContext } from './Visitor'
-import { TagRegistry, type TagDefinition } from '../Model/TagRegistry'
+import { TagRegistry, extractTextContent, type TagDefinition } from '../Model/TagRegistry'
 import { clampFontSizeValue } from '../Utils/FontSizeLimits'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
 import { parseBBCode } from '../BBCode/Parser'
 import { greenToRedNode, extractGreenNodeMetadata } from '../BBCode/BBCodeToGreenNode'
-import { stringifyEffectParams, GRADIENT_DEFAULTS, type EffectParams } from '../Utils/EffectMath'
+import { stringifyEffectParams, GRADIENT_DEFAULTS, type EffectParams, type StyledSegment } from '../Utils/EffectMath'
 import { resolveEditConflicts } from '../Edits/EditPlan'
 import { applyEditsToSource } from '../Edits/applyEdits'
 import { FlattenOsuNestingRule } from '../Edits/Rules/flattenOsuNesting'
@@ -138,6 +138,36 @@ function isNewlineKind(n: RedNode): boolean {
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
 const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow', 'paint'])
+
+/**
+ * Kinds whose text is a URL, code or markup rather than prose: an effect
+ * painting its segments onto its children leaves these alone, or
+ * `[gradient][img]url[/img][/gradient]` would colour the URL letter by letter.
+ */
+const UNPAINTED_KINDS = new Set(['image', 'video', 'audio', 'imagemap', 'svg', 'code', 'inline_code'])
+
+/**
+ * An effect being painted onto its children (see `paintChildren`): the
+ * effect's whole text, the segment each of its characters falls in, and how
+ * far the export has consumed it.
+ */
+interface PaintState {
+  text: string
+  segments: StyledSegment[]
+  segmentOf: Uint32Array
+  cursor: number
+}
+
+/** A box title that holds an effect, which osu! would publish as literal tags. */
+function titleNeedsExport(titleNodes: readonly RedNode[]): boolean {
+  const stack = [...titleNodes]
+  while (stack.length > 0) {
+    const n = stack.pop()!
+    if (MILIASTRY_INTERNAL_TAGS.has(n.kind) || MILIASTRY_ONLY_TAGS.has(n.kind) || LYNE_ONLY_TAGS.has(n.kind)) return true
+    for (const c of n.children) stack.push(c)
+  }
+  return false
+}
 
 /**
  * Tags que existen SOLO en Miliastry (registrados en el TagRegistry) y que
@@ -412,6 +442,8 @@ export class BBCodeExporter extends Visitor<string> {
    * de nodo texto, la más frecuente que hay.
    */
   private expandTokens: TokenResolverFn | null = null
+  /** Set while an effect paints its segments onto its children. */
+  private paint: PaintState | null = null
 
   /**
    * What the tree being exported means under osu!'s rules — the ONE place the
@@ -494,6 +526,7 @@ export class BBCodeExporter extends Visitor<string> {
     if (context) this.context = context
     this.depth = 0
     this.semantic = null
+    this.paint = null
     this.expandTokens =
       this.tokenResolver !== undefined && this.shouldResolveTokens() ? this.tokenResolver : null
     return this.exportNode(node)
@@ -660,18 +693,84 @@ export class BBCodeExporter extends Visitor<string> {
     return out
   }
 
+  /**
+   * Export an effect's children with its segments painted onto their text.
+   * `null` when the segments do not spell the children's text, so the caller
+   * can fall back to the plain segments.
+   */
+  private paintChildren(node: RedNode, segments: StyledSegment[]): string | null {
+    const text = extractTextContent(node)
+    const segmentOf = new Uint32Array(text.length)
+    let at = 0
+    for (let i = 0; i < segments.length; i++) {
+      const len = segments[i].text.length
+      if (text.slice(at, at + len) !== segments[i].text) return null
+      segmentOf.fill(i, at, at + len)
+      at += len
+    }
+    if (at !== text.length) return null
+    const outer = this.paint
+    this.paint = { text, segments, segmentOf, cursor: 0 }
+    try {
+      return this.exportChildren(node)
+    } finally {
+      this.paint = outer
+    }
+  }
+
+  /** One text node's share of the painted effect, as styled runs. */
+  private paintText(text: string): string {
+    const p = this.paint!
+    // Line breaks are their own nodes; the effect's text spells them as `\n`.
+    while (p.cursor < p.text.length && p.text[p.cursor] === '\n' && text[0] !== '\n') p.cursor++
+    if (!p.text.startsWith(text, p.cursor)) return text
+    let out = ''
+    let i = 0
+    while (i < text.length) {
+      const seg = p.segments[p.segmentOf[p.cursor + i]]
+      let j = i + 1
+      while (j < text.length && p.segmentOf[p.cursor + j] === p.segmentOf[p.cursor + i]) j++
+      const run = text.slice(i, j)
+      if (seg.color !== undefined) out += `[color=${seg.color}]${run}[/color]`
+      else if (seg.size !== undefined) out += `[size=${seg.size}]${run}[/size]`
+      else out += run
+      i = j
+    }
+    p.cursor += text.length
+    return out
+  }
+
   private exportNode(node: RedNode): string {
     // Un cierre que no cerró nada no vuelve al source. Escribirlo hacía que el
     // siguiente parseo lo leyera otra vez como etiqueta viva, y el documento no
     // convergía al reexportarlo.
     if (node.kind === 'discarded_tag' || node.kind === 'discarded_box_close') return ''
 
+    // Inside a painted effect, a nested effect paints itself and media/code
+    // keep their text verbatim. Either way their characters are part of the
+    // outer effect's text, so its cursor moves past them.
+    if (this.paint !== null && (UNPAINTED_KINDS.has(node.kind) || MILIASTRY_INTERNAL_TAGS.has(node.kind))) {
+      const outer = this.paint
+      this.paint = null
+      try {
+        return this.exportNode(node)
+      } finally {
+        this.paint = outer
+        outer.cursor += extractTextContent(node).length
+      }
+    }
+
     const tagDef = this.registry.getByKind(node.kind)
 
     // Text nodes
     if (node.kind === 'text') {
-      let out = node.text
-      if (this.expandTokens !== null) out = expandTokenRefs(out, this.expandTokens)
+      let out: string
+      if (this.paint !== null) {
+        out = this.paintText(node.text)
+      } else {
+        out = node.text
+        if (this.expandTokens !== null) out = expandTokenRefs(out, this.expandTokens)
+      }
       const style = node.metadata?.style as Record<string, string> | undefined
       if (style) {
         // Envolvemos desde adentro hacia afuera (o al revés, no importa mucho para osu)
@@ -712,6 +811,7 @@ export class BBCodeExporter extends Visitor<string> {
         source: this.context.source,
         visitChildren: (n) => this.exportChildren(n),
         renderChild: () => ({ kind: 'text', text: '', children: [], props: {} }),
+        paintChildren: (n, segments) => this.paintChildren(n, segments),
       })
     }
 
@@ -874,6 +974,13 @@ export class BBCodeExporter extends Visitor<string> {
         const raw = node.metadata.rawTitle
         let titleVal = String((raw !== undefined ? raw : node.metadata.title) ?? '')
         if (this.expandTokens !== null) titleVal = expandTokenRefs(titleVal, this.expandTokens)
+        // The title is an attribute, so the default serialization writes it
+        // back as spelled. An effect in it (`[box=[gradient=…]T[/gradient]]`)
+        // would then reach osu! as literal tags; export it like body text.
+        const titleNodes = node.metadata.titleNodes as RedNode[] | undefined
+        if (this.target === 'osu' && titleNodes && titleNodes.length > 0 && titleNeedsExport(titleNodes)) {
+          titleVal = titleNodes.map((n) => this.exportNode(n)).join('')
+        }
         // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
         // a añadir aquí para que el round-trip no pierda el sufijo.
         let color = node.metadata.color as string | undefined

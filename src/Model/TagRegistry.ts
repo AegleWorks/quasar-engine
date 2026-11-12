@@ -32,6 +32,12 @@ export interface TagHandlerContext {
   source: string
   visitChildren: (node: RedNode) => string
   renderChild: (node: RedNode) => RenderNode
+  /**
+   * Export `node`'s children with each character of their text wrapped in the
+   * style of the segment it falls in, keeping every tag they carry. Returns
+   * `null` when the segments do not line up with the children's text.
+   */
+  paintChildren?: (node: RedNode, segments: StyledSegment[]) => string | null
 }
 
 export interface TagDefinition {
@@ -171,6 +177,34 @@ function segmentsToBBCode(segments: StyledSegment[]): string {
     else out += s.text
   }
   return out
+}
+
+/** True when anything under `node` is more than text and line breaks. */
+function hasFormattedDescendant(node: RedNode): boolean {
+  for (const child of node.children) {
+    if (child.kind === 'text' || child.kind === 'spacing' || child.kind === 'empty_line') continue
+    return true
+  }
+  return false
+}
+
+/**
+ * An effect as osu!-compatible BBCode.
+ *
+ * The segments are computed over the effect's whole text, but the text is
+ * not all there is: `[gradient][size=150]Hi[/size][/gradient]` carries a
+ * size the plain segments know nothing about. When the effect wraps other
+ * tags, the exporter paints the segments onto its children instead, so
+ * those tags survive the expansion.
+ */
+function effectToBBCode(ctx: TagHandlerContext, kind: EffectKind): string {
+  const segments = effectSegments(ctx.node, kind)
+  if (segments.length === 0) return ctx.visitChildren(ctx.node)
+  if (ctx.paintChildren && hasFormattedDescendant(ctx.node)) {
+    const painted = ctx.paintChildren(ctx.node, segments)
+    if (painted !== null) return painted
+  }
+  return segmentsToBBCode(segments)
 }
 
 /** Present styled segments as a RenderNode tree. */
@@ -390,10 +424,7 @@ function builtinTagDefinitions(): TagDefinition[] {
         isInline: true,
         isSelfClosing: false,
         canHaveChildren: true,
-        toBBCode: (ctx) => {
-          const segments = effectSegments(ctx.node, 'gradient')
-          return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
-        },
+        toBBCode: (ctx) => effectToBBCode(ctx, 'gradient'),
         toRenderNode: (ctx) => segmentsToRenderNode('gradient', effectSegments(ctx.node, 'gradient')),
       },
       {
@@ -404,10 +435,7 @@ function builtinTagDefinitions(): TagDefinition[] {
         isInline: true,
         isSelfClosing: false,
         canHaveChildren: true,
-        toBBCode: (ctx) => {
-          const segments = effectSegments(ctx.node, 'sinewave')
-          return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
-        },
+        toBBCode: (ctx) => effectToBBCode(ctx, 'sinewave'),
         toRenderNode: (ctx) => segmentsToRenderNode('sinewave', effectSegments(ctx.node, 'sinewave')),
       },
       {
@@ -418,10 +446,7 @@ function builtinTagDefinitions(): TagDefinition[] {
         isInline: true,
         isSelfClosing: false,
         canHaveChildren: true,
-        toBBCode: (ctx) => {
-          const segments = effectSegments(ctx.node, 'grow')
-          return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
-        },
+        toBBCode: (ctx) => effectToBBCode(ctx, 'grow'),
         toRenderNode: (ctx) => segmentsToRenderNode('grow', effectSegments(ctx.node, 'grow')),
       },
       {
@@ -436,10 +461,7 @@ function builtinTagDefinitions(): TagDefinition[] {
         isInline: true,
         isSelfClosing: false,
         canHaveChildren: true,
-        toBBCode: (ctx) => {
-          const segments = effectSegments(ctx.node, 'paint')
-          return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
-        },
+        toBBCode: (ctx) => effectToBBCode(ctx, 'paint'),
         toRenderNode: (ctx) => segmentsToRenderNode('paint', effectSegments(ctx.node, 'paint')),
       },
       {
@@ -450,10 +472,7 @@ function builtinTagDefinitions(): TagDefinition[] {
         isInline: true,
         isSelfClosing: false,
         canHaveChildren: true,
-        toBBCode: (ctx) => {
-          const segments = effectSegments(ctx.node, 'rainbow')
-          return segments.length === 0 ? ctx.visitChildren(ctx.node) : segmentsToBBCode(segments)
-        },
+        toBBCode: (ctx) => effectToBBCode(ctx, 'rainbow'),
         toRenderNode: (ctx) => segmentsToRenderNode('rainbow', effectSegments(ctx.node, 'rainbow')),
       },
 
