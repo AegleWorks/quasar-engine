@@ -31,3 +31,24 @@ export const TEXT_LEAF_ATTR = 'data-bb-leaf'
  * leaves as usual.
  */
 export const TITLE_LEAF_PREFIX = 't'
+
+/**
+ * A `[code]` body on an editable surface, under the same attribute as a text
+ * leaf: `<span data-bb-leaf="k<text id>">…</span>`. The leaf covers the body
+ * minus the edges `editableCodeEdges` drops, so it is named apart from its
+ * text node: its range is not the node's.
+ */
+export const CODE_LEAF_PREFIX = 'k'
+
+/**
+ * How many characters of a `[code]` body an editable surface leaves off each
+ * edge. osu! strips every empty line at both ends; a page being written drops
+ * one newline per side (the tag on its own line, `[code]⏎…⏎[/code]`), so a
+ * line Enter just made stays on screen for the caret.
+ */
+export function editableCodeEdges(text: string): { lead: number; trail: number } {
+  // A body that is one newline is the line Enter made in an empty block: shown.
+  const trail = text.length > 1 && text.endsWith('\n') ? 1 : 0
+  const lead = text.startsWith('\n') && text.length - trail >= 2 ? 1 : 0
+  return { lead, trail }
+}

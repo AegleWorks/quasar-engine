@@ -26,7 +26,7 @@ import { STYLE_PROP_WHITELIST, stripStyleValue, isDangerousStyleValue } from '..
 
 import { isBlockKind, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { OsuSemanticModel } from '../Semantic/osu/OsuSemanticModel'
-import { SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR, TEXT_LEAF_ATTR, TITLE_LEAF_PREFIX } from './domMarkers'
+import { CODE_LEAF_PREFIX, editableCodeEdges, SWALLOWED_NEWLINE_ATTR, TERMINAL_LINE_ATTR, TEXT_LEAF_ATTR, TITLE_LEAF_PREFIX } from './domMarkers'
 import { isTerminalNewline } from './terminalLine'
 import { bearsLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
 import { clampFontSizeForRender, maxFontSizeFor } from '../Utils/FontSizeLimits'
@@ -2911,6 +2911,8 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderCode(node: RedNode): string {
+    const editable = this.editableCode(node)
+    if (editable !== null) return editable
     let content = node.children.map(c => c.text || '').join('')
     // On a canvas the block is being written: the lines osu! would strip are
     // lines the caret can be on, and a last `\n` paints none of its own.
@@ -2931,6 +2933,25 @@ export class HTMLRenderer extends Visitor<string> {
     const pad = `${leadingMatch ? leadingMatch[0] : ''}\u0000${trailingMatch ? trailingMatch[0] : ''}`
     const padAttr = pad === '\u0000' ? '' : ` data-code-pad="${this.escapeHtml(JSON.stringify(pad))}"`
     return `<pre${this.idAttr(node)}${padAttr}><code>${this.escapeHtml(content)}</code></pre>`
+  }
+
+  /**
+   * A `[code]` body on a page edited char by char (`textLeafIds`): one leaf
+   * over the body without the edges `editableCodeEdges` drops, so the block
+   * has no empty line of padding at either end and every line in it is text
+   * the caret can be on. Each newline is a `<br>`, one character as in any
+   * leaf; an empty last line is held open by a zero-width space. Null when the
+   * body is not one text node.
+   */
+  private editableCode(node: RedNode): string | null {
+    if (this.options.textLeafIds !== true || node.children.length !== 1 || node.children[0].kind !== 'text') return null
+    const text = node.children[0]
+    const raw = String(text.text ?? '')
+    const { lead, trail } = editableCodeEdges(raw)
+    const body = raw.slice(lead, raw.length - trail)
+    const held = body === '' || body.endsWith('\n') ? '​' : ''
+    const html = this.escapeHtml(body).replace(/\r\n|\r|\n/g, '<br>') + held
+    return `<pre${this.idAttr(node)}><code><span ${TEXT_LEAF_ATTR}="${CODE_LEAF_PREFIX}${text.id}">${html}</span></code></pre>`
   }
 
   private renderSVG(node: RedNode): string {

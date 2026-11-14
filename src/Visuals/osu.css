@@ -119,7 +119,11 @@
   background: var(--osu-code-bg);
   border: 1px solid var(--osu-code-border);
   border-radius: 8px;
-  overflow-x: auto;
+  /* osu! wraps a long line instead of scrolling it (osu-web `bbcode.less`:
+   * `pre { white-space: pre-wrap }` under a `.bbcode` with
+   * `overflow-wrap: anywhere`; no overflow, no max-height). */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .bbcode-preview:not(.bbcode-preview-lyne):not(.theme-lyne) pre code {
   font-family: 'PT Mono', 'Geist Mono', 'JetBrains Mono', monospace;
