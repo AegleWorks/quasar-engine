@@ -156,6 +156,30 @@ describe('correcciones de diagnóstico', () => {
     })
   })
 
+  describe('hash-before-token', () => {
+    it('quita el # que deja sin color una referencia a token', () => {
+      const source = '[color=#$owo]text[/color]'
+      expect(applyFix(source, onlyFix(source, 'hash-before-token'))).toBe('[color=$owo]text[/color]')
+    })
+
+    it('marca la referencia entera y nombra el token', () => {
+      const found = diagnose('ab[color=#$owo]text[/color]').find(d => d.code === 'hash-before-token')!
+      expect(found.range).toEqual({ start: 9, end: 14 })
+      expect(found.message).toContain('$owo')
+    })
+
+    it('no es automática: el color pasa a aplicarse', () => {
+      registerValidatorFixes()
+      expect(getCodeFixMeta('hash-before-token')?.isAutomatic).toBe(false)
+    })
+
+    it('no se emite para un hex ni para una referencia bien escrita', () => {
+      for (const source of ['[color=#3B82F6]x[/color]', '[color=$owo]x[/color]', '[color=red]#$owo[/color]']) {
+        expect(diagnose(source).map(d => d.code)).not.toContain('hash-before-token')
+      }
+    })
+  })
+
   describe('lo que NO se corrige solo', () => {
     it('nested-tags-in-code no trae corrección automática', () => {
       // Quitar las etiquetas cambiaría la intención del autor, que puede

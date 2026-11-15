@@ -156,6 +156,18 @@ const BUILTIN_FIXES: BuiltinFix[] = [
     },
   },
   {
+    code: 'hash-before-token',
+    meta: {
+      // Manual: the colour starts to apply, so the render changes.
+      isAutomatic: false,
+      title: (d: Diagnostic) => `Use $${(d.data as { name?: string } | undefined)?.name ?? ''}`,
+    },
+    fix: (data) => {
+      const range = rangeOf(data.range)
+      return range ? [{ kind: 'delete_range', range }] : []
+    },
+  },
+  {
     code: 'redundant-nesting',
     meta: {
       isAutomatic: false,

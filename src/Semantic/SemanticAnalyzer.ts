@@ -1324,7 +1324,7 @@ function shiftRange(range: Range | null, delta: number): Range | null {
  */
 const SHIFTABLE_DATA_CODES: ReadonlySet<string> = new Set([
   'box-missing-equals', 'collapsible-gradient', 'crossed-tags', 'deprecated-tag', 'empty-link',
-  'empty-tag', 'gradient-outlier', 'invalid-url-protocol', 'max-quote-depth', 'missing-url-protocol', 'nested-structure', 'nested-tags-in-code',
+  'empty-tag', 'gradient-outlier', 'hash-before-token', 'invalid-url-protocol', 'max-quote-depth', 'missing-url-protocol', 'nested-structure', 'nested-tags-in-code',
   'nesting-too-deep', 'orphan-closing-tag', 'osu-nested-alignment', 'osu-titled-spoilerbox',
   'osu-unsupported-nesting', 'redundant-nesting', 'unclosed-tag', 'unicode-url', 'unknown-tag',
   'unresolved-token', 'url-markdown-link',
@@ -2624,6 +2624,40 @@ export class SemanticAnalyzer {
         }
 
         return diagnostics.length > 0 ? diagnostics : null
+      },
+    })
+
+    // ── '#' written before a design token ───────────────────────
+    // `[color=#$accent]` reads like a hex colour that uses a token, but a
+    // reference is only recognised when the value STARTS with `$`: with the
+    // `#` in front it is an invalid colour, and the text renders uncoloured
+    // with no other warning (`unresolved-token` never sees it). Manual fix:
+    // dropping the `#` changes the render, which is the point.
+    this.register({
+      code: 'hash-before-token',
+      severity: 'warning',
+      kinds: ['color'],
+      validate: (node, ctx) => {
+        if (!node.text.includes('#$')) return null
+        const openEnd = node.innerStart > node.range.start ? node.innerStart : node.range.end
+        if (node.range.start < 0 || openEnd > ctx.source.length) return null
+        const openTag = ctx.source.slice(node.range.start, openEnd)
+        const match = /=\s*(#)\$([a-zA-Z0-9_.-]+)/.exec(openTag)
+        if (!match) return null
+        const hashAt = node.range.start + match.index + match[0].indexOf('#')
+        const name = match[2]
+        const range = { start: hashAt, end: hashAt + 1 }
+        return createDiagnostic(
+          'hash-before-token',
+          `"#$${name}" is not a design token reference: remove the "#" to use $${name}`,
+          'warning',
+          {
+            nodeId: node.id,
+            nodeKind: node.kind,
+            range: { start: hashAt, end: hashAt + 2 + name.length },
+            data: { range, name },
+          },
+        )
       },
     })
 
