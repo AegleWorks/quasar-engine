@@ -330,7 +330,7 @@ export { domToSVG, domToSVGResult } from './Utils/dom-to-svg'
 export type { DomToSVGOptions, DomToSVGResult, SVGLayerInfo } from './Utils/dom-to-svg'
 
 // ── MilHibri Unified Hybrid Language ──
-export { MilHibriDocumentModel, type MilHibriDocumentModelOptions } from './MilHibri/MilHibriDocumentModel'
+export { MilHibriDocumentModel, usesBBCodeStructure, type MilHibriDocumentModelOptions } from './MilHibri/MilHibriDocumentModel'
 
 // ── Markdown Bridge ──
 export { MarkdownDocumentModel } from './Markdown/MarkdownDocumentModel'

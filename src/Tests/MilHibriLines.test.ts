@@ -93,4 +93,23 @@ describe('MilHibri line behaviour — BBCode lines, not Markdown soft wraps', ()
 
     expect(html).toContain('uno\ndos')
   })
+
+  it('lets a Markdown document keep soft breaks without losing the BBCode engine', () => {
+    const soft = renderer.render(new MilHibriDocumentModel({
+      source: 'uno\ndos',
+      lineBreaks: 'soft',
+      preferOsuBBCode: false,
+    }).redRoot!)
+
+    expect(soft).toContain('uno\ndos')
+    expect(soft).not.toContain('uno<br>dos')
+
+    const withBBCode = renderer.render(new MilHibriDocumentModel({
+      source: '[b]uno\ndos[/b]',
+      lineBreaks: 'soft',
+      preferOsuBBCode: false,
+    }).redRoot!)
+
+    expect(shape(withBBCode)).toContain('uno<br>dos')
+  })
 })

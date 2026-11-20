@@ -13,6 +13,21 @@ import { rewriteMarkdownBlocks } from './MarkdownBlocks';
 
 export interface MilHibriDocumentModelOptions extends DocumentModelOptions {
   source?: string;
+  /**
+   * Regla de saltos para el camino Markdown puro. `'hard'` (por defecto) es
+   * la regla de BBCode/MilHibri: cada salto termina una línea. `'soft'` es la
+   * de CommonMark: el salto vive dentro del párrafo y el navegador lo colapsa.
+   * El camino BBCode siempre usa saltos duros, independientemente de esto.
+   */
+  lineBreaks?: 'soft' | 'hard';
+  /**
+   * Si un texto sin BBCode debe tomar el motor BBCode para heredar sus reglas
+   * de prosa (autolinks, saltos duros). Por defecto `true`, que es lo correcto
+   * para MilHibri. Un documento declarado Markdown puede ponerlo en `false`:
+   * así el Markdown puro conserva sus saltos suaves y un texto con etiquetas
+   * BBCode sigue yendo al motor BBCode.
+   */
+  preferOsuBBCode?: boolean;
 }
 
 // ── Source mode ────────────────────────────────────────────────────
@@ -364,12 +379,18 @@ export class MilHibriDocumentModel extends DocumentModel {
   private _lastParseWasBBCode = false
   /** Whether the green tree still partitions the source byte-for-byte. */
   private _lastParseMirrorsSource = false
+  /** Newline rule for the Markdown-only path (see the option's docs). */
+  private readonly _lineBreaks: 'soft' | 'hard'
+  /** Whether plain prose may borrow the BBCode engine (see the option's docs). */
+  private readonly _preferOsuBBCode: boolean
 
   constructor(options: MilHibriDocumentModelOptions = {}) {
     // Keep the caller's switches (`autoAnalyze`, `incremental`, `reuseRed`,
     // `maxUndo`): the old constructor dropped them, so a caller asking for no
     // analysis or no undo got both anyway.
     super({ ...options, source: '', language: 'milhibri' });
+    this._lineBreaks = options.lineBreaks ?? 'hard';
+    this._preferOsuBBCode = options.preferOsuBBCode ?? true;
     if (options.source) {
       this.rebuild(options.source);
     }
@@ -388,7 +409,7 @@ export class MilHibriDocumentModel extends DocumentModel {
     // visible markup and 262 changed lines because one token flipped parsers.
     const useBBCodeStructure = usesBBCodeStructure(source)
 
-    if (useBBCodeStructure || prefersOsuBBCode(source)) {
+    if (useBBCodeStructure || (this._preferOsuBBCode && prefersOsuBBCode(source))) {
       this._lastParseWasBBCode = true
       const blocks = useBBCodeStructure
         ? rewriteMarkdownBlocks(source)
@@ -426,9 +447,10 @@ export class MilHibriDocumentModel extends DocumentModel {
     this._lastParseMirrorsSource = false
     try {
       const tokens = scanMarkdown(source);
-      // BBCode's line rule, not Markdown's: a newline ends the line. Without
-      // this a pasted userpage collapses every line into one soft paragraph.
-      const ast = parseMarkdown(tokens, { lineBreaks: 'hard' });
+      // MilHibri defaults to BBCode's line rule: a newline ends the line.
+      // A caller importing a Markdown-only document can ask for CommonMark's
+      // soft rule instead, without changing the BBCode path above.
+      const ast = parseMarkdown(tokens, { lineBreaks: this._lineBreaks });
       return markdownAstToGreenTree(ast);
     } catch (error) {
       console.warn('[MilHibriDocumentModel] Parse error:', error);
