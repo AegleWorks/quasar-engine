@@ -15,3 +15,6 @@ bench-report.txt
 
 # Agent tooling cache
 .atl/
+
+# Scratch examples for local fuzzing (e.g. the TS-vs-Rust diff replica); not part of the crate.
+examples/
