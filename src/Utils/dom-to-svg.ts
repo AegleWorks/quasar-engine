@@ -19,6 +19,23 @@ export interface DomToSVGOptions {
   scale?: number
   /** Maximum unscaled height in pixels to scan and render into the SVG (useful for thumbnails). Elements and lines below this cutoff are omitted. */
   maxHeight?: number
+  /**
+   * `@font-face` rules to embed in the SVG (see `embedFontFaces`), in place
+   * of the Google Fonts `@import`. An SVG shown through `<img>` — which is
+   * how osu! shows an `[img]` — loads nothing external, so only embedded
+   * fonts reach it.
+   */
+  fontCSS?: string
+}
+
+/** One font the text of a snapshot is drawn in, and the characters drawn in it. */
+export interface FontUse {
+  /** The computed `font-family` list, as the browser resolves it. */
+  family: string
+  weight: number
+  style: string
+  /** Every character drawn in this font. */
+  text: string
 }
 
 export interface SVGLayerInfo {
@@ -39,6 +56,35 @@ export interface DomToSVGResult {
   height: number
   layerCount: number
   layers: SVGLayerInfo[]
+}
+
+/**
+ * The fonts the text under `root` is drawn in, for `embedFontFaces`.
+ *
+ * Read from the same computed styles the snapshot reads, one entry per
+ * family list, weight and style, each with the characters it draws: a font
+ * split by `unicode-range` only needs the ranges those characters fall in.
+ */
+export function collectFontUses(root: HTMLElement): FontUse[] {
+  const uses = new Map<string, { family: string; weight: number; style: string; chars: Set<string> }>()
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.textContent ?? ''
+    const parent = node.parentElement
+    if (!parent || !text.trim() || isImagemapOverlay(parent)) continue
+    const cs = window.getComputedStyle(parent)
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue
+    const weight = parseInt(cs.fontWeight, 10) || 400
+    const style = cs.fontStyle || 'normal'
+    const key = `${cs.fontFamily}|${weight}|${style}`
+    let use = uses.get(key)
+    if (!use) {
+      use = { family: cs.fontFamily, weight, style, chars: new Set() }
+      uses.set(key, use)
+    }
+    for (const ch of text) if (ch.trim()) use.chars.add(ch)
+  }
+  return Array.from(uses.values(), (u) => ({ family: u.family, weight: u.weight, style: u.style, text: Array.from(u.chars).join('') }))
 }
 
 // ────────────────────────────────────────────────────────────
@@ -138,7 +184,9 @@ export function domToSVGResult(
   const svgOpen = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
   state.parts.push(svgOpen)
 
-  if (fontFamilies.size > 0) {
+  if (options.fontCSS) {
+    state.parts.push(`  <defs><style>${escapeStyleText(options.fontCSS)}</style></defs>`)
+  } else if (fontFamilies.size > 0) {
     const families = Array.from(fontFamilies)
       .map((f) => encodeURIComponent(f))
       .join("|")
@@ -221,6 +269,54 @@ function escapeXml(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;")
+}
+
+/** CSS as XML text: the SVG is XML, so `&` and `<` must be escaped inside `<style>`. */
+function escapeStyleText(css: string): string {
+  return css.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+}
+
+/**
+ * A uniform `border-radius` as SVG draws it. CSS shrinks a radius that does
+ * not fit to half the box (a `999px` pill is round at the ends); SVG only
+ * clamps `rx` and `ry` each against its own side, so a long pill with
+ * `rx="999"` came out as an ellipse.
+ */
+function fitRadius(radius: number, w: number, h: number): number {
+  return Math.max(0, Math.min(radius, w / 2, h / 2))
+}
+
+/** ` stroke-opacity` for a colour with alpha, or nothing. */
+function strokeOpacityAttr(color: string): string {
+  const alpha = extractAlpha(color)
+  return alpha < 1 ? ` stroke-opacity="${alpha.toFixed(3)}"` : ""
+}
+
+interface FontMetrics { ascent: number; descent: number }
+const metricsCache = new Map<string, FontMetrics | null>()
+let metricsContext: OffscreenCanvasRenderingContext2D | null | undefined
+
+/**
+ * The font's own ascent and descent, for an exact baseline. Measured with a
+ * canvas in the same font the text is drawn in; `null` where there is no
+ * canvas (jsdom), and then the baseline falls back to an estimate.
+ */
+function fontMetrics(cs: CSSStyleDeclaration): FontMetrics | null {
+  const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+  const cached = metricsCache.get(font)
+  if (cached !== undefined) return cached
+  if (metricsContext === undefined) {
+    metricsContext = typeof OffscreenCanvas === "undefined" ? null : new OffscreenCanvas(1, 1).getContext("2d")
+  }
+  let metrics: FontMetrics | null = null
+  if (metricsContext) {
+    metricsContext.font = font
+    const m = metricsContext.measureText("Hg")
+    if (m.fontBoundingBoxAscent > 0) metrics = { ascent: m.fontBoundingBoxAscent, descent: m.fontBoundingBoxDescent }
+  }
+  // A font still loading measures as its fallback: do not remember that.
+  if (metrics && document.fonts?.check?.(font)) metricsCache.set(font, metrics)
+  return metrics
 }
 
 function colorToHex(color: string): string {
@@ -498,7 +594,7 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
   if (hasArea) {
     const bg = cs.backgroundColor
     const hasBg = bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent"
-    const rx = parseFloat(cs.borderRadius) || 0
+    const rx = fitRadius((parseFloat(cs.borderRadius) || 0) * scale, w, h)
 
     if (hasBg) {
       const hexBg = colorToHex(bg)
@@ -508,7 +604,7 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
           ? `fill="${hexBg}" fill-opacity="${alpha.toFixed(3)}"`
           : `fill="${hexBg}"`
       state.parts.push(
-        `${ind(depth)}<rect id="${layerId}-bg" x="${px(x)}" y="${px(y)}" width="${px(w)}" height="${px(h)}" ${fillAttr} rx="${px(rx * scale)}"${opacityAttr} />`,
+        `${ind(depth)}<rect id="${layerId}-bg" x="${px(x)}" y="${px(y)}" width="${px(w)}" height="${px(h)}" ${fillAttr} rx="${px(rx)}"${opacityAttr} />`,
       )
       state.layersList.push({
         id: `${layerId}-bg`,
@@ -534,9 +630,10 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
     if (allSidesEqual) {
       const hexB = colorToHex(cs.borderTopColor || "#2e2030")
       const strokeW = bTopW * scale
-      const ry = rx * scale
+      // The stroke runs down the middle of the border, half a width inside the box.
+      const ry = fitRadius(rx - strokeW / 2, w - strokeW, h - strokeW)
       state.parts.push(
-        `${ind(depth)}<rect id="${layerId}-border" x="${px(x + strokeW / 2)}" y="${px(y + strokeW / 2)}" width="${px(w - strokeW)}" height="${px(h - strokeW)}" fill="none" stroke="${hexB}" stroke-width="${strokeW.toFixed(2)}" rx="${ry.toFixed(2)}" />`,
+        `${ind(depth)}<rect id="${layerId}-border" x="${px(x + strokeW / 2)}" y="${px(y + strokeW / 2)}" width="${px(w - strokeW)}" height="${px(h - strokeW)}" fill="none" stroke="${hexB}"${strokeOpacityAttr(cs.borderTopColor)} stroke-width="${strokeW.toFixed(2)}" rx="${ry.toFixed(2)}" />`,
       )
       state.layersList.push({
         id: `${layerId}-border`,
@@ -554,7 +651,7 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
       const hexB = colorToHex(cs.borderLeftColor || "#2e2030")
       const lw = bLeftW * scale
       state.parts.push(
-        `${ind(depth)}<line id="${layerId}-left-border" x1="${px(x + lw / 2)}" y1="${px(y)}" x2="${px(x + lw / 2)}" y2="${px(y + h)}" stroke="${hexB}" stroke-width="${lw.toFixed(2)}" />`,
+        `${ind(depth)}<line id="${layerId}-left-border" x1="${px(x + lw / 2)}" y1="${px(y)}" x2="${px(x + lw / 2)}" y2="${px(y + h)}" stroke="${hexB}"${strokeOpacityAttr(cs.borderLeftColor)} stroke-width="${lw.toFixed(2)}" />`,
       )
       state.layersList.push({
         id: `${layerId}-left-border`,
@@ -579,7 +676,7 @@ function walkElement(el: Element, state: WalkState, depth: number): void {
     let clipAttr = ""
     if (hasArea && el !== state.root && clipsOverflow(cs.overflowX) && clipsOverflow(cs.overflowY)) {
       const clipId = `clip-${state.layerCount}`
-      const rx = (parseFloat(cs.borderRadius) || 0) * scale
+      const rx = fitRadius((parseFloat(cs.borderRadius) || 0) * scale, w, h)
       state.parts.push(
         `${ind(depth)}<defs><clipPath id="${clipId}"><rect x="${px(x)}" y="${px(y)}" width="${px(w)}" height="${px(h)}" rx="${px(rx)}" /></clipPath></defs>`,
       )
@@ -783,9 +880,10 @@ function walkTextNode(textNode: Text, state: WalkState, depth: number): void {
   const fillOpacityAttr = colorAlpha < 1 ? ` fill-opacity="${colorAlpha.toFixed(3)}"` : ""
 
   const fontSize = parseFloat(cs.fontSize) || 14
-  const fontFamilyRaw =
-    cs.fontFamily?.split(",")[0]?.replace(/['"]/g, "").trim() || "sans-serif"
-  const fontFamily = escapeXml(fontFamilyRaw)
+  // The whole list, not its first name: a viewer without that font must fall
+  // through to the next one, not to the browser's default serif.
+  const fontFamily = escapeXml(cs.fontFamily?.trim() || "sans-serif")
+  const metrics = fontMetrics(cs)
   const fontWeight = cs.fontWeight || "400"
   const fontStyleValue = cs.fontStyle || "normal"
   const textDecoration = cs.textDecorationLine || ""
@@ -797,16 +895,25 @@ function walkTextNode(textNode: Text, state: WalkState, depth: number): void {
       ? ` letter-spacing="${(letterSpacing * scale).toFixed(2)}"`
       : ""
 
+  // SVG drops a text's leading space, but the line's rect (its x) includes it:
+  // `<b>Ghost</b> by` came out as "Ghostby". Keep the spaces, collapsed the
+  // way CSS collapses them, so what is drawn is what the rect measured.
+  const collapses = !cs.whiteSpace.startsWith("pre") && cs.whiteSpace !== "break-spaces"
+
   for (const line of lines) {
     if (!line.text.trim()) continue
+    const shown = collapses ? line.text.replace(/[ \t\n\r\f]+/g, " ") : line.text
 
     const lx = (line.rect.left - rootRect.left) * scale
     const ly = (line.rect.top - rootRect.top) * scale
     const lw = line.rect.width * scale
     const lh = line.rect.height * scale
 
-    // Baseline: roughly 80% down the line box
-    const baselineY = ly + fontSize * scale * 0.82
+    // The baseline sits `ascent` below the top of the glyphs' box, which the
+    // line rect centres vertically. Without metrics, roughly 80% down.
+    const baselineY = metrics
+      ? (line.rect.top - rootRect.top + (line.rect.height - metrics.ascent - metrics.descent) / 2 + metrics.ascent) * scale
+      : ly + fontSize * scale * 0.82
 
     // Anchor based on text-align
     let anchor = "start"
@@ -822,7 +929,7 @@ function walkTextNode(textNode: Text, state: WalkState, depth: number): void {
       fill = `url(#${gradientId})`
     }
     state.parts.push(
-      `${ind(depth)}<text id="${textLayerId}" x="${px(tx)}" y="${px(baselineY)}" fill="${fill}"${fillOpacityAttr} font-size="${(fontSize * scale).toFixed(2)}" font-family="${fontFamily}" font-weight="${fontWeight}" font-style="${fontStyleValue}" text-anchor="${anchor}"${lsAttr}>${escapeXml(line.text)}</text>`,
+      `${ind(depth)}<text id="${textLayerId}" x="${px(tx)}" y="${px(baselineY)}" fill="${fill}"${fillOpacityAttr} font-size="${(fontSize * scale).toFixed(2)}" font-family="${fontFamily}" font-weight="${fontWeight}" font-style="${fontStyleValue}" text-anchor="${anchor}"${lsAttr} xml:space="preserve">${escapeXml(shown)}</text>`,
     )
     state.layersList.push({
       id: textLayerId,

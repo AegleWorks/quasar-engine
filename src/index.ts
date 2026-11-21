@@ -327,8 +327,10 @@ export {
 export { splitMods, starColor, flagUrl, formatLength, groupNumber, cardImageUrl } from './Visitors/osuCards'
 
 // ── DOM Utilities ──
-export { domToSVG, domToSVGResult } from './Utils/dom-to-svg'
-export type { DomToSVGOptions, DomToSVGResult, SVGLayerInfo } from './Utils/dom-to-svg'
+export { domToSVG, domToSVGResult, collectFontUses } from './Utils/dom-to-svg'
+export type { DomToSVGOptions, DomToSVGResult, SVGLayerInfo, FontUse } from './Utils/dom-to-svg'
+export { embedFontFaces, readFontFaceSources, selectFontFaces } from './Utils/embedFontFaces'
+export type { FontFaceSource } from './Utils/embedFontFaces'
 
 // ── MilHibri Unified Hybrid Language ──
 export { MilHibriDocumentModel, usesBBCodeStructure, type MilHibriDocumentModelOptions } from './MilHibri/MilHibriDocumentModel'
