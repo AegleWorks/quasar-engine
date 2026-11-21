@@ -5,14 +5,15 @@
  * `#FF66AB` accent, rounded cards) that degrade to plain content on a naive
  * osu! export. The real export path rasterizes them: render the node in
  * isolation → `domToSVG` → upload the SVG to the user's default asset host →
- * replace the node with `[img]url[/img]`.
+ * replace the node with a centred `[img]url[/img]`.
  *
  * This module is DOM-free and host-free: it collects the nodes, hashes them
- * for the upload cache, and splices `[img]` replacements into exported text.
+ * for the upload cache, and splices the `[img]` replacements into the source.
  * The DOM/SVG/upload half lives in Miliastry (`features/BBCode/raster/`).
  */
 
 import type { RedNode } from '../Syntax/RedNode'
+import { newlineRule } from '../Semantic/osu/newlineRules'
 
 export const RASTERIZABLE_TAGS = [
   'profilecard',
@@ -66,37 +67,75 @@ function sortKeys(obj: Record<string, unknown>): Record<string, unknown> {
   return out
 }
 
-export interface RasterReplacement {
-  node: RedNode
-  url: string
-  hash: string
+/**
+ * The native BBCode a rasterized node becomes: its image, centred.
+ *
+ * Centred because every raster tag renders as a block card. Exported so the
+ * one wrapper lives here and nowhere else.
+ */
+export function rasterImageBBCode(url: string): string {
+  return `[centre][img]${url}[/img][/centre]`
+}
+
+/** The kind {@link rasterImageBBCode} wraps the image in, for its newline budget. */
+const RASTER_WRAPPER_KIND = 'center'
+
+/** Newlines in the run that starts at `at` (`\n` or `\r\n` each). */
+function newlineRunAt(source: string, at: number): number {
+  let count = 0
+  let i = at
+  for (;;) {
+    if (source.charCodeAt(i) === 13 /* \r */ && source.charCodeAt(i + 1) === 10) i += 2
+    else if (source.charCodeAt(i) === 10 /* \n */) i += 1
+    else return count
+    count++
+  }
+}
+
+/** How many of `run` newlines after its closer a construct of `kind` swallows. */
+function eatenAfterClose(kind: string, run: number): number {
+  return Math.min(newlineRule(kind)?.afterClose ?? 0, run)
 }
 
 /**
- * Splice `[img]` replacements into already-exported BBCode.
+ * The replacement for one raster node: the image, plus the newlines its
+ * wrapper swallows and the node did not.
  *
- * `exported` must be the osu-target export of the same tree the nodes came
- * from. Each raster node is located by its source range mapped through the
- * exporter… in practice the exporter strips raster tags to their content, so
- * instead the caller passes the node's *exported span*: the simplest robust
- * contract is to replace by the node's original source slice when the export
- * kept it verbatim (miliastry/lyne), or by explicit ranges the caller computed.
- *
- * To keep this DOM-free, `replaceRasterInExport` works on explicit spans:
- * `{ start, end }` index into `exported`, replaced by `[img]url[/img]`
- * (centred when the node was a block).
+ * A raster card has no newline rule of its own, so the newlines after
+ * `[/profilecard]` all draw. `[/centre]` eats the first one (osu!'s
+ * `strtr` of `[/centre]\n`, measured: `[/centre]\n\n` publishes
+ * `</div><br />`), so a plain swap took one line of space off whatever
+ * came under the card. Giving that newline back keeps the spacing the
+ * author saw in the editor. Both budgets come from `newlineRules`, the
+ * table the preview and the exporter already read.
  */
-export function replaceRasterInExport(
-  exported: string,
-  spans: ReadonlyArray<{ start: number; end: number; url: string; block: boolean }>,
+export function rasterReplacementFor(node: RedNode, source: string, url: string): string {
+  const run = newlineRunAt(source, node.range.end)
+  const owed = eatenAfterClose(RASTER_WRAPPER_KIND, run) - eatenAfterClose(node.kind, run)
+  return rasterImageBBCode(url) + '\n'.repeat(Math.max(0, owed))
+}
+
+/**
+ * Replace every raster node of `root` in `source` with its image.
+ *
+ * Works on the SOURCE, by the nodes' ranges, so the result goes through the
+ * ordinary export afterwards and every exporter rule still applies. A node
+ * `urlFor` has no URL for is left as written.
+ */
+export function spliceRasterImages(
+  source: string,
+  root: RedNode | null | undefined,
+  urlFor: (hash: string) => string | undefined,
 ): string {
-  const ordered = [...spans].sort((a, b) => b.start - a.start)
-  let out = exported
-  for (const span of ordered) {
-    const img = span.block
-      ? `[centre][img]${span.url}[/img][/centre]`
-      : `[img]${span.url}[/img]`
-    out = out.slice(0, span.start) + img + out.slice(span.end)
+  const nodes = collectRasterNodes(root)
+  if (nodes.length === 0) return source
+  // Back to front, so each splice leaves the earlier ranges valid.
+  const ordered = [...nodes].sort((a, b) => b.range.start - a.range.start)
+  let out = source
+  for (const node of ordered) {
+    const url = urlFor(hashRasterNode(node, source))
+    if (!url) continue
+    out = out.slice(0, node.range.start) + rasterReplacementFor(node, source, url) + out.slice(node.range.end)
   }
   return out
 }

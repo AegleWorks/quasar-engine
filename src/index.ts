@@ -318,10 +318,11 @@ export {
   isRasterizable,
   collectRasterNodes,
   hashRasterNode,
-  replaceRasterInExport,
+  rasterImageBBCode,
+  rasterReplacementFor,
+  spliceRasterImages,
   describeRasterNode,
   type RasterizableTag,
-  type RasterReplacement,
 } from './Raster/rasterTags'
 export { splitMods, starColor, flagUrl, formatLength, groupNumber, cardImageUrl } from './Visitors/osuCards'
 
