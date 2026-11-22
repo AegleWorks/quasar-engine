@@ -32,7 +32,7 @@ import type { NodeKind } from '../Types/core'
 import { isBlockKind } from '../BBCode/BBCodeToGreenNode'
 
 /** Kinds whose content is raw text: nothing in it means anything, and spaces stay as written. */
-const RAW: ReadonlySet<string> = new Set(['code', 'inline_code'])
+const RAW: ReadonlySet<string> = new Set(['code'])
 
 export function inRaw(root: RedNode, at: number): boolean {
   const here = root.findNodeAtOffset(at) ?? (at > 0 ? root.findNodeAtOffset(at - 1) : null)

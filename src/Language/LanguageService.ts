@@ -70,7 +70,7 @@ const NOT_IN_OUTLINE: ReadonlySet<NodeKind> = new Set([
 ])
 
 /** Kinds whose content is literal and therefore not completed or classified. */
-const OPAQUE_KINDS: ReadonlySet<NodeKind> = new Set(['code', 'inline_code'])
+const OPAQUE_KINDS: ReadonlySet<NodeKind> = new Set(['code'])
 
 const PREVIEW_MAX = 60
 

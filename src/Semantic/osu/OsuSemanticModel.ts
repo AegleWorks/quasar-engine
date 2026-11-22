@@ -130,7 +130,7 @@ export class OsuSemanticModel {
       }
       const walk = (n: RedNode): void => {
         for (const c of n.children) {
-          if (c.kind === 'code' || c.kind === 'inline_code') continue
+          if (c.kind === 'code') continue
           if (c.kind === 'text' && c.children.length === 0) {
             const m = /^\[\/([a-z0-9_-]+)\]$/.exec(c.text)
             if (m !== null) claim(m[1], c)
@@ -195,7 +195,7 @@ export class OsuSemanticModel {
     const text = node.text
     if (text !== '[/box]' && text !== '[/spoilerbox]') return false
     for (let a = node.parent; a !== null; a = a.parent) {
-      if (a.kind === 'code' || a.kind === 'inline_code') return false
+      if (a.kind === 'code') return false
     }
     return true
   }

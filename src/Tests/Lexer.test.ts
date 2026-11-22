@@ -154,8 +154,12 @@ describe('BBCodeLexer', () => {
         .toEqual(['open:code', 'text:"raw [b]x[/b]"', 'close:code'])
     })
 
-    it('[c] se comporta igual', () => {
-      expect(brief('[c][i]y[/i][/c]')).toEqual(['open:c', 'text:"[i]y[/i]"', 'close:c'])
+    it('[c] NO es raw: sus etiquetas internas son etiquetas, como en osu!', () => {
+      expect(brief('[c][i]y[/i][/c]')).toEqual(['open:c', 'open:i', 'text:"y"', 'close:i', 'close:c'])
+    })
+
+    it('un [c] sin cerrar no se traga el resto', () => {
+      expect(brief('[c]resto [b]x[/b]')).toEqual(['open:c', 'text:"resto "', 'open:b', 'text:"x"', 'close:b'])
     })
 
     it('un [code] sin cerrar se traga el resto', () => {

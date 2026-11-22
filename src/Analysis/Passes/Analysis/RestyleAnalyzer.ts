@@ -40,8 +40,12 @@ import { GradientAnalyzer } from './GradientAnalyzer'
 import { gradientTagContributionAt } from './GradientTagAnalyzer'
 import { scanSymbolText } from './SymbolAnalyzer'
 
-/** Node kinds whose content is literal text, never markup or decoration. */
-const OPAQUE_KINDS: ReadonlySet<string> = new Set(['code', 'inline_code', 'image'])
+/**
+ * Node kinds whose content is literal text, never markup or decoration.
+ * `[c]` is not one: its content is markup (osu! parses tags inside it), and
+ * colours inside an inline-code pill are decoration like any other.
+ */
+const OPAQUE_KINDS: ReadonlySet<string> = new Set(['code', 'image'])
 
 /** A gradient needs at least three adjacent colour children. */
 const MIN_COLOR_RUN = 3

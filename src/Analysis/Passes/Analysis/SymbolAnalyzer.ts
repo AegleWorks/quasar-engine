@@ -61,9 +61,9 @@ const MAX_CONFIDENCE = 0.99
 /**
  * Node kinds whose text is not prose and must never be re-themed.
  *
- * `code` and `inline_code` are the lexer's raw tags (`BBCODE_RAW_TAGS`): their
- * content is literal by definition, and a user who typed `✧` inside a code
- * block meant that exact character. `image` holds a URL as its child text,
+ * `code` and `inline_code` hold code: a user who typed `✧` inside one meant
+ * that exact character. (`[c]` parses tags inside it, but its glyphs are
+ * still the author's code, so it stays opaque here by choice.) `image` holds a URL as its child text,
  * where a matching code point would be part of an address, not decoration.
  */
 const OPAQUE_KINDS: ReadonlySet<string> = new Set(['code', 'inline_code', 'image'])

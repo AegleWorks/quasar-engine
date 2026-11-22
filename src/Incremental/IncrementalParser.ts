@@ -218,7 +218,7 @@ export type IsolationFailure =
  *    should have SPLIT it into two paragraphs at document level. Stopping here
  *    makes the paragraph a member of a window at root level instead, where the
  *    re-parse does see the split.
- *  - `code` / `inline_code` — raw blocks. Their contents are one literal token
+ *  - `code` — a raw block. Its contents are one literal token
  *    because the LEXER saw the opening `[code]`; re-parsing that text on its own
  *    lexes it as ordinary BBCode and shatters it into tags. This is what the
  *    differential fuzz found first: 192 divergences, and every sample was a
@@ -233,7 +233,7 @@ export type IsolationFailure =
  * edit at document level matched nothing at all and fell back to a full
  * rebuild.
  */
-const OPAQUE_KINDS = new Set(['paragraph', 'code', 'inline_code', 'list_item'])
+const OPAQUE_KINDS = new Set(['paragraph', 'code', 'list_item'])
 
 /**
  * Largest share of the document a re-parse region may cover.
@@ -647,7 +647,7 @@ function regionIsSelfContained(
   let bareScans = 0
   while (stack.length > 0) {
     const node = stack.pop()!
-    const code = inCode.pop()! || node.kind === 'code' || node.kind === 'inline_code'
+    const code = inCode.pop()! || node.kind === 'code'
     const at = offsets.pop()!
 
     if (node.children.length === 0) {
@@ -711,9 +711,8 @@ function regionIsSelfContained(
   let node: GreenNode | undefined = region
   while (node !== undefined) {
     if (node !== region && node.leadingWidth > 0 && node.trailingWidth === 0) {
-      // `[code]` and `[c]` are the lexer's raw blocks — different kinds, same
-      // swallow-everything behaviour.
-      if (node.kind === 'code' || node.kind === 'inline_code') return 'open-raw-block'
+      // `[code]` is the lexer's raw block: left open, it swallows everything.
+      if (node.kind === 'code') return 'open-raw-block'
       if (!window.reachesEnd) {
         // An item left open is the one open tag whose end the window CAN
         // see: `[*]` has no closing delimiter, and the full parse ends the

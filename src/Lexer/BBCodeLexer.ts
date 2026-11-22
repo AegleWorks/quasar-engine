@@ -67,12 +67,14 @@ export type BBCodeToken =
  * carry their own copy of `['code', 'c']`, which is a second lexer waiting to
  * disagree with this one. Adding a raw tag here now reaches them.
  *
- * `pairing: 'osu'` is the ONE exception, and only for `c`: osu!'s own passes
- * never escape a `[c]`'s content (see that branch below), so a tag typed
- * inside one is a real tag there. `scanBBCode` is told the pairing; every
- * caller of this list is not.
+ * `[c]` is NOT one, in either pairing. osu!'s `parseInlineSimple` only wraps
+ * a `[c]`'s content in the `:uid` markers and escapes nothing, so a tag typed
+ * inside one is a real tag (measured: `[c][url=https://x]T[/url][/c]`
+ * publishes `<code><a href="https://x">T</a></code>`). Treating it as raw
+ * made Quasar print `[c][color=#f00]h[/color][/c]` with its tags as text and
+ * drop a `[gradient]` painted over a `[c]` on export.
  */
-export const BBCODE_RAW_TAGS: readonly string[] = Object.freeze(['code', 'c'])
+export const BBCODE_RAW_TAGS: readonly string[] = Object.freeze(['code'])
 
 /**
  * Set lookup instead of the two `===` it replaces.
@@ -479,20 +481,11 @@ export function createBBCodeScanner(source: string, options?: ScanBBCodeOptions)
             // ── RAW BLOCK HANDLING (see BBCODE_RAW_TAGS) ──
             // Contents of raw blocks are strictly literal. No inner tags or newline tokens.
             //
-            // `c` is the exception, and only under `pairing: 'osu'`: osu!'s
-            // `parseInlineSimple` only WRAPS its content in the `:uid` markers
-            // (unlike `parseCode`, it escapes nothing), so a tag typed inside a
-            // sealed `[c]` keeps being a tag for every other pass — measured:
-            // `[c][url=https://x]T[/url][/c]` publishes
-            // `<code><a href="https://x">T</a></code>` while the same text
-            // inside `[code]` publishes the tags literally. Isolating the body
-            // here would make them text, so `c` is not a raw block in this
-            // mode: its pairing rule (bare `[c]`, non-dotall, empty content
-            // allowed) is the lazy family in `Osu/osuPairing.ts`, which needs
-            // the body tokenised to build an `inline_code` node with real
-            // children.
+            // Only `code`: `[c]` tokenises normally (see `BBCODE_RAW_TAGS`).
+            // Under `pairing: 'osu'` its sealing rule (bare `[c]`, non-dotall,
+            // empty content allowed) is the lazy family in `Osu/osuPairing.ts`.
             const isOsu = options?.pairing === 'osu'
-            if (RAW_TAG_SET.has(tagName) && !(isOsu && tagName === 'c')) {
+            if (RAW_TAG_SET.has(tagName)) {
               const endTag = `[/${tagName}]`
               let closeIdx = lowerOf().indexOf(endTag, pos)
 

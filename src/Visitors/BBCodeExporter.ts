@@ -143,8 +143,10 @@ const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbo
  * Kinds whose text is a URL, code or markup rather than prose: an effect
  * painting its segments onto its children leaves these alone, or
  * `[gradient][img]url[/img][/gradient]` would colour the URL letter by letter.
+ * `[c]` is painted: osu! parses tags inside it, so a gradient over inline
+ * code becomes one `[c]` of coloured letters, one pill instead of one per letter.
  */
-const UNPAINTED_KINDS = new Set(['image', 'video', 'audio', 'imagemap', 'svg', 'code', 'inline_code'])
+const UNPAINTED_KINDS = new Set(['image', 'video', 'audio', 'imagemap', 'svg', 'code'])
 
 /**
  * An effect being painted onto its children (see `paintChildren`): the

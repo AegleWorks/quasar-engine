@@ -2743,9 +2743,8 @@ export class HTMLRenderer extends Visitor<string> {
    * `<del><ol><li>a</li><li>b</li></ol></del>` (medido). Un formato sin sellar
    * tampoco: su apertura es texto literal y no hay nodo que envolver.
    *
-   * `inline_code` va por completitud: `[c]` es un bloque crudo en el árbol
-   * (su contenido es texto), así que un `[list]` escrito dentro nunca llega a
-   * ser un nodo `list`. Sí valdría para un árbol pegado como HTML.
+   * `inline_code` también: `[c]` no protege su contenido (como en osu!), así
+   * que un `[list]` escrito dentro es un nodo `list` de verdad.
    */
   private static osuFlattensList(node: RedNode): boolean {
     for (let p = node.parent; p !== null; p = p.parent) {

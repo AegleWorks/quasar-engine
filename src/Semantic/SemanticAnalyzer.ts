@@ -382,7 +382,7 @@ export function isUnclosedTag(node: RedNode, source: string): boolean {
 }
 
 /**
- * Whether an unclosed raw block (`[code]`, `[c]`) inside `node` ends where
+ * Whether an unclosed raw block (`[code]`) inside `node` ends where
  * `node` does — down its last children, the only place one can. Text inserted
  * at that end lands inside the raw block, as literal code.
  */
@@ -394,7 +394,7 @@ function unclosedRawEndsWith(node: RedNode, source: string): boolean {
     if (kids.length === 0) return false
     const last = kids[kids.length - 1]
     if (last.range.end !== end) return false
-    if ((last.kind === 'code' || last.kind === 'inline_code') && isUnclosedTag(last, source)) return true
+    if (last.kind === 'code' && isUnclosedTag(last, source)) return true
     cur = last
   }
 }
@@ -1264,7 +1264,7 @@ function collectSubtree(
   collectCandidatesAt(node, start, inCode, source, out)
   const children = node.children
   if (children.length === 0) return
-  const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
+  const code = inCode || node.kind === 'code'
   let offset = start + node.green.leadingWidth
   for (let i = 0; i < children.length; i++) {
     collectSubtree(children[i], offset, code, source, out, nodes)
@@ -1297,7 +1297,7 @@ function descendWindow(
   collectCandidatesAt(node, start, inCode, source, out)
   const children = node.children
   if (children.length === 0) return
-  const code = inCode || node.kind === 'code' || node.kind === 'inline_code'
+  const code = inCode || node.kind === 'code'
   let offset = start + node.green.leadingWidth
   for (let i = 0; i < children.length; i++) {
     const childStart = offset
@@ -2361,10 +2361,10 @@ export class SemanticAnalyzer {
     // Potentially nested structure validator
     this.register({
       code: 'nested-structure',
-      kinds: ['code', 'inline_code'],
+      kinds: ['code'],
       severity: 'warning',
       validate: (node) => {
-        if (node.kind !== 'code' && node.kind !== 'inline_code') return null
+        if (node.kind !== 'code') return null
 
         // Instead of underlining the entire [code] block, we find the exact
         // positions of the tags inside the text and yield a diagnostic for each.

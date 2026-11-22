@@ -243,6 +243,10 @@ describe('SemanticAnalyzer — osu-unsupported-nesting', () => {
     ['notice', '[notice]A[notice]B[/notice]C[/notice]D'],
     ['list', '[list][*]A[list][*]B[/list]C[/list]D'],
     ['url', '[url=https://a.com]A[url=https://b.com]B[/url]C[/url]D'],
+    // `[c]` is not a raw block (osu! parses tags inside it), so a second
+    // `[c]` inside one is a real nested node here, while osu! seals the first
+    // `[c]` with the first `[/c]` and prints the inner one as text.
+    ['c', '[c]A[c]B[/c]C[/c]D'],
   ])('%s: fires with a real source range on the inner tag', (_label, src) => {
     const diags = diagnosticsFor(src)
     expect(diags).toHaveLength(1)
@@ -254,11 +258,10 @@ describe('SemanticAnalyzer — osu-unsupported-nesting', () => {
 
   it.each([
     ['code', '[code]A[code]B[/code]C[/code]D'],
-    ['c', '[c]A[c]B[/c]C[/c]D'],
   ])('%s: never fires — the lexer\'s raw-block tokenising already makes a same-name inner bracket inert text, identically in every dialect', (_label, src) => {
-    // `code`/`c` are `BBCODE_RAW_TAGS`: the lexer isolates their content
-    // before any tag pairing runs, so a literal `[code]`/`[c]` typed inside
-    // one never becomes a second `code`/`inline_code` NODE at all — there is
+    // `code` is a `BBCODE_RAW_TAGS` entry: the lexer isolates its content
+    // before any tag pairing runs, so a literal `[code]` typed inside one
+    // never becomes a second `code` NODE at all — there is
     // no nesting in the tree for this rule or the validator to see, and the
     // default preview and osu! already render the inner bracket as the same
     // literal text.
