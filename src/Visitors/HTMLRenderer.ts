@@ -31,6 +31,10 @@ import { isTerminalNewline } from './terminalLine'
 import { bearsLines, breaksLine, LINE_ID_PREFIX } from '../Semantic/lines'
 import { clampFontSizeForRender, maxFontSizeFor } from '../Utils/FontSizeLimits'
 import { osuPurifiedHref } from '../Osu/osuUrl'
+import { compileCompositionText } from '../Composition/compileText'
+import { parseCompositionSpec, parsePaneSpec, placePanes } from '../Composition/compositionSpec'
+import { OSU_BASE_PX } from '../Composition/OsuTextMeasurer'
+import { renderBBCode } from '../BBCode/BBCodeBatch'
 import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
 import {
   toTokenResolver,
@@ -1061,6 +1065,9 @@ export class HTMLRenderer extends Visitor<string> {
       case 'progress': return this.renderProgress(node)
       case 'divider': return this.renderDivider(node)
       case 'score': return this.renderScore(node)
+      case 'composition': return this.renderComposition(node)
+      // A pane outside a composition has no columns to sit in: its content, as is.
+      case 'pane': return this.renderChildren(node)
       case 'scroll': return this.renderScroll(node)
       case 'sup': return this.wrapInline('sup', node)
       case 'sub': return this.wrapInline('sub', node)
@@ -1879,6 +1886,38 @@ export class HTMLRenderer extends Visitor<string> {
     const surfaceCls = accent ? ' bb-columns-surface' : ''
     const styleBase = `column-count:${numCols};`
     return `<div${this.idAttr(node)} class="bb-columns${surfaceCls}" style="${styleBase}">${content}</div>`
+  }
+
+  /**
+   * `[composition]`. Text mode paints exactly what the export publishes: the
+   * compiled, space-padded BBCode, rendered like any other page (so the
+   * preview equals osu!(export)). It is an inline span because the compiled
+   * lines are inline text joined by `<br>`; a block box would add the line
+   * break osu! does not draw after the last line.
+   *
+   * SVG mode is laid out with flexbox and inline styles only, because the
+   * export rasterizes this very HTML with `domToSVG`.
+   */
+  private renderComposition(node: RedNode): string {
+    const spec = parseCompositionSpec(typeof node.metadata?.spec === 'string' ? (node.metadata.spec as string) : undefined)
+    if (spec.mode === 'text') {
+      const compiled = compileCompositionText(node).bbcode
+      const html = renderBBCode(compiled, {
+        dialect: this.options.dialect,
+        theme: this.options.theme,
+        registry: this.options.registry,
+        tokens: this.options.tokens,
+      })
+      return `<span${this.idAttr(node)} class="bb-composition" data-composition="text">${html}</span>`
+    }
+    const panes = node.children.filter((c) => c.kind === 'pane')
+    const paneSpecs = panes.map((p) => parsePaneSpec(typeof p.metadata?.spec === 'string' ? (p.metadata.spec as string) : undefined))
+    const slots = placePanes(spec, paneSpecs)
+    const cells = panes.map((pane, i) => {
+      const align = paneSpecs[i].align === 'centre' ? 'center' : paneSpecs[i].align
+      return `<div${this.idAttr(pane)} class="bb-composition__pane" style="flex:0 0 ${slots[i].width.toFixed(2)}px;min-width:0;text-align:${align};overflow-wrap:anywhere;">${this.renderChildren(pane)}</div>`
+    })
+    return `<div${this.idAttr(node)} class="bb-composition" data-composition="svg" style="${HTMLRenderer.rasterFont}font-size:${OSU_BASE_PX}px;display:flex;align-items:flex-start;gap:${spec.gap}px;width:${spec.width}px;max-width:100%;">${cells.join('')}</div>`
   }
 
   private renderSeparator(node: RedNode): string {

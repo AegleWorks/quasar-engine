@@ -17,8 +17,8 @@ import type { BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
  * Qué cubre:
  *  1. El registro: si mañana aparece otro tag con `toBBCode`, este harness
  *     falla hasta que se lo agregue a la matriz de generadores.
- *  2. Los cinco generadores actuales (gradient, sinewave, grow, paint,
- *     rainbow) × nueve formas de corchete × tres dialectos × tres targets.
+ *  2. Los generadores actuales (gradient, sinewave, grow, paint,
+ *     rainbow, composition) × nueve formas de corchete × tres dialectos × tres targets.
  *  3. Todos los tags builtin con hijos (formato, layout, cajas, media…) con
  *     el mismo payload literal, para demostrar que el escape nunca fue una
  *     conducta del exportador normal.
@@ -40,6 +40,10 @@ const GENERATORS: readonly GeneratorCase[] = [
   // produce segmentos con estilo y el caso no tocaría la rama del escape.
   { name: 'paint', open: '[paint=cols=1;rows=1;pal=ff0000;map=1]', close: '[/paint]' },
   { name: 'rainbow', open: '[rainbow]', close: '[/rainbow]' },
+  // Compiles its panes to space-padded lines; the text inside must come through untouched.
+  // Written on one line: the newlines between `[composition]` and `[pane]` are layout,
+  // which `extractTextContent` would count as text.
+  { name: 'composition', open: '[composition][pane]', close: '[/pane][/composition]' },
 ]
 
 const GENERATOR_NAMES: ReadonlySet<string> = new Set(GENERATORS.map((g) => g.name))

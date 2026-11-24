@@ -189,6 +189,8 @@ export type NodeKind =
   | 'progress'
   | 'divider'
   | 'score'
+  | 'composition'
+  | 'pane'
   | 'custom'
   | 'error'
   | 'unknown'

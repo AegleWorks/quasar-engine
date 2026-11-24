@@ -137,7 +137,7 @@ function isNewlineKind(n: RedNode): boolean {
 }
 
 /** Miliastry-native effect tags that osu! doesn't support natively */
-const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow', 'paint'])
+const MILIASTRY_INTERNAL_TAGS = new Set(['gradient', 'grow', 'sinewave', 'rainbow', 'paint', 'composition'])
 
 /**
  * Kinds whose text is a URL, code or markup rather than prose: an effect
@@ -230,7 +230,7 @@ class FrozenSet<T> extends Set<T> {
 
 export const MILIASTRY_ONLY_TAGS: ReadonlySet<string> = new FrozenSet([
   'font', 'zalgo', 'aesthetic', 'sparkle', 'bubble', 'flower', 'svg', 'group',
-  'profilecard', 'beatmap', 'progress', 'divider', 'score',
+  'profilecard', 'beatmap', 'progress', 'divider', 'score', 'composition', 'pane',
 ])
 
 export const LYNE_ONLY_TAGS: ReadonlySet<string> = new FrozenSet([
@@ -345,6 +345,8 @@ const KIND_TO_TAG_NAME: Record<string, string> = {
   progress: 'progress',
   divider: 'divider',
   score: 'score',
+  composition: 'composition',
+  pane: 'pane',
 }
 
 
@@ -1021,6 +1023,8 @@ export class BBCodeExporter extends Visitor<string> {
         return `=${node.metadata.columns}${color ? `:${color}` : ''}`
       } else if (node.kind === 'separator' && node.metadata.variant !== undefined) {
         return `=${node.metadata.variant}`
+      } else if ((node.kind === 'composition' || node.kind === 'pane') && typeof node.metadata.spec === 'string') {
+        return `${node.metadata.form === ' ' ? ' ' : '='}${node.metadata.spec}`
       } else if (node.kind === 'scroll' && node.metadata.height !== undefined) {
         return `=${node.metadata.height}`
       } else if (node.kind === 'abbr' && node.metadata.title !== undefined) {

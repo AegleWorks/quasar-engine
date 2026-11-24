@@ -14,6 +14,7 @@
 
 import type { RedNode } from '../Syntax/RedNode'
 import { newlineRule } from '../Semantic/osu/newlineRules'
+import { parseCompositionSpec } from '../Composition/compositionSpec'
 
 export const RASTERIZABLE_TAGS = [
   'profilecard',
@@ -28,7 +29,18 @@ export type RasterizableTag = (typeof RASTERIZABLE_TAGS)[number]
 const RASTER_SET: ReadonlySet<string> = new Set<string>(RASTERIZABLE_TAGS)
 
 export function isRasterizable(node: RedNode): boolean {
+  if (node.kind === 'composition') return isSvgComposition(node)
   return RASTER_SET.has(node.kind)
+}
+
+/**
+ * `[composition=svg]`: drawn as an image on export. A text composition is
+ * compiled to spaced BBCode instead (`Composition/compileText.ts`).
+ */
+export function isSvgComposition(node: RedNode): boolean {
+  if (node.kind !== 'composition') return false
+  const spec = typeof node.metadata?.spec === 'string' ? (node.metadata.spec as string) : undefined
+  return parseCompositionSpec(spec).mode === 'svg'
 }
 
 /** Every rasterizable node in the tree, in document order. */
@@ -154,6 +166,8 @@ export function describeRasterNode(node: RedNode): string {
       return m.label ? `Section “${String(m.label)}”` : 'Divider'
     case 'score':
       return m.title ? `Top play “${String(m.title)}”` : 'Top play'
+    case 'composition':
+      return 'Composition'
     default:
       return node.kind
   }

@@ -20,6 +20,7 @@ import type { RedNode } from '../Syntax/RedNode'
 import { GreenNode } from '../Syntax/GreenNode'
 import type { RenderNode } from '../RenderPipeline/RenderTree'
 import type { Validator } from '../Semantic/SemanticAnalyzer'
+import { compileCompositionText } from '../Composition/compileText'
 import {
   evaluateEffect,
   type EffectKind, type EffectParams, type EffectSpan, type StyledSegment,
@@ -511,6 +512,11 @@ function builtinTagDefinitions(): TagDefinition[] {
 
       // ── Raster cards (Miliastry-only, look osu! native, export as image) ──
       { name: 'profilecard', kind: 'profilecard', label: 'Profile Card', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true, toolbar: { group: 'special', label: 'Profile Card', icon: 'User' }, properties: [{ name: 'user', label: 'Username', type: 'text', defaultValue: '' }, { name: 'rank', label: 'Rank', type: 'text', defaultValue: '' }, { name: 'pp', label: 'pp', type: 'text', defaultValue: '' }, { name: 'country', label: 'Country', type: 'text', defaultValue: '' }] },
+      // Layout osu! cannot draw: compiled to spaced BBCode on export (`Composition/`).
+      // An `svg` composition is rasterized by the export window; when it is not,
+      // it falls back to the same text compilation.
+      { name: 'composition', kind: 'composition', label: 'Composition', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true, toBBCode: (ctx) => compileCompositionText(ctx.node).bbcode },
+      { name: 'pane', kind: 'pane', label: 'Pane', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true },
       { name: 'beatmap', kind: 'beatmap', label: 'Beatmap Card', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: true, toolbar: { group: 'special', label: 'Beatmap Card', icon: 'Music' }, properties: [{ name: 'artist', label: 'Artist', type: 'text', defaultValue: '' }, { name: 'title', label: 'Title', type: 'text', defaultValue: '' }, { name: 'diff', label: 'Difficulty', type: 'text', defaultValue: '' }, { name: 'sr', label: 'Star rating', type: 'text', defaultValue: '' }, { name: 'mapper', label: 'Mapper', type: 'text', defaultValue: '' }, { name: 'status', label: 'Status', type: 'select', defaultValue: 'ranked', options: [{ label: 'Ranked', value: 'ranked' }, { label: 'Loved', value: 'loved' }, { label: 'Pending', value: 'pending' }, { label: 'Graveyard', value: 'graveyard' }] }] },
       { name: 'progress', kind: 'progress', label: 'Level Progress', category: 'layout', isInline: false, isSelfClosing: false, canHaveChildren: false, toolbar: { group: 'special', label: 'Level', icon: 'Gauge' }, properties: [{ name: 'value', label: 'Value (%)', type: 'slider', defaultValue: 50, min: 0, max: 100, step: 1 }, { name: 'label', label: 'Label', type: 'text', defaultValue: '' }, { name: 'level', label: 'Level', type: 'text', defaultValue: '' }] },
       { name: 'divider', kind: 'divider', label: 'Section Header', category: 'layout', isInline: false, isSelfClosing: true, canHaveChildren: false, toolbar: { group: 'layout', label: 'Section', icon: 'Minus' }, properties: [{ name: 'label', label: 'Title (empty = plain line)', type: 'text', defaultValue: '' }] },

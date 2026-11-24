@@ -316,6 +316,7 @@ export type { BoxDrawerOptions, BoxToggleDetail } from './Visuals/BoxDrawer'
 export {
   RASTERIZABLE_TAGS,
   isRasterizable,
+  isSvgComposition,
   collectRasterNodes,
   hashRasterNode,
   rasterImageBBCode,
@@ -324,6 +325,7 @@ export {
   describeRasterNode,
   type RasterizableTag,
 } from './Raster/rasterTags'
+export * from './Composition'
 export { splitMods, starColor, flagUrl, formatLength, groupNumber, cardImageUrl } from './Visitors/osuCards'
 
 // ── DOM Utilities ──

@@ -83,6 +83,9 @@ const MILIASTRY_TAG_TO_KIND_ENTRIES: Record<string, NodeKind> = {
   'progress': 'progress',
   'divider': 'divider',
   'score': 'score',
+  // Layouts osu! cannot draw, compiled on export (`Composition/`).
+  'composition': 'composition',
+  'pane': 'pane',
 }
 
 /**
@@ -268,6 +271,7 @@ const RENDERED_AS_BLOCK = new Set<NodeKind>([
   'heading', 'center', 'right', 'left', 'align', 'imagemap', 'document',
   'list_item', 'spacing', 'empty_line', 'paragraph',
   'tables', 'table_row', 'gallery', 'columns', 'separator', 'scroll',    'container', 'profilecard', 'beatmap', 'progress', 'divider', 'score',
+  'composition', 'pane',
 ])
 
 export function isBlockKind(kind: NodeKind): boolean {
@@ -576,6 +580,15 @@ export function extractGreenNodeMetadata(green: GreenNode): Record<string, unkno
         if (params[k]) res[k] = params[k]
       }
       return res
+    }
+    case 'composition':
+    case 'pane': {
+      // `[composition=svg width=900]`, `[pane=40% right]`: the grammar lives in
+      // `Composition/compositionSpec.ts`; the tree only carries the raw text.
+      // `form` keeps how it was written (`=x` or ` x`) so the round-trip is exact.
+      const trimmed = rawText.trim()
+      const spec = trimmed.replace(/^=/, '').trim()
+      return spec ? { spec, form: trimmed.startsWith('=') ? '=' : ' ' } : NO_METADATA
     }
     case 'scroll':   return value ? { height: value } : {}
     case 'abbr':     return value ? { title: value } : {}
