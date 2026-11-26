@@ -17,6 +17,7 @@
 
 import { parseEffectParams } from '../Utils/EffectMath'
 import { GreenNode, greenNode, greenLeaf } from '../Syntax/GreenNode'
+import { buildRedSumTree, reconcileRedSumTree } from '../Syntax/ChildSumTree'
 import { RedNode, NO_METADATA } from '../Syntax/RedNode'
 import { RedNodeStore } from '../Syntax/RedNodeStore'
 import type { NodeKind } from '../Types/core'
@@ -750,6 +751,18 @@ export function greenToRedNode(
 
   if (!plain) attachTitleNodes(red, green, start, store)
 
+  const greenSum = green.sumTree
+  if (greenSum !== null) {
+    const redSum = buildRedSumTree(
+      greenSum,
+      start + green.leadingWidth,
+      red,
+      (g, off) => greenToRedNode(g, red, store, off),
+    )
+    red.initSumTree(redSum)
+    return red
+  }
+
   const greenChildren = green.children as GreenNode[]
   if (greenChildren.length > 0) {
     const kids: RedNode[] = new Array(greenChildren.length)
@@ -828,6 +841,25 @@ export function greenToRedNodeReusing(
   })
 
   attachTitleNodes(red, green, start)
+
+  // Persistent SumTree O(log N) reconciliation path for wide nodes:
+  // shares untouched B-Tree subtrees by reference in O(1), touching only ~3
+  // internal nodes + 1 leaf (<=64 children) regardless of document size.
+  const newGreenSum = green.sumTree
+  const oldRedSum = oldRed.redTree
+  if (newGreenSum !== null && oldRedSum !== null && !structural) {
+    const nextRedSum = reconcileRedSumTree(
+      newGreenSum,
+      oldRedSum,
+      start + green.leadingWidth,
+      red,
+      (g, off) => greenToRedNode(g, red, undefined, off),
+      (g, old, off) => greenToRedNodeReusing(g, old, off, stats, false),
+      stats,
+    )
+    red.initSumTree(nextRedSum)
+    return red
+  }
 
   const greenKids = green.children as GreenNode[]
   const oldKids = oldRed.children

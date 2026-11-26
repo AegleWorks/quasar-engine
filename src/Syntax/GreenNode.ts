@@ -45,6 +45,16 @@
  */
 
 import { FNV_OFFSET, hashString, hashUint32 } from './hash'
+import {
+  SUM_TREE_THRESHOLD,
+  buildGreenSumTree,
+  flattenGreenSumTree,
+  greenSumAt,
+  greenSumFindAtOffset,
+  greenSumOffsetOfIndex,
+  greenSumSlice,
+  type GreenSumNode,
+} from './ChildSumTree'
 
 /**
  * Shared frozen empty array for childless nodes.
@@ -80,8 +90,10 @@ export class GreenNode {
   readonly kind: string
   /** Raw text of this node (empty for internal nodes) */
   readonly text: string
-  /** Child nodes */
-  readonly children: readonly GreenNode[]
+  /** Backing flat children array (null when backed by a persistent SumTree until lazily read). */
+  private declare _childrenArr: readonly GreenNode[] | null
+  /** Persistent B-Tree backing wide nodes (`count >= SUM_TREE_THRESHOLD`), or null for small nodes. */
+  private declare _sumTree: GreenSumNode | null
   /** Total width of this node in characters, delimiters included */
   readonly width: number
   /** Whether this is a leaf (token) or internal node */
@@ -110,10 +122,8 @@ export class GreenNode {
    */
   private declare _hashCache: number
   /**
-   * Lazy chunked prefix-sum index for wide nodes (`children.length >= 128`).
-   * Entry `k` holds the cumulative width of `children[0 .. k * 64)`, relative
-   * to `leadingWidth`. Enables O(log(N/64) + 64) child offset lookups instead
-   * of O(N) linear scans on multi-MB documents.
+   * Lazy chunked prefix-sum index for medium-wide flat nodes (`128 <= len < SUM_TREE_THRESHOLD`).
+   * Nodes with `>= SUM_TREE_THRESHOLD` children use `_sumTree` directly.
    */
   private declare _chunkOffsets: Float64Array | null
 
@@ -129,6 +139,7 @@ export class GreenNode {
    *                    child widths, avoiding a redundant O(N) copy and sum.
    * @param chunkOffsets Optional pre-shifted chunk prefix-sum index carried over
    *                     from a previous version of this node.
+   * @param sumTree Optional pre-built persistent `GreenSumNode` (O(1) adoption).
    */
   constructor(
     kind: string,
@@ -139,17 +150,37 @@ export class GreenNode {
     ownWidth: number = 0,
     adoptExact: boolean = false,
     chunkOffsets: Float64Array | null = null,
+    sumTree: GreenSumNode | null = null,
   ) {
     this.kind = kind
     this.text = text
+    this.leadingWidth = leadingWidth
+    this.trailingWidth = trailingWidth
+
+    if (sumTree !== null) {
+      this._sumTree = sumTree
+      this._childrenArr = null
+      this.isLeaf = sumTree.count === 0
+      this.width = leadingWidth + sumTree.width + trailingWidth
+      this._hashCache = -1
+      this._chunkOffsets = null
+      return
+    }
+
     const count = children.length
-    // Copied, not adopted, even from builders that never touch the array
-    // again: those arrays grew by `push`, and the copy is exact-size. Adopting
-    // them was measured — 4 ms off a cold open of the 547 KB fixture, for
-    // 2 MB of push slack kept alive as long as the document is.
-    // Structural splices (`adoptExact: true`) already allocate an exact-size
-    // array, so they skip the second O(N) copy.
-    this.children =
+    if (count >= SUM_TREE_THRESHOLD) {
+      const tree = buildGreenSumTree(children)
+      this._sumTree = tree
+      this._childrenArr = null
+      this.isLeaf = false
+      this.width = leadingWidth + tree.width + trailingWidth
+      this._hashCache = -1
+      this._chunkOffsets = null
+      return
+    }
+
+    this._sumTree = null
+    this._childrenArr =
       count === 0
         ? NO_CHILDREN
         : adoptExact
@@ -158,8 +189,6 @@ export class GreenNode {
             ? Object.freeze([...children])
             : [...children]
     this.isLeaf = count === 0
-    this.leadingWidth = leadingWidth
-    this.trailingWidth = trailingWidth
 
     let inner = ownWidth
     if (count > 0 && !adoptExact) {
@@ -172,6 +201,33 @@ export class GreenNode {
     // can never legitimately be negative.
     this._hashCache = -1
     this._chunkOffsets = chunkOffsets
+  }
+
+  /** Construct a wide `GreenNode` directly from an existing persistent `GreenSumNode` in O(1). */
+  static fromSumTree(
+    kind: string,
+    text: string,
+    sumTree: GreenSumNode,
+    leadingWidth: number = 0,
+    trailingWidth: number = 0,
+  ): GreenNode {
+    return new GreenNode(kind, text, NO_CHILDREN as GreenNode[], leadingWidth, trailingWidth, 0, false, null, sumTree)
+  }
+
+  /** Persistent SumTree backing this node when wide, or null. */
+  get sumTree(): GreenSumNode | null {
+    return this._sumTree
+  }
+
+  /** Child nodes (lazily flattened if backed by a persistent SumTree). */
+  get children(): readonly GreenNode[] {
+    let arr = this._childrenArr
+    if (arr === null) {
+      const flat = flattenGreenSumTree(this._sumTree!)
+      arr = FREEZE_CHILDREN ? Object.freeze(flat) : flat
+      this._childrenArr = arr
+    }
+    return arr
   }
 
   // ─── Structural Identity ─────────────────────────────────
@@ -209,9 +265,16 @@ export class GreenNode {
 
   // ─── Query Methods ───────────────────────────────────────
 
-  /** Get child at index */
+  /** Get child at index in O(1) (flat) or O(log N) (SumTree). */
   childAt(index: number): GreenNode | undefined {
-    return this.children[index] as GreenNode | undefined
+    if (this._sumTree !== null) return greenSumAt(this._sumTree, index)
+    return this._childrenArr![index]
+  }
+
+  /** Slice children `[start, end)` in O(log N + K) without flattening a SumTree. */
+  sliceChildren(start: number, end: number): GreenNode[] {
+    if (this._sumTree !== null) return greenSumSlice(this._sumTree, start, end)
+    return (this._childrenArr as GreenNode[]).slice(start, end)
   }
 
   /** Find first child matching predicate */
@@ -219,9 +282,9 @@ export class GreenNode {
     return (this.children as GreenNode[]).find(predicate)
   }
 
-  /** Count of direct children */
+  /** Count of direct children in O(1) without flattening a SumTree. */
   get childCount(): number {
-    return this.children.length
+    return this._sumTree !== null ? this._sumTree.count : this._childrenArr!.length
   }
 
   /** Check if this node has a specific kind */
@@ -282,10 +345,11 @@ export class GreenNode {
 
   /**
    * Start offset of `children[index]` relative to `leadingWidth`.
-   * O(1) (at most 63 additions) for wide nodes via the chunk prefix-sum index.
+   * O(log N) for SumTree-backed nodes, O(1) (<=63 steps) for chunked flat nodes.
    */
   childStartOffset(index: number): number {
-    const kids = this.children as readonly GreenNode[]
+    if (this._sumTree !== null) return greenSumOffsetOfIndex(this._sumTree, index)
+    const kids = this._childrenArr!
     const clamped = index < 0 ? 0 : index > kids.length ? kids.length : index
     if (kids.length >= 128) {
       const table = this.ensureChunkOffsets()
@@ -302,10 +366,11 @@ export class GreenNode {
   /**
    * Locate the first child index `i` whose end offset (`relStart + width`) is
    * `>= relOffset` (relative to `leadingWidth`), returning `{ index, offset }`.
-   * Uses O(log(N/64) + 64) binary search over chunk offsets for wide nodes.
+   * Uses O(log N) SumTree descent or chunked binary search for wide nodes.
    */
   findChildAtRelOffset(relOffset: number): { index: number; offset: number } {
-    const kids = this.children as readonly GreenNode[]
+    if (this._sumTree !== null) return greenSumFindAtOffset(this._sumTree, relOffset)
+    const kids = this._childrenArr!
     const len = kids.length
     if (len === 0) return { index: 0, offset: 0 }
     let i = 0

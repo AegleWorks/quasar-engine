@@ -14,6 +14,12 @@
  */
 
 import { GreenNode } from './GreenNode'
+import {
+  flattenRedSumTree,
+  redSumAt,
+  redSumSlice,
+  type RedSumNode,
+} from './ChildSumTree'
 import type { NodeId, DocumentNode, NodeKind, NodeAttributes, NodeMetadata } from '../Types/core'
 import { createNodeId } from '../Types/core'
 import type { Diagnostic } from '../Types/diagnostics'
@@ -59,7 +65,10 @@ export class RedNode {
    * `cloned.children = []` writes in the effect transformers went around the
    * boundary entirely.) Same array at runtime — the guarantee costs nothing.
    */
-  readonly children: readonly RedNode[]
+  /** Backing flat children array (null when backed by a persistent RedSumTree until lazily read). */
+  private declare _childrenArr: readonly RedNode[] | null
+  /** Persistent B-Tree backing wide nodes (`count >= SUM_TREE_THRESHOLD`), or null for small nodes. */
+  private declare _redTree: RedSumNode | null
   /** Version counter for change tracking */
   version: number
   /** Diagnostics for this node */
@@ -152,7 +161,8 @@ export class RedNode {
     this.green = green
     this._id = options?.id
     this.parent = options?.parent ?? null
-    this.children = NO_CHILDREN
+    this._childrenArr = NO_CHILDREN
+    this._redTree = null
     this.version = 1
     this.diagnostics = options?.diagnostics ?? NO_DIAGNOSTICS
     this.metadata = options?.metadata ?? NO_METADATA
@@ -204,13 +214,39 @@ export class RedNode {
     this._idxCache = index
   }
 
+  /** Persistent RedSumTree backing this node when wide, or null. */
+  get redTree(): RedSumNode | null {
+    return this._redTree
+  }
+
+  /** Attach a persistent RedSumTree directly (construction-only, O(1)). */
+  initSumTree(tree: RedSumNode): void {
+    this._redTree = tree
+    this._childrenArr = null
+  }
+
+  /**
+   * Children as red nodes (lazily flattened with exact synced offsets if
+   * backed by a persistent RedSumTree).
+   */
+  get children(): readonly RedNode[] {
+    let arr = this._childrenArr
+    if (arr === null) {
+      this.materialize()
+      arr = flattenRedSumTree(this._redTree!, this._start + this.green.leadingWidth, this)
+      this._childrenArr = arr
+    }
+    return arr
+  }
+
   /**
    * Take ownership of a children array whose `parent` and `_idxCache` were
    * already wired during fused adoption (avoids a second O(N) pass).
    */
   adoptChildrenFast(children: readonly RedNode[]): void {
     if (children.length === 0) return
-    ;(this as { children: readonly RedNode[] }).children = children
+    this._redTree = null
+    this._childrenArr = children
   }
 
   /**
@@ -404,13 +440,28 @@ export class RedNode {
   }
 
   get childCount(): number {
-    return this.children.length
+    return this._redTree !== null ? this._redTree.green.count : this._childrenArr!.length
   }
 
   // ─── Navigation ──────────────────────────────────────────
 
   childAt(index: number): RedNode | undefined {
-    return this.children[index]
+    if (this._redTree !== null) {
+      if (this._childrenArr !== null) return this._childrenArr[index]
+      this.materialize()
+      return redSumAt(this._redTree, index, this._start + this.green.leadingWidth, this)
+    }
+    return this._childrenArr![index]
+  }
+
+  /** Slice children `[start, end)` in O(log N + K) without flattening a RedSumTree. */
+  sliceChildren(start: number, end: number): RedNode[] {
+    if (this._redTree !== null) {
+      if (this._childrenArr !== null) return (this._childrenArr as RedNode[]).slice(start, end)
+      this.materialize()
+      return redSumSlice(this._redTree, start, end, this._start + this.green.leadingWidth, this)
+    }
+    return (this._childrenArr as RedNode[]).slice(start, end)
   }
 
   /** Get the root of the tree */
@@ -438,7 +489,7 @@ export class RedNode {
     const parent = this.parent
     if (!parent) return null
     const idx = this.index
-    return idx > 0 ? parent.children[idx - 1] : null
+    return idx > 0 ? (parent.childAt(idx - 1) ?? null) : null
   }
 
   /** Get next sibling */
@@ -446,26 +497,22 @@ export class RedNode {
     const parent = this.parent
     if (!parent) return null
     const idx = this.index
-    return idx >= 0 && idx < parent.children.length - 1 ? parent.children[idx + 1] : null
+    return idx >= 0 && idx < parent.childCount - 1 ? (parent.childAt(idx + 1) ?? null) : null
   }
 
   /**
    * Position of this node within its parent, or -1 for a root.
    *
-   * O(1) in the steady state. The cached index is seeded by the mutation methods
-   * (so the construction path never searches at all) and verified by a single
-   * reference compare on read, falling back to `indexOf` only when it is stale.
-   *
-   * This getter is hot: `HTMLRenderer.isPrevBlockBoundary` walks siblings
-   * backwards, so an O(n) implementation here made rendering quadratic —
-   * measured 14.11 ms for 4000 root siblings, growing 2.6x per doubling.
+   * O(1) in the steady state (or O(log N) on a SumTree-backed parent without
+   * flattening). The cached index is seeded by construction/access paths and
+   * verified by a single reference compare on read.
    */
   get index(): number {
     const parent = this.parent
     if (!parent) return -1
-    const siblings = parent.children
     const cached = this._idxCache
-    if (siblings[cached] === this) return cached
+    if (cached >= 0 && parent.childAt(cached) === this) return cached
+    const siblings = parent.children
     const idx = siblings.indexOf(this)
     this._idxCache = idx
     return idx
@@ -524,23 +571,27 @@ export class RedNode {
       }
     }
 
-    const kids = this.children
-    if (kids.length > 0) {
+    const count = this.childCount
+    if (count > 0) {
       const innerStart = start + this.green.leadingWidth
       const innerEnd = end - this.green.trailingWidth
       if (offset >= innerStart && offset < innerEnd) {
         // Jump directly to the single child covering `offset` using GreenNode's
-        // O(log N) chunked width index instead of linearly calling `materialize()`
-        // on every preceding sibling in the document.
+        // O(log N) SumTree/chunked width index without flattening or calling
+        // `materialize()` on any sibling.
         const rel = offset - innerStart
         const hit = this.green.findChildAtRelOffset(rel)
         let idx = hit.index
-        if (idx < kids.length && hit.offset + kids[idx].green.width <= rel) {
-          idx++
+        if (idx < count) {
+          const gChild = this.green.childAt(idx)!
+          if (hit.offset + gChild.width <= rel) idx++
         }
-        if (idx < kids.length) {
-          const found = kids[idx].findNodeAtOffset(offset)
-          if (found) return found
+        if (idx < count) {
+          const child = this.childAt(idx)
+          if (child) {
+            const found = child.findNodeAtOffset(offset)
+            if (found) return found
+          }
         }
       }
     }
@@ -552,8 +603,14 @@ export class RedNode {
 
   /** The writable view of `children`, for this class's own mutators only. */
   private get ownChildren(): RedNode[] {
-    if (this.children === NO_CHILDREN) (this as { children: readonly RedNode[] }).children = []
-    return this.children as RedNode[]
+    if (this._redTree !== null) {
+      const flat = this.children as RedNode[]
+      this._redTree = null
+      this._childrenArr = flat === NO_CHILDREN ? [] : flat
+      return this._childrenArr as RedNode[]
+    }
+    if (this._childrenArr === NO_CHILDREN) this._childrenArr = []
+    return this._childrenArr as RedNode[]
   }
 
   /** `diagnostics`, as an array this node owns and a writer may push into. */
@@ -562,24 +619,6 @@ export class RedNode {
     return this.diagnostics
   }
 
-  /**
-   * Adopt a fully-built array of children in one shot.
-   *
-   * Construction-only, and deliberately outside the mutation lock. The tree
-   * builders used to call `allowMutation(() => { for (…) appendChild(…) })` once
-   * **per node**, which on a 1736-node document meant 1736 closures, 1736
-   * `try/finally` frames and 1736 static-flag saves — pure ceremony, since a
-   * node that no caller has seen yet cannot be observed mid-mutation. This
-   * populates `children`, `parent` and the index cache in a single pass instead.
-   *
-   * `version` intentionally stays at 1: a freshly built node has not been
-   * *edited*, and bumping once per child would make the initial version an
-   * accidental child count.
-   *
-   * Only safe while `this` is still unreachable from the rest of the tree. Use
-   * `appendChild` and friends for anything after that. Takes ownership of
-   * `children`: the caller must not keep or change that array.
-   */
   initChildren(children: readonly RedNode[]): void {
     for (let i = 0; i < children.length; i++) {
       const child = children[i]
@@ -587,12 +626,11 @@ export class RedNode {
       child._idxCache = i
     }
     if (children.length === 0) return
-    // The array is TAKEN, not copied: every builder hands over one it made for
-    // this call and never touches again. Copying it pushed each child into a
-    // second array that grew by reallocation — a spare array per node, plus
-    // slack, on the hottest allocation path of a cold parse.
-    if (this.children === NO_CHILDREN) (this as { children: readonly RedNode[] }).children = children
-    else this.ownChildren.push(...children)
+    if (this._redTree === null && this._childrenArr === NO_CHILDREN) {
+      this._childrenArr = children
+    } else {
+      this.ownChildren.push(...children)
+    }
   }
 
   // ─── Mutation ────────────────────────────────────────────

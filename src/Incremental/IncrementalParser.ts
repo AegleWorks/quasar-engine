@@ -751,8 +751,8 @@ function regionIsSelfContained(
 function paragraphSeam(parent: GreenNode, from: number, to: number, region: GreenNode): IsolationFailure | null {
   const kids = region.children as readonly GreenNode[]
   if (kids.length === 0) return null
-  const before = from > 0 ? (parent.children[from - 1] as GreenNode) : null
-  const after = to < parent.children.length ? (parent.children[to] as GreenNode) : null
+  const before = from > 0 ? (parent.childAt(from - 1) ?? null) : null
+  const after = to < parent.childCount ? (parent.childAt(to) ?? null) : null
   if (before?.kind === 'paragraph' && kids[0].kind === 'paragraph') return 'paragraph-seam'
   if (after?.kind === 'paragraph' && kids[kids.length - 1].kind === 'paragraph') return 'paragraph-seam'
   return null
@@ -786,38 +786,32 @@ interface DescentPath extends CandidateWindow {
  * at most twice the region it settles on.
  */
 function* widenedRight(w: CandidateWindow): Generator<CandidateWindow> {
-  const len = w.parent.children.length
+  const len = w.parent.childCount
   let to = w.to
   let windowEnd = w.windowEnd
   for (let step = 1; to < len; step *= 2) {
     const next = Math.min(len, to + step)
-    for (let i = to; i < next; i++) windowEnd += (w.parent.children[i] as GreenNode).width
+    const added = w.parent.sliceChildren(to, next)
+    for (let i = 0; i < added.length; i++) windowEnd += added[i].width
     to = next
     yield { ...w, to, windowEnd }
   }
 }
 
-/**
- * Every window worth trying for one change, narrowest first: the one
- * `findReparseWindow` found, then that run widened rightwards, then — one
- * level up at a time — the ancestor's child that holds the change with a
- * sibling on each side, widened the same way. Each candidate at a level
- * contains the previous one, and every one contains the change.
- */
 function* candidateWindows(path: DescentPath): Generator<CandidateWindow> {
   yield path
   yield* widenedRight(path)
   for (let depth = path.spine.length - 1; depth >= 0; depth--) {
     const { node: parent, index } = path.spine[depth]
-    const children = parent.children as readonly GreenNode[]
+    const count = parent.childCount
     let from = Math.max(0, index - 1)
-    const to = Math.min(children.length, index + 2)
+    const to = Math.min(count, index + 2)
     // Same rule as the first window: never start mid-run of newlines.
-    while (from > 0 && children[from].kind === 'empty_line') from--
-    let windowStart = path.levelOffsets[depth] + parent.leadingWidth
-    for (let i = 0; i < from; i++) windowStart += children[i].width
+    while (from > 0 && parent.childAt(from)?.kind === 'empty_line') from--
+    const windowStart = path.levelOffsets[depth] + parent.leadingWidth + parent.childStartOffset(from)
     let windowEnd = windowStart
-    for (let i = from; i < to; i++) windowEnd += children[i].width
+    const slice = parent.sliceChildren(from, to)
+    for (let i = 0; i < slice.length; i++) windowEnd += slice[i].width
     const window: CandidateWindow = {
       spine: path.spine.slice(0, depth),
       parent,
@@ -1176,7 +1170,7 @@ export class IncrementalParser {
       const headroom = MAX_NESTING_DEPTH - depth
       if (
         (windowEnd - windowStart >= 3 * headroom &&
-          nestsAtLeast((parent.children as readonly GreenNode[]).slice(from, to), headroom)) ||
+          nestsAtLeast(parent.sliceChildren(from, to), headroom)) ||
         (region.length >= 3 * headroom && nestsAtLeast(parsedRegion.children as readonly GreenNode[], headroom))
       ) {
         failure ??= { reason: 'nesting-limit' }
@@ -1193,10 +1187,11 @@ export class IncrementalParser {
       const spans = this.pendingSpans
       const pendingKind = (kind: string): boolean => spans.covers(kind, windowStart)
 
-      const reachesEnd = to === parent.children.length
+      const parentChildCount = parent.childCount
+      const reachesEnd = to === parentChildCount
       // The sibling right after the window, when it self-closes a same-kind
       // node left open at the window's end (see `regionIsSelfContained`).
-      const next = reachesEnd ? null : (parent.children[to] as GreenNode)
+      const next = reachesEnd ? null : (parent.childAt(to) ?? null)
       const closedByNextSibling = next !== null && next.kind === 'list_item' && next.leadingWidth > 0
         ? LIST_ITEM_ONLY
         : NOTHING
@@ -1218,7 +1213,7 @@ export class IncrementalParser {
       // what the full parse does too.
       const nothingAfter = reachesEnd && spine.length === 0
       if (!nothingAfter && !pendingAutoClosePreserved(
-        parent.children as readonly GreenNode[], from, to, parsedRegion, spans, windowStart,
+        parent.sliceChildren(from, to), 0, to - from, parsedRegion, spans, windowStart,
       )) {
         failure ??= { reason: 'pending-auto-close' }
         escalations++
@@ -1318,25 +1313,24 @@ export class IncrementalParser {
     let nodeOffset = root.range.start
 
     // ── Descend ──
-    // `nodeOffset` tracks the current node's absolute start. Each child begins
-    // after the parent's leading delimiter plus the previous siblings' widths,
-    // and its inner span is the same accumulation past its own delimiters.
+    // `nodeOffset` tracks the current node's absolute start. Uses O(log N)
+    // SumTree/chunked lookup via `childCount`/`childAt` so wide roots never
+    // flatten their persistent SumTree.
     for (;;) {
-      const greenKids = node.green.children as readonly GreenNode[]
-      const kids = node.children
+      const greenCount = node.green.childCount
       let next = -1
       let nextOffset = 0
       const base = nodeOffset + node.green.leadingWidth
-      if (greenKids.length >= 128) {
+      if (greenCount >= 128) {
         const hit = node.green.findChildAtRelOffset(change.start - base)
-        if (hit.index < greenKids.length) {
-          const g = greenKids[hit.index]
+        if (hit.index < greenCount) {
+          const g = node.green.childAt(hit.index)!
           const offset = base + hit.offset
           const innerStart = offset + g.leadingWidth
           const innerEnd = offset + g.width - g.trailingWidth
           if (
             !OPAQUE_KINDS.has(g.kind) &&
-            g.children.length > 0 &&
+            g.childCount > 0 &&
             innerStart <= change.start &&
             change.end <= innerEnd
           ) {
@@ -1345,6 +1339,7 @@ export class IncrementalParser {
           }
         }
       } else {
+        const greenKids = node.green.children as readonly GreenNode[]
         let offset = base
         for (let i = 0; i < greenKids.length; i++) {
           const g = greenKids[i]
@@ -1354,7 +1349,7 @@ export class IncrementalParser {
             const innerEnd = offset + w - g.trailingWidth
             if (
               !OPAQUE_KINDS.has(g.kind) &&
-              g.children.length > 0 &&
+              g.childCount > 0 &&
               innerStart <= change.start &&
               change.end <= innerEnd
             ) {
@@ -1371,13 +1366,13 @@ export class IncrementalParser {
       spine.push({ node: node.green, index: next })
       levelOffsets.push(nodeOffset)
       nodeOffset = nextOffset
-      node = kids[next]
+      node = node.childAt(next)!
       ancestorKinds.add(node.kind)
       levelKinds.push(node.kind)
     }
 
-    const greenChildren = node.green.children as readonly GreenNode[]
-    if (greenChildren.length === 0) return null
+    const childCount = node.green.childCount
+    if (childCount === 0) return null
 
     // ── Window ──
     // A child is touched when it overlaps the change at all, boundaries
@@ -1389,14 +1384,14 @@ export class IncrementalParser {
     const windowBase = nodeOffset + node.green.leadingWidth
     let startIdx = 0
     let offset = windowBase
-    if (greenChildren.length >= 128) {
+    if (childCount >= 128) {
       const hit = node.green.findChildAtRelOffset(change.start - windowBase)
       startIdx = hit.index
       offset = windowBase + hit.offset
     }
-    for (let i = startIdx; i < greenChildren.length; i++) {
+    for (let i = startIdx; i < childCount; i++) {
       const start = offset
-      const end = offset + greenChildren[i].width
+      const end = offset + node.green.childAt(i)!.width
       if (start > change.end) break
       if (change.start <= end) {
         if (first === -1) {
@@ -1411,27 +1406,27 @@ export class IncrementalParser {
     // A change past the last child (typing at the very end) touches nothing;
     // anchor it to the final child so there is something to re-parse.
     if (first === -1) {
-      first = greenChildren.length - 1
+      first = childCount - 1
       last = first
       lastEndOffset = offset
-      firstOffset = offset - greenChildren[first].width
+      firstOffset = offset - node.green.childAt(first)!.width
     }
 
     let from = Math.max(0, first - 1)
-    const to = Math.min(greenChildren.length, last + 2)
+    const to = Math.min(childCount, last + 2)
 
     // A run of newlines is `spacing` followed by `empty_line`s: which one a
     // newline becomes depends on how many came BEFORE it. Starting the window
     // mid-run would make its first newline believe it is the first of all, and
     // it would come back as `spacing`. Walk left to the run's real start.
-    while (from > 0 && greenChildren[from].kind === 'empty_line') from--
+    while (from > 0 && node.green.childAt(from)!.kind === 'empty_line') from--
 
     // Window offsets derived directly from `firstOffset`/`lastEndOffset` — O(1)
     // instead of rescanning `[0..from)` from the start of the parent.
     let windowStart = firstOffset
-    for (let i = from; i < first; i++) windowStart -= greenChildren[i].width
+    for (let i = from; i < first; i++) windowStart -= node.green.childAt(i)!.width
     let windowEnd = lastEndOffset
-    for (let i = last + 1; i < to; i++) windowEnd += greenChildren[i].width
+    for (let i = last + 1; i < to; i++) windowEnd += node.green.childAt(i)!.width
 
     return {
       spine,

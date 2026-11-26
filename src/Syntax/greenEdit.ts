@@ -21,6 +21,7 @@
  */
 
 import { GreenNode, greenNode } from './GreenNode'
+import { SUM_TREE_THRESHOLD, greenSumReplaceAt, greenSumSplice, flattenGreenSumTree } from './ChildSumTree'
 
 /** One step of the descent from the root to the node being replaced. */
 export interface SpineStep {
@@ -49,6 +50,12 @@ export function spliceGreen(
 
   for (let i = spine.length - 1; i >= 0; i--) {
     const { node, index } = spine[i]
+    const tree = node.sumTree
+    if (tree !== null) {
+      const nextTree = greenSumReplaceAt(tree, index, current)
+      current = GreenNode.fromSumTree(node.kind, node.text, nextTree, node.leadingWidth, node.trailingWidth)
+      continue
+    }
     const oldChildren = node.children as readonly GreenNode[]
     const children = new Array<GreenNode>(oldChildren.length)
 
@@ -104,6 +111,14 @@ export function withChildrenSpliced(
   to: number,
   replacement: readonly GreenNode[],
 ): GreenNode {
+  const tree = node.sumTree
+  if (tree !== null) {
+    const nextTree = greenSumSplice(tree, from, to, replacement)
+    if (nextTree.count < SUM_TREE_THRESHOLD) {
+      return new GreenNode(node.kind, node.text, flattenGreenSumTree(nextTree), node.leadingWidth, node.trailingWidth, nextTree.width, true)
+    }
+    return GreenNode.fromSumTree(node.kind, node.text, nextTree, node.leadingWidth, node.trailingWidth)
+  }
   const old = node.children as readonly GreenNode[]
   const children = new Array<GreenNode>(from + replacement.length + (old.length - to))
 

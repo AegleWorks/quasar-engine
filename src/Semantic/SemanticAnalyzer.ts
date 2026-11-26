@@ -1607,6 +1607,10 @@ export class SemanticAnalyzer {
     }
     const startTime = performance.now()
     if (this._dispatchDirty) this.rebuildDispatch()
+    // Sync lazy RedSumTree parent links and exact offsets for top-level children
+    // so `isAttached(c.node, root)` and cached `c.node.range` reads below agree
+    // with the new root (runs only on debounced/idle analysis, off keystrokes).
+    if (root.redTree !== null) void root.children
 
     // One walk lists the nodes and collects the candidates; the maps are
     // derived from those before any validator runs, so a validator asking
@@ -1698,6 +1702,10 @@ export class SemanticAnalyzer {
     ) return null
     const startTime = performance.now()
     if (this._dispatchDirty) this.rebuildDispatch()
+    // Sync lazy RedSumTree parent links and exact offsets for top-level children
+    // so `isAttached(c.node, root)` and cached `c.node.range` reads below agree
+    // with the new root (runs only on debounced/idle analysis, off keystrokes).
+    if (root.redTree !== null) void root.children
 
     // ── 1. The window ──
     const fresh = emptyCandidates()
