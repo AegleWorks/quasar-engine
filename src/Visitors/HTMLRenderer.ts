@@ -949,10 +949,9 @@ export class HTMLRenderer extends Visitor<string> {
       } finally {
         this.effectPaint = outer
         const skipped = this.effectText(node)
-        while (outer.cursor < outer.text.length && outer.text[outer.cursor] === '\n' && skipped[0] !== '\n') {
-          outer.cursor++
+        if (this.alignEffectPaintCursor(outer, skipped)) {
+          outer.cursor += skipped.length
         }
-        outer.cursor += skipped.length
       }
     }
 
@@ -2556,7 +2555,15 @@ export class HTMLRenderer extends Visitor<string> {
   private renderTitle(node: RedNode, fallback: string): string {
     const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
     if (titleNodes && titleNodes.length > 0) {
-      const html = this.breakTitleLines(titleNodes.map(c => this.renderNode(c)).join(''))
+      const outerPaint = this.effectPaint
+      this.effectPaint = null
+      let rendered: string
+      try {
+        rendered = titleNodes.map(c => this.renderNode(c)).join('')
+      } finally {
+        this.effectPaint = outerPaint
+      }
+      const html = this.breakTitleLines(rendered)
       // El título se pinta desde dentro del tag de apertura, y en el texto de
       // osu! lo cierra su `]`: la vecindad de la hoja siguiente (el cuerpo) no
       // ve la cola del título, ve el tag —como no ver nada—, que es lo que
@@ -3394,14 +3401,22 @@ export class HTMLRenderer extends Visitor<string> {
    * agrees with them rather than inventing a third answer.
    */
   private effectText(node: RedNode): string {
-    return node.children.map(c => this.effectChildText(c)).join('')
+    let out = ''
+    for (let i = 0; i < node.children.length; i++) out += this.effectChildText(node.children[i])
+    return out
   }
 
   private effectChildText(node: RedNode): string {
+    if (node.kind === 'discarded_tag' || node.kind === 'discarded_box_close') return ''
     if (node.kind === 'spacing' || node.kind === 'empty_line') return '\n'
-    if (node.kind === 'text') return node.text ?? ''
-    if (node.children.length === 0) return this.collectNodeText(node)
-    return node.children.map(c => this.effectChildText(c)).join('')
+    if (node.kind === 'text') {
+      if (this.semantic.isClaimedByBoxTitle(node) || this.semantic.isOrphanBoxCloseText(node)) return ''
+      return node.text ?? ''
+    }
+    if (node.children.length === 0) return ''
+    let out = ''
+    for (let i = 0; i < node.children.length; i++) out += this.effectChildText(node.children[i])
+    return out
   }
 
   /**
@@ -3441,11 +3456,28 @@ export class HTMLRenderer extends Visitor<string> {
     return false
   }
 
+  /** Align `p.cursor` to `needle`, skipping only intervening `\n` characters. */
+  private alignEffectPaintCursor(
+    p: { text: string; cursor: number },
+    needle: string,
+  ): boolean {
+    if (needle.length === 0) return true
+    if (p.text.startsWith(needle, p.cursor)) return true
+    let c = p.cursor
+    while (c < p.text.length && p.text.charCodeAt(c) === 0x0A) {
+      c++
+      if (p.text.startsWith(needle, c)) {
+        p.cursor = c
+        return true
+      }
+    }
+    return false
+  }
+
   /** Paint one text leaf from the active `effectPaint` state. */
   private paintEffectHtmlText(text: string): string {
     const p = this.effectPaint!
-    while (p.cursor < p.text.length && p.text[p.cursor] === '\n' && text[0] !== '\n') p.cursor++
-    if (!p.text.startsWith(text, p.cursor)) return this.escapeHtml(text)
+    if (!this.alignEffectPaintCursor(p, text)) return this.escapeHtml(text)
 
     let out = ''
     let i = 0

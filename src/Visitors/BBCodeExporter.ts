@@ -728,12 +728,29 @@ export class BBCodeExporter extends Visitor<string> {
     }
   }
 
+  /**
+   * Align `p.cursor` to `needle`, skipping only intervening `\n` characters
+   * emitted by `spacing`/`empty_line` nodes. Handles needles that themselves
+   * begin with `\n` (e.g. `[imagemap]\nhttps://...`).
+   */
+  private alignPaintCursor(p: PaintState, needle: string): boolean {
+    if (needle.length === 0) return true
+    if (p.text.startsWith(needle, p.cursor)) return true
+    let c = p.cursor
+    while (c < p.text.length && p.text.charCodeAt(c) === 0x0A) {
+      c++
+      if (p.text.startsWith(needle, c)) {
+        p.cursor = c
+        return true
+      }
+    }
+    return false
+  }
+
   /** One text node's share of the painted effect, as styled runs. */
   private paintText(text: string): string {
     const p = this.paint!
-    // Line breaks are their own nodes; the effect's text spells them as `\n`.
-    while (p.cursor < p.text.length && p.text[p.cursor] === '\n' && text[0] !== '\n') p.cursor++
-    if (!p.text.startsWith(text, p.cursor)) return text
+    if (!this.alignPaintCursor(p, text)) return text
     let out = ''
     let i = 0
     while (i < text.length) {
@@ -767,10 +784,9 @@ export class BBCodeExporter extends Visitor<string> {
       } finally {
         this.paint = outer
         const skipped = extractTextContent(node)
-        while (outer.cursor < outer.text.length && outer.text[outer.cursor] === '\n' && skipped[0] !== '\n') {
-          outer.cursor++
+        if (this.alignPaintCursor(outer, skipped)) {
+          outer.cursor += skipped.length
         }
-        outer.cursor += skipped.length
       }
     }
 
