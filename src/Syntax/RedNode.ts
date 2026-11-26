@@ -524,9 +524,25 @@ export class RedNode {
       }
     }
 
-    for (const child of this.children) {
-      const found = child.findNodeAtOffset(offset)
-      if (found) return found
+    const kids = this.children
+    if (kids.length > 0) {
+      const innerStart = start + this.green.leadingWidth
+      const innerEnd = end - this.green.trailingWidth
+      if (offset >= innerStart && offset < innerEnd) {
+        // Jump directly to the single child covering `offset` using GreenNode's
+        // O(log N) chunked width index instead of linearly calling `materialize()`
+        // on every preceding sibling in the document.
+        const rel = offset - innerStart
+        const hit = this.green.findChildAtRelOffset(rel)
+        let idx = hit.index
+        if (idx < kids.length && hit.offset + kids[idx].green.width <= rel) {
+          idx++
+        }
+        if (idx < kids.length) {
+          const found = kids[idx].findNodeAtOffset(offset)
+          if (found) return found
+        }
+      }
     }
 
     return this
