@@ -2552,7 +2552,19 @@ export class HTMLRenderer extends Visitor<string> {
     return raw !== undefined ? String(raw) !== '' : node.metadata?.title !== undefined
   }
 
+  /** Colour of the active painted effect at the current cursor position (for box titles). */
+  private currentEffectPaintColor(): string | null {
+    const p = this.effectPaint
+    if (!p || p.segmentOf.length === 0) return null
+    let idx = p.cursor
+    while (idx < p.text.length && (p.text.charCodeAt(idx) === 0x0A || p.text.charCodeAt(idx) === 0x20)) idx++
+    if (idx >= p.segmentOf.length) idx = p.segmentOf.length - 1
+    const color = p.segments[p.segmentOf[idx]]?.color
+    return color ? sanitizeColor(color, this.tokenResolver) : null
+  }
+
   private renderTitle(node: RedNode, fallback: string): string {
+    const paintColor = this.currentEffectPaintColor()
     const titleNodes = node.metadata?.titleNodes as RedNode[] | undefined
     if (titleNodes && titleNodes.length > 0) {
       const outerPaint = this.effectPaint
@@ -2570,7 +2582,7 @@ export class HTMLRenderer extends Visitor<string> {
       // `parseLinks` mira. Sin esto, `[box=T]https://x` heredaba la `T`... y una
       // URL precedida de texto no se enlaza.
       this.osuLinkContext = ''
-      return html
+      return paintColor ? `<span style="color:${paintColor}">${html}</span>` : html
     }
     let title = String(node.metadata?.title ?? nodeAttrValue(node) ?? fallback)
     if (this.tokenResolver) {
@@ -2579,7 +2591,8 @@ export class HTMLRenderer extends Visitor<string> {
         return resolved !== undefined ? resolved : match
       })
     }
-    return this.markTitle(node, this.breakTitleLines(this.escapeHtml(title)))
+    const html = this.markTitle(node, this.breakTitleLines(this.escapeHtml(title)))
+    return paintColor ? `<span style="color:${paintColor}">${html}</span>` : html
   }
 
   /** See {@link HTMLRendererOptions.boxTitleLineBreaks}. */

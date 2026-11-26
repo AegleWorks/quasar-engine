@@ -1019,6 +1019,19 @@ export class BBCodeExporter extends Visitor<string> {
             this.paint = outer
           }
         }
+        // When an outer effect (`[gradient]`/`[rainbow]`) is painting across
+        // the document, paint the box title with the gradient colour at this
+        // position so box headers blend seamlessly into the page.
+        if (this.target === 'osu' && this.paint !== null && titleVal !== '' && !/\[color=/i.test(titleVal)) {
+          const p = this.paint
+          if (p.segmentOf.length > 0) {
+            let idx = p.cursor
+            while (idx < p.text.length && (p.text.charCodeAt(idx) === 0x0A || p.text.charCodeAt(idx) === 0x20)) idx++
+            if (idx >= p.segmentOf.length) idx = p.segmentOf.length - 1
+            const paintColor = p.segments[p.segmentOf[idx]]?.color
+            if (paintColor) titleVal = `[color=${paintColor}]${titleVal}[/color]`
+          }
+        }
         // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
         // a añadir aquí para que el round-trip no pierda el sufijo.
         let color = node.metadata.color as string | undefined
