@@ -108,17 +108,32 @@ export function domToSVG(root: HTMLElement, options: DomToSVGOptions = {}): stri
  */
 function liftBlockContainment(root: HTMLElement, maxHeight?: number): () => void {
   if (!root.hasAttribute('data-bb-contain')) return () => {}
+  const children = Array.from(root.children).filter((c): c is HTMLElement => c instanceof HTMLElement)
   const lifted: HTMLElement[] = []
-  let total = 0
-  for (const child of Array.from(root.children)) {
-    if (!(child instanceof HTMLElement)) continue
-    child.style.contentVisibility = 'visible'
-    lifted.push(child)
-    if (maxHeight !== undefined) {
-      total += child.getBoundingClientRect().height
-      if (total >= maxHeight) break
+
+  if (maxHeight === undefined) {
+    for (const child of children) {
+      child.style.contentVisibility = 'visible'
+      lifted.push(child)
+    }
+  } else {
+    // Batch writes in chunks before measuring so we avoid one forced full-document
+    // layout per child while still stopping early near `maxHeight`.
+    const BATCH = 16
+    let total = 0
+    for (let i = 0; i < children.length && total < maxHeight; i += BATCH) {
+      const end = Math.min(children.length, i + BATCH)
+      for (let j = i; j < end; j++) {
+        children[j].style.contentVisibility = 'visible'
+        lifted.push(children[j])
+      }
+      for (let j = i; j < end; j++) {
+        total += children[j].getBoundingClientRect().height
+        if (total >= maxHeight) break
+      }
     }
   }
+
   return () => {
     for (const child of lifted) child.style.contentVisibility = ''
   }
