@@ -1322,77 +1322,91 @@ export class IncrementalParser {
     // after the parent's leading delimiter plus the previous siblings' widths,
     // and its inner span is the same accumulation past its own delimiters.
     for (;;) {
+      const greenKids = node.green.children as readonly GreenNode[]
       const kids = node.children
       let next = -1
+      let nextOffset = 0
       let offset = nodeOffset + node.green.leadingWidth
-      for (let i = 0; i < kids.length; i++) {
-        const c = kids[i]
-        const innerStart = offset + c.green.leadingWidth
-        const innerEnd = offset + c.green.width - c.green.trailingWidth
-        if (
-          !OPAQUE_KINDS.has(c.kind) &&
-          c.children.length > 0 &&
-          innerStart <= change.start &&
-          change.end <= innerEnd
-        ) {
-          next = i
+      for (let i = 0; i < greenKids.length; i++) {
+        const g = greenKids[i]
+        const w = g.width
+        if (offset + w >= change.start) {
+          const innerStart = offset + g.leadingWidth
+          const innerEnd = offset + w - g.trailingWidth
+          if (
+            !OPAQUE_KINDS.has(g.kind) &&
+            g.children.length > 0 &&
+            innerStart <= change.start &&
+            change.end <= innerEnd
+          ) {
+            next = i
+            nextOffset = offset
+          }
+          // Children partition their parent monotonically: once a child reaches
+          // `change.start`, no later sibling can contain `[change.start, change.end]`.
           break
         }
-        offset += c.green.width
+        offset += w
       }
       if (next === -1) break
 
       spine.push({ node: node.green, index: next })
       levelOffsets.push(nodeOffset)
-      // The child's absolute start: the accumulated offset at its index.
-      nodeOffset += node.green.leadingWidth
-      for (let i = 0; i < next; i++) nodeOffset += node.children[i].green.width
-      node = node.children[next]
+      nodeOffset = nextOffset
+      node = kids[next]
       ancestorKinds.add(node.kind)
       levelKinds.push(node.kind)
     }
 
-    const children = node.children
-    if (children.length === 0) return null
+    const greenChildren = node.green.children as readonly GreenNode[]
+    if (greenChildren.length === 0) return null
 
     // ── Window ──
     // A child is touched when it overlaps the change at all, boundaries
     // included: an insertion sits between two children and both are candidates.
     let first = -1
     let last = -1
+    let firstOffset = 0
+    let lastEndOffset = 0
     let offset = nodeOffset + node.green.leadingWidth
-    for (let i = 0; i < children.length; i++) {
-      const c = children[i]
+    for (let i = 0; i < greenChildren.length; i++) {
       const start = offset
-      const end = offset + c.green.width
-      if (start <= change.end && change.start <= end) {
-        if (first === -1) first = i
+      const end = offset + greenChildren[i].width
+      if (start > change.end) break
+      if (change.start <= end) {
+        if (first === -1) {
+          first = i
+          firstOffset = start
+        }
         last = i
+        lastEndOffset = end
       }
       offset = end
     }
     // A change past the last child (typing at the very end) touches nothing;
     // anchor it to the final child so there is something to re-parse.
     if (first === -1) {
-      first = children.length - 1
+      first = greenChildren.length - 1
       last = first
+      lastEndOffset = offset
+      firstOffset = offset - greenChildren[first].width
     }
 
     let from = Math.max(0, first - 1)
-    const to = Math.min(children.length, last + 2)
+    const to = Math.min(greenChildren.length, last + 2)
 
     // A run of newlines is `spacing` followed by `empty_line`s: which one a
     // newline becomes depends on how many came BEFORE it. Starting the window
     // mid-run would make its first newline believe it is the first of all, and
     // it would come back as `spacing`. Walk left to the run's real start.
-    while (from > 0 && children[from].kind === 'empty_line') from--
+    while (from > 0 && greenChildren[from].kind === 'empty_line') from--
 
-    // Window offsets, again from green widths (identical to the red ranges the
-    // tree would report once materialized).
-    let windowStart = nodeOffset + node.green.leadingWidth
-    for (let i = 0; i < from; i++) windowStart += children[i].green.width
-    let windowEnd = windowStart
-    for (let i = from; i < to; i++) windowEnd += children[i].green.width
+    // Window offsets derived directly from `firstOffset`/`lastEndOffset` — O(1)
+    // instead of rescanning `[0..from)` from the start of the parent.
+    let windowStart = firstOffset
+    for (let i = from; i < first; i++) windowStart -= greenChildren[i].width
+    let windowEnd = lastEndOffset
+    for (let i = last + 1; i < to; i++) windowEnd += greenChildren[i].width
 
     return {
       spine,

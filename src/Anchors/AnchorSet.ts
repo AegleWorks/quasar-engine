@@ -183,12 +183,15 @@ export class AnchorSet {
   }
 
   /** One edit, in the coordinates of the current text. */
-  applyChange(edit: TextEdit): void {
+  applyChange(edit: TextEdit, resultingText?: string): void {
     if (!(0 <= edit.start && edit.start <= edit.end && edit.end <= this._text.length)) {
       throw new RangeError(`edit [${edit.start}, ${edit.end}) is outside the text (length ${this._text.length})`)
     }
-    this._text = this._text.slice(0, edit.start) + edit.text + this._text.slice(edit.end)
-    this.mapAll(edit)
+    const expectedLen = this._text.length - (edit.end - edit.start) + edit.text.length
+    this._text = resultingText !== undefined && resultingText.length === expectedLen
+      ? resultingText
+      : this._text.slice(0, edit.start) + edit.text + this._text.slice(edit.end)
+    if (this.anchors.size > 0) this.mapAll(edit)
   }
 
   /**
@@ -196,6 +199,11 @@ export class AnchorSet {
    * {@link diffText}; see the plan's *Known limit* for what that cannot tell.
    */
   updateText(text: string): void {
+    if (text === this._text) return
+    if (this.anchors.size === 0) {
+      this._text = text
+      return
+    }
     const edit = diffText(this._text, text)
     this._text = text
     if (edit) this.mapAll(edit)

@@ -53,14 +53,18 @@ export function spliceGreen(
     const children = new Array<GreenNode>(oldChildren.length)
 
     for (let j = 0; j < oldChildren.length; j++) children[j] = oldChildren[j]
+    const replacedWidth = oldChildren[index].width
     children[index] = current
 
-    current = greenNode(
+    const innerWidth = node.innerWidth - replacedWidth + current.width
+    current = new GreenNode(
       node.kind,
       node.text,
       children,
       node.leadingWidth,
       node.trailingWidth,
+      innerWidth,
+      true,
     )
   }
 
@@ -103,8 +107,17 @@ export function withChildrenSpliced(
 
   let w = 0
   for (let i = 0; i < from; i++) children[w++] = old[i]
-  for (let i = 0; i < replacement.length; i++) children[w++] = replacement[i]
+  let addedWidth = 0
+  for (let i = 0; i < replacement.length; i++) {
+    const r = replacement[i]
+    children[w++] = r
+    addedWidth += r.width
+  }
   for (let i = to; i < old.length; i++) children[w++] = old[i]
 
-  return greenNode(node.kind, node.text, children, node.leadingWidth, node.trailingWidth)
+  let removedWidth = 0
+  for (let i = from; i < to; i++) removedWidth += old[i].width
+  const innerWidth = node.innerWidth - removedWidth + addedWidth
+
+  return new GreenNode(node.kind, node.text, children, node.leadingWidth, node.trailingWidth, innerWidth, true)
 }

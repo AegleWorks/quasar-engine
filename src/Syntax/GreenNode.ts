@@ -116,6 +116,10 @@ export class GreenNode {
    *                  when there are children, whose widths sum to the same
    *                  thing. An empty element like `[b][/b]` passes 0 and gets
    *                  its width from its two delimiters.
+   * @param adoptExact  Internal fast path for structural splices (`greenEdit.ts`):
+   *                    takes ownership of a freshly-built exact-sized `children`
+   *                    array and trusts `ownWidth` as the precomputed sum of
+   *                    child widths, avoiding a redundant O(N) copy and sum.
    */
   constructor(
     kind: string,
@@ -124,6 +128,7 @@ export class GreenNode {
     leadingWidth: number = 0,
     trailingWidth: number = 0,
     ownWidth: number = 0,
+    adoptExact: boolean = false,
   ) {
     this.kind = kind
     this.text = text
@@ -132,20 +137,24 @@ export class GreenNode {
     // again: those arrays grew by `push`, and the copy is exact-size. Adopting
     // them was measured — 4 ms off a cold open of the 547 KB fixture, for
     // 2 MB of push slack kept alive as long as the document is.
+    // Structural splices (`adoptExact: true`) already allocate an exact-size
+    // array, so they skip the second O(N) copy.
     this.children =
       count === 0
         ? NO_CHILDREN
-        : FREEZE_CHILDREN
-          ? Object.freeze([...children])
-          : [...children]
+        : adoptExact
+          ? (FREEZE_CHILDREN ? Object.freeze(children) : children)
+          : FREEZE_CHILDREN
+            ? Object.freeze([...children])
+            : [...children]
     this.isLeaf = count === 0
     this.leadingWidth = leadingWidth
     this.trailingWidth = trailingWidth
 
     let inner = ownWidth
-    if (children.length > 0) {
+    if (count > 0 && !adoptExact) {
       inner = 0
-      for (let i = 0; i < children.length; i++) inner += children[i].width
+      for (let i = 0; i < count; i++) inner += children[i].width
     }
     this.width = leadingWidth + inner + trailingWidth
 

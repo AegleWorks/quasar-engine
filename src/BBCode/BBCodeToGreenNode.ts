@@ -831,32 +831,30 @@ export function greenToRedNodeReusing(
 
   const greenKids = green.children as GreenNode[]
   const oldKids = oldRed.children
-  if (greenKids.length === 0) return red
+  const gLen = greenKids.length
+  if (gLen === 0) return red
 
-  // Absolute start of every green child, needed by the suffix walk, which
-  // cannot accumulate forward.
-  const offsets: number[] = new Array(greenKids.length)
-  let offset = start + green.leadingWidth
-  for (let i = 0; i < greenKids.length; i++) {
-    offsets[i] = offset
-    offset += greenKids[i].width
-  }
+  const kids: RedNode[] = new Array(gLen)
+  const limit = Math.min(gLen, oldKids.length)
 
-  const kids: RedNode[] = new Array(greenKids.length)
-  const limit = Math.min(greenKids.length, oldKids.length)
-
-  // Common prefix: same green object (or an equal one, `structural`), adopt.
+  // Common prefix: walk forward tracking offset without allocating an O(N)
+  // offsets array. Same green object (or equal when `structural`), adopt.
   let lo = 0
+  let prefixOffset = start + green.leadingWidth
   while (lo < limit && sameGreen(greenKids[lo], oldKids[lo].green, structural)) {
-    kids[lo] = adoptShifted(oldKids[lo], offsets[lo], stats)
+    kids[lo] = adoptShifted(oldKids[lo], prefixOffset, stats)
+    prefixOffset += greenKids[lo].width
     lo++
   }
 
-  // Common suffix, stopping before the prefix already consumed.
-  let gHi = greenKids.length - 1
+  // Common suffix: walk backward from the end of this node's inner span,
+  // stopping before the prefix already consumed.
+  let gHi = gLen - 1
   let oHi = oldKids.length - 1
+  let suffixEnd = start + green.width - green.trailingWidth
   while (gHi >= lo && oHi >= lo && sameGreen(greenKids[gHi], oldKids[oHi].green, structural)) {
-    kids[gHi] = adoptShifted(oldKids[oHi], offsets[gHi], stats)
+    suffixEnd -= greenKids[gHi].width
+    kids[gHi] = adoptShifted(oldKids[oHi], suffixEnd, stats)
     gHi--
     oHi--
   }
@@ -864,11 +862,13 @@ export function greenToRedNodeReusing(
   if (gHi === lo && oHi === lo) {
     // The single changed child both sides — the keystroke shape. Descend so
     // its own untouched children are still adopted.
-    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], offsets[lo], stats, structural)
+    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], prefixOffset, stats, structural)
   } else {
     // A wider window (multi-node paste, fallback rebuild): build it fresh.
+    let midOffset = prefixOffset
     for (let i = lo; i <= gHi; i++) {
-      kids[i] = greenToRedNode(greenKids[i], null, undefined, offsets[i])
+      kids[i] = greenToRedNode(greenKids[i], null, undefined, midOffset)
+      midOffset += greenKids[i].width
     }
   }
 
