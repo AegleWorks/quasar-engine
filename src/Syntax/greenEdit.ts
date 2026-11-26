@@ -57,6 +57,7 @@ export function spliceGreen(
     children[index] = current
 
     const innerWidth = node.innerWidth - replacedWidth + current.width
+    const delta = current.width - replacedWidth
     current = new GreenNode(
       node.kind,
       node.text,
@@ -65,6 +66,7 @@ export function spliceGreen(
       node.trailingWidth,
       innerWidth,
       true,
+      node.shiftChunkOffsets(index, delta),
     )
   }
 
@@ -118,6 +120,8 @@ export function withChildrenSpliced(
   let removedWidth = 0
   for (let i = from; i < to; i++) removedWidth += old[i].width
   const innerWidth = node.innerWidth - removedWidth + addedWidth
+  const sameLength = old.length === children.length && to - from === 1
+  const chunkOffsets = sameLength ? node.shiftChunkOffsets(from, addedWidth - removedWidth) : null
 
-  return new GreenNode(node.kind, node.text, children, node.leadingWidth, node.trailingWidth, innerWidth, true)
+  return new GreenNode(node.kind, node.text, children, node.leadingWidth, node.trailingWidth, innerWidth, true, chunkOffsets)
 }

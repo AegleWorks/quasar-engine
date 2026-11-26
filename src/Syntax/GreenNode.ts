@@ -109,6 +109,13 @@ export class GreenNode {
    * which keeps the object shape monomorphic without the field-init overhead.
    */
   private declare _hashCache: number
+  /**
+   * Lazy chunked prefix-sum index for wide nodes (`children.length >= 128`).
+   * Entry `k` holds the cumulative width of `children[0 .. k * 64)`, relative
+   * to `leadingWidth`. Enables O(log(N/64) + 64) child offset lookups instead
+   * of O(N) linear scans on multi-MB documents.
+   */
+  private declare _chunkOffsets: Float64Array | null
 
   /**
    * @param ownWidth  Width of a childless node's own content: the length of a
@@ -120,6 +127,8 @@ export class GreenNode {
    *                    takes ownership of a freshly-built exact-sized `children`
    *                    array and trusts `ownWidth` as the precomputed sum of
    *                    child widths, avoiding a redundant O(N) copy and sum.
+   * @param chunkOffsets Optional pre-shifted chunk prefix-sum index carried over
+   *                     from a previous version of this node.
    */
   constructor(
     kind: string,
@@ -129,6 +138,7 @@ export class GreenNode {
     trailingWidth: number = 0,
     ownWidth: number = 0,
     adoptExact: boolean = false,
+    chunkOffsets: Float64Array | null = null,
   ) {
     this.kind = kind
     this.text = text
@@ -161,6 +171,7 @@ export class GreenNode {
     // -1 is the "not yet computed" sentinel: `_hash` is always `>>> 0`, so it
     // can never legitimately be negative.
     this._hashCache = -1
+    this._chunkOffsets = chunkOffsets
   }
 
   // ─── Structural Identity ─────────────────────────────────
@@ -229,6 +240,94 @@ export class GreenNode {
   /** Width of the span between this node's delimiters. */
   get innerWidth(): number {
     return this.width - this.leadingWidth - this.trailingWidth
+  }
+
+  /**
+   * Return the lazy chunk prefix-sum table (1 entry per 64 children) for wide
+   * nodes (`children.length >= 128`), building it once on first demand.
+   */
+  private ensureChunkOffsets(): Float64Array {
+    let table = this._chunkOffsets
+    if (table !== null) return table
+    const kids = this.children as readonly GreenNode[]
+    const chunks = ((kids.length + 63) >> 6) + 1
+    table = new Float64Array(chunks)
+    let acc = 0
+    for (let i = 0; i < kids.length; i++) {
+      if ((i & 63) === 0) table[i >> 6] = acc
+      acc += kids[i].width
+    }
+    table[chunks - 1] = acc
+    this._chunkOffsets = table
+    return table
+  }
+
+  /**
+   * Copy and shift this node's existing chunk table after an in-place child
+   * replacement at `index` with width delta `delta`, if the table was already
+   * built. Returns `null` when no table existed (stays lazy).
+   */
+  shiftChunkOffsets(index: number, delta: number): Float64Array | null {
+    const prev = this._chunkOffsets
+    if (prev === null) return null
+    const next = new Float64Array(prev)
+    if (delta !== 0) {
+      const firstShifted = (index >> 6) + 1
+      for (let c = firstShifted; c < next.length; c++) {
+        next[c] += delta
+      }
+    }
+    return next
+  }
+
+  /**
+   * Start offset of `children[index]` relative to `leadingWidth`.
+   * O(1) (at most 63 additions) for wide nodes via the chunk prefix-sum index.
+   */
+  childStartOffset(index: number): number {
+    const kids = this.children as readonly GreenNode[]
+    const clamped = index < 0 ? 0 : index > kids.length ? kids.length : index
+    if (kids.length >= 128) {
+      const table = this.ensureChunkOffsets()
+      const chunk = clamped >> 6
+      let offset = table[chunk]
+      for (let i = chunk << 6; i < clamped; i++) offset += kids[i].width
+      return offset
+    }
+    let offset = 0
+    for (let i = 0; i < clamped; i++) offset += kids[i].width
+    return offset
+  }
+
+  /**
+   * Locate the first child index `i` whose end offset (`relStart + width`) is
+   * `>= relOffset` (relative to `leadingWidth`), returning `{ index, offset }`.
+   * Uses O(log(N/64) + 64) binary search over chunk offsets for wide nodes.
+   */
+  findChildAtRelOffset(relOffset: number): { index: number; offset: number } {
+    const kids = this.children as readonly GreenNode[]
+    const len = kids.length
+    if (len === 0) return { index: 0, offset: 0 }
+    let i = 0
+    let offset = 0
+    if (len >= 128) {
+      const table = this.ensureChunkOffsets()
+      // Binary search for the last chunk `c` with `table[c] < relOffset`.
+      let lo = 0
+      let hi = table.length - 2 // last valid chunk index
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1
+        if (table[mid] < relOffset) lo = mid
+        else hi = mid - 1
+      }
+      i = lo << 6
+      offset = table[lo]
+    }
+    while (i < len && offset + kids[i].width < relOffset) {
+      offset += kids[i].width
+      i++
+    }
+    return { index: i, offset }
   }
 
   /** Walk all descendants in pre-order */

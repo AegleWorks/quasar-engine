@@ -1326,27 +1326,45 @@ export class IncrementalParser {
       const kids = node.children
       let next = -1
       let nextOffset = 0
-      let offset = nodeOffset + node.green.leadingWidth
-      for (let i = 0; i < greenKids.length; i++) {
-        const g = greenKids[i]
-        const w = g.width
-        if (offset + w >= change.start) {
+      const base = nodeOffset + node.green.leadingWidth
+      if (greenKids.length >= 128) {
+        const hit = node.green.findChildAtRelOffset(change.start - base)
+        if (hit.index < greenKids.length) {
+          const g = greenKids[hit.index]
+          const offset = base + hit.offset
           const innerStart = offset + g.leadingWidth
-          const innerEnd = offset + w - g.trailingWidth
+          const innerEnd = offset + g.width - g.trailingWidth
           if (
             !OPAQUE_KINDS.has(g.kind) &&
             g.children.length > 0 &&
             innerStart <= change.start &&
             change.end <= innerEnd
           ) {
-            next = i
+            next = hit.index
             nextOffset = offset
           }
-          // Children partition their parent monotonically: once a child reaches
-          // `change.start`, no later sibling can contain `[change.start, change.end]`.
-          break
         }
-        offset += w
+      } else {
+        let offset = base
+        for (let i = 0; i < greenKids.length; i++) {
+          const g = greenKids[i]
+          const w = g.width
+          if (offset + w >= change.start) {
+            const innerStart = offset + g.leadingWidth
+            const innerEnd = offset + w - g.trailingWidth
+            if (
+              !OPAQUE_KINDS.has(g.kind) &&
+              g.children.length > 0 &&
+              innerStart <= change.start &&
+              change.end <= innerEnd
+            ) {
+              next = i
+              nextOffset = offset
+            }
+            break
+          }
+          offset += w
+        }
       }
       if (next === -1) break
 
@@ -1368,8 +1386,15 @@ export class IncrementalParser {
     let last = -1
     let firstOffset = 0
     let lastEndOffset = 0
-    let offset = nodeOffset + node.green.leadingWidth
-    for (let i = 0; i < greenChildren.length; i++) {
+    const windowBase = nodeOffset + node.green.leadingWidth
+    let startIdx = 0
+    let offset = windowBase
+    if (greenChildren.length >= 128) {
+      const hit = node.green.findChildAtRelOffset(change.start - windowBase)
+      startIdx = hit.index
+      offset = windowBase + hit.offset
+    }
+    for (let i = startIdx; i < greenChildren.length; i++) {
       const start = offset
       const end = offset + greenChildren[i].width
       if (start > change.end) break

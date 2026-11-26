@@ -49,6 +49,13 @@ const TARGET_PIECE = 4096
 const MAX_PIECE = TARGET_PIECE * 2
 /** A piece that shrinks below this merges into a neighbour when that fits. */
 const MIN_PIECE = TARGET_PIECE / 4
+/**
+ * Number of leaf pieces aggregated into each superblock summary.
+ * Turns linear O(P) piece walks into O(P / SUPER_SIZE + SUPER_SIZE):
+ * at 5M chars (1,221 pieces), queries touch ~39 superblocks + ≤32 pieces.
+ */
+const SUPER_SIZE = 32
+const SUPER_SHIFT = 5 // log2(32)
 
 export class BracketDepthIndex {
   /** Length of each piece, in characters. Pieces partition `[0, length)`. */
@@ -57,6 +64,12 @@ export class BracketDepthIndex {
   private sums: number[] = []
   /** Lowest prefix sum inside each piece, capped at 0 (see the header). */
   private dips: number[] = []
+  /** Superblock summaries (each covers `SUPER_SIZE` consecutive leaf pieces). */
+  private superLengths: number[] = []
+  private superSums: number[] = []
+  private superDips: number[] = []
+  /** First superblock index needing recomputation, or `Infinity` when clean. */
+  private superDirtyFrom = Number.POSITIVE_INFINITY
   private _length = 0
 
   /**
@@ -85,6 +98,49 @@ export class BracketDepthIndex {
     for (let at = 0; at < source.length; at += TARGET_PIECE) {
       this.pushPiece(source, at, Math.min(source.length, at + TARGET_PIECE))
     }
+    this.superDirtyFrom = 0
+    this.syncSupers()
+  }
+
+  /** Recompute superblock summaries from `superDirtyFrom` onward. */
+  private syncSupers(): void {
+    const count = this.lengths.length
+    const superCount = (count + SUPER_SIZE - 1) >> SUPER_SHIFT
+    if (this.superDirtyFrom >= superCount) {
+      this.superLengths.length = superCount
+      this.superSums.length = superCount
+      this.superDips.length = superCount
+      this.superDirtyFrom = Number.POSITIVE_INFINITY
+      return
+    }
+    this.superLengths.length = superCount
+    this.superSums.length = superCount
+    this.superDips.length = superCount
+    for (let s = this.superDirtyFrom; s < superCount; s++) {
+      this.recomputeSuper(s)
+    }
+    this.superDirtyFrom = Number.POSITIVE_INFINITY
+  }
+
+  /** Recompute a single superblock summary `s` from its leaf pieces. */
+  private recomputeSuper(s: number): void {
+    const start = s << SUPER_SHIFT
+    const end = Math.min(start + SUPER_SIZE, this.lengths.length)
+    let len = 0
+    let sum = 0
+    let dip = 0
+    const lengths = this.lengths
+    const sums = this.sums
+    const dips = this.dips
+    for (let i = start; i < end; i++) {
+      len += lengths[i]
+      const d = sum + dips[i]
+      if (d < dip) dip = d
+      sum += sums[i]
+    }
+    this.superLengths[s] = len
+    this.superSums[s] = sum
+    this.superDips[s] = dip
   }
 
   /**
@@ -108,13 +164,21 @@ export class BracketDepthIndex {
       return
     }
 
-    // The piece containing `start` — the LAST piece when the edit sits at the
-    // very end — and the piece whose closed span `[pieceStart, pieceEnd]`
-    // contains `endOld`, so an edit that ends exactly on a boundary does not
-    // reach into the piece after it.
+    if (this.superDirtyFrom !== Number.POSITIVE_INFINITY) this.syncSupers()
+
+    // Locate the piece containing `start` by skipping whole superblocks first.
     const lengths = this.lengths
     let i = 0
     let pieceStart = 0
+    if (lengths.length > SUPER_SIZE) {
+      const sLen = this.superLengths
+      let s = 0
+      while (s < sLen.length - 1 && pieceStart + sLen[s] <= start) {
+        pieceStart += sLen[s]
+        s++
+      }
+      i = s << SUPER_SHIFT
+    }
     while (i < lengths.length - 1 && pieceStart + lengths[i] <= start) {
       pieceStart += lengths[i]
       i++
@@ -128,8 +192,17 @@ export class BracketDepthIndex {
 
     const newEnd = pieceEnd + delta
     const removed = lengths.length === 0 ? 0 : j - i + 1
+    const oldCount = lengths.length
     this.spliceSummaries(i, removed, newSource, pieceStart, newEnd)
     this._length = newSource.length
+
+    if (this.lengths.length === oldCount && removed === 1) {
+      // Fast path (common keystroke): 1 piece replaced in-place, update only its superblock.
+      this.recomputeSuper(i >> SUPER_SHIFT)
+    } else {
+      const dirty = i >> SUPER_SHIFT
+      if (dirty < this.superDirtyFrom) this.superDirtyFrom = dirty
+    }
 
     // Keep the pieces around the edit from dwindling: a piece that lost most
     // of its text merges into a neighbour so the piece count stays bounded by
@@ -144,10 +217,24 @@ export class BracketDepthIndex {
    */
   depthAt(source: string, end: number): number {
     if (end > this._length) end = this._length
+    if (this.superDirtyFrom !== Number.POSITIVE_INFINITY) this.syncSupers()
     const lengths = this.lengths
     let depth = 0
     let pos = 0
     let i = 0
+    // Whole superblocks before `end`: compose their summaries.
+    if (lengths.length > SUPER_SIZE) {
+      const sLen = this.superLengths
+      const sSum = this.superSums
+      const sDip = this.superDips
+      let s = 0
+      for (; s < sLen.length && pos + sLen[s] <= end; s++) {
+        const dip = sDip[s]
+        depth = sSum[s] + (depth > -dip ? depth : -dip)
+        pos += sLen[s]
+      }
+      i = s << SUPER_SHIFT
+    }
     // Whole pieces before `end`: compose their summaries.
     for (; i < lengths.length && pos + lengths[i] <= end; i++) {
       const dip = this.dips[i]
@@ -176,9 +263,16 @@ export class BracketDepthIndex {
    * exactly `r + dip`.
    */
   suffixMin(source: string, from: number): number {
+    if (this.superDirtyFrom !== Number.POSITIVE_INFINITY) this.syncSupers()
     const lengths = this.lengths
     let pos = 0
     let i = 0
+    if (lengths.length > SUPER_SIZE) {
+      const sLen = this.superLengths
+      let s = 0
+      while (s < sLen.length && pos + sLen[s] <= from) pos += sLen[s++]
+      i = s << SUPER_SHIFT
+    }
     while (i < lengths.length && pos + lengths[i] <= from) pos += lengths[i++]
     let run = 0
     let min = 0
@@ -188,9 +282,16 @@ export class BracketDepthIndex {
       if (c === 91 /* [ */) run++
       else if (c === 93 /* ] */ && --run < min) min = run
     }
-    for (i++; i < lengths.length; i++) {
+    // Finish the current superblock piece-by-piece, then compose remaining superblocks.
+    const nextSuper = ((i >> SUPER_SHIFT) + 1) << SUPER_SHIFT
+    const leafLimit = Math.min(nextSuper, lengths.length)
+    for (i++; i < leafLimit; i++) {
       if (run + this.dips[i] < min) min = run + this.dips[i]
       run += this.sums[i]
+    }
+    for (let s = nextSuper >> SUPER_SHIFT; s < this.superSums.length; s++) {
+      if (run + this.superDips[s] < min) min = run + this.superDips[s]
+      run += this.superSums[s]
     }
     return min
   }
@@ -276,5 +377,7 @@ export class BracketDepthIndex {
     this.lengths.splice(i + 1, 1)
     this.sums.splice(i + 1, 1)
     this.dips.splice(i + 1, 1)
+    const dirty = i >> SUPER_SHIFT
+    if (dirty < this.superDirtyFrom) this.superDirtyFrom = dirty
   }
 }

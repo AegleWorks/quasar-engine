@@ -837,22 +837,97 @@ export function greenToRedNodeReusing(
   const kids: RedNode[] = new Array(gLen)
   const limit = Math.min(gLen, oldKids.length)
 
-  // Common prefix: walk forward tracking offset without allocating an O(N)
-  // offsets array. Same green object (or equal when `structural`), adopt.
+  if (!structural) {
+    // Fast fused incremental path: prefix & suffix children share exact green
+    // references and shift by constant deltas, so we wire `parent`, `_idxCache`,
+    // and `_lazyShift` in a single pass with zero width accumulation and zero
+    // second pass in `initChildren`.
+    const prefixDelta = (start + green.leadingWidth) - (oldRed.baseStart + oldRed.green.leadingWidth)
+    const suffixDelta =
+      (start + green.width - green.trailingWidth) -
+      (oldRed.baseStart + oldRed.green.width - oldRed.green.trailingWidth)
+
+    let lo = 0
+    if (prefixDelta === 0) {
+      while (lo < limit && greenKids[lo] === oldKids[lo].green) {
+        const c = oldKids[lo]
+        c.parent = red
+        c.setIdxCache(lo)
+        kids[lo] = c
+        lo++
+      }
+    } else {
+      while (lo < limit && greenKids[lo] === oldKids[lo].green) {
+        const c = oldKids[lo]
+        c.shiftLazy(prefixDelta)
+        c.parent = red
+        c.setIdxCache(lo)
+        kids[lo] = c
+        lo++
+      }
+    }
+    if (stats) stats.adopted += lo
+
+    let gHi = gLen - 1
+    let oHi = oldKids.length - 1
+    const suffixStart = gHi
+    if (suffixDelta === 0) {
+      while (gHi >= lo && oHi >= lo && greenKids[gHi] === oldKids[oHi].green) {
+        const c = oldKids[oHi]
+        c.parent = red
+        c.setIdxCache(gHi)
+        kids[gHi] = c
+        gHi--
+        oHi--
+      }
+    } else {
+      while (gHi >= lo && oHi >= lo && greenKids[gHi] === oldKids[oHi].green) {
+        const c = oldKids[oHi]
+        c.shiftLazy(suffixDelta)
+        c.parent = red
+        c.setIdxCache(gHi)
+        kids[gHi] = c
+        gHi--
+        oHi--
+      }
+    }
+    if (stats) stats.adopted += suffixStart - gHi
+
+    if (gHi >= lo) {
+      let midOffset = start + green.leadingWidth + green.childStartOffset(lo)
+      if (gHi === lo && oHi === lo) {
+        const c = greenToRedNodeReusing(greenKids[lo], oldKids[lo], midOffset, stats, false)
+        c.parent = red
+        c.setIdxCache(lo)
+        kids[lo] = c
+      } else {
+        for (let i = lo; i <= gHi; i++) {
+          const c = greenToRedNode(greenKids[i], null, undefined, midOffset)
+          c.parent = red
+          c.setIdxCache(i)
+          kids[i] = c
+          midOffset += greenKids[i].width
+        }
+      }
+    }
+
+    red.adoptChildrenFast(kids)
+    return red
+  }
+
+  // Structural equality path (used by non-reference reuse callers):
   let lo = 0
   let prefixOffset = start + green.leadingWidth
-  while (lo < limit && sameGreen(greenKids[lo], oldKids[lo].green, structural)) {
+  while (lo < limit && sameGreen(greenKids[lo], oldKids[lo].green, true)) {
     kids[lo] = adoptShifted(oldKids[lo], prefixOffset, stats)
     prefixOffset += greenKids[lo].width
     lo++
   }
 
-  // Common suffix: walk backward from the end of this node's inner span,
-  // stopping before the prefix already consumed.
   let gHi = gLen - 1
   let oHi = oldKids.length - 1
   let suffixEnd = start + green.width - green.trailingWidth
-  while (gHi >= lo && oHi >= lo && sameGreen(greenKids[gHi], oldKids[oHi].green, structural)) {
+  while (gHi >= lo && oHi >= lo && sameGreen(greenKids[gHi], oldKids[oHi].green, true)) {
     suffixEnd -= greenKids[gHi].width
     kids[gHi] = adoptShifted(oldKids[oHi], suffixEnd, stats)
     gHi--
@@ -860,11 +935,8 @@ export function greenToRedNodeReusing(
   }
 
   if (gHi === lo && oHi === lo) {
-    // The single changed child both sides — the keystroke shape. Descend so
-    // its own untouched children are still adopted.
-    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], prefixOffset, stats, structural)
+    kids[lo] = greenToRedNodeReusing(greenKids[lo], oldKids[lo], prefixOffset, stats, true)
   } else {
-    // A wider window (multi-node paste, fallback rebuild): build it fresh.
     let midOffset = prefixOffset
     for (let i = lo; i <= gHi; i++) {
       kids[i] = greenToRedNode(greenKids[i], null, undefined, midOffset)
@@ -872,7 +944,6 @@ export function greenToRedNodeReusing(
     }
   }
 
-  // Sets parent and index cache on every child, adopted or fresh.
   red.initChildren(kids)
   return red
 }

@@ -189,6 +189,30 @@ export class RedNode {
     this._lazyShift += delta
   }
 
+  /** Unmaterialized base offset (for exact relative delta math during adoption). */
+  get baseStart(): number {
+    return this._start
+  }
+
+  /** Accumulate a lazy offset delta without reading/computing absolute start. */
+  shiftLazy(delta: number): void {
+    this._lazyShift += delta
+  }
+
+  /** Set cached sibling index directly (used by fused adoption). */
+  setIdxCache(index: number): void {
+    this._idxCache = index
+  }
+
+  /**
+   * Take ownership of a children array whose `parent` and `_idxCache` were
+   * already wired during fused adoption (avoids a second O(N) pass).
+   */
+  adoptChildrenFast(children: readonly RedNode[]): void {
+    if (children.length === 0) return
+    ;(this as { children: readonly RedNode[] }).children = children
+  }
+
   /**
    * Apply `delta` to `node`'s subtree, composing with any nested pending shift.
    *
