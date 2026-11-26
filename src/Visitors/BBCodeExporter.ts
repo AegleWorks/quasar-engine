@@ -766,7 +766,11 @@ export class BBCodeExporter extends Visitor<string> {
         return this.exportNode(node)
       } finally {
         this.paint = outer
-        outer.cursor += extractTextContent(node).length
+        const skipped = extractTextContent(node)
+        while (outer.cursor < outer.text.length && outer.text[outer.cursor] === '\n' && skipped[0] !== '\n') {
+          outer.cursor++
+        }
+        outer.cursor += skipped.length
       }
     }
 
@@ -991,7 +995,13 @@ export class BBCodeExporter extends Visitor<string> {
         // would then reach osu! as literal tags; export it like body text.
         const titleNodes = node.metadata.titleNodes as RedNode[] | undefined
         if (this.target === 'osu' && titleNodes && titleNodes.length > 0 && titleNeedsExport(titleNodes)) {
-          titleVal = titleNodes.map((n) => this.exportNode(n)).join('')
+          const outer = this.paint
+          this.paint = null
+          try {
+            titleVal = titleNodes.map((n) => this.exportNode(n)).join('')
+          } finally {
+            this.paint = outer
+          }
         }
         // `[box=Title:#hex]`: el color se guardó aparte en metadata; se vuelve
         // a añadir aquí para que el round-trip no pierda el sufijo.

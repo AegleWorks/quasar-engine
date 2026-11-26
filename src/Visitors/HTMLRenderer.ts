@@ -35,7 +35,7 @@ import { compileCompositionText } from '../Composition/compileText'
 import { parseCompositionSpec, parsePaneSpec, placePanes } from '../Composition/compositionSpec'
 import { OSU_BASE_PX } from '../Composition/OsuTextMeasurer'
 import { renderBBCode } from '../BBCode/BBCodeBatch'
-import { evaluateEffect, type EffectKind, type EffectParams } from '../Utils/EffectMath'
+import { evaluateEffect, type EffectKind, type EffectParams, type StyledSegment } from '../Utils/EffectMath'
 import {
   toTokenResolver,
   resolveTokenValue,
@@ -328,6 +328,28 @@ export class HTMLRenderer extends Visitor<string> {
    * for a green it has not seen: the red tree it is handed next time may be
    * the same objects with spliced children.
    */
+  /** Active effect paint state when an effect wraps structured BBCode children. */
+  private effectPaint: {
+    text: string
+    segments: StyledSegment[]
+    segmentOf: Uint32Array
+    cursor: number
+  } | null = null
+
+  private static readonly UNPAINTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
+    'image', 'video', 'audio', 'imagemap', 'svg', 'code',
+  ])
+
+  private static readonly NESTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
+    'gradient', 'grow', 'sinewave', 'rainbow', 'paint', 'composition',
+  ])
+
+  private static readonly BLOCK_OR_MEDIA_KINDS: ReadonlySet<string> = new Set([
+    'box', 'boxw', 'spoilerbox', 'center', 'left', 'right', 'align', 'heading',
+    'list', 'list_item', 'quote', 'notice', 'wnotice', 'tables', 'scroll', 'divider',
+    'image', 'video', 'audio', 'imagemap', 'svg', 'code',
+  ])
+
   private semantic: OsuSemanticModel
   /** One model per document snapshot, by root green; dropped with the snapshot. */
   private readonly semanticBySnapshot = new WeakMap<object, OsuSemanticModel>()
@@ -914,6 +936,26 @@ export class HTMLRenderer extends Visitor<string> {
   }
 
   private renderNodeInner(node: RedNode, context = '', forward = ''): string {
+    // Inside a painted effect, media/code keep their content verbatim and
+    // nested effects paint themselves; advance the outer cursor past them.
+    if (
+      this.effectPaint !== null &&
+      (HTMLRenderer.UNPAINTED_EFFECT_KINDS.has(node.kind) || HTMLRenderer.NESTED_EFFECT_KINDS.has(node.kind))
+    ) {
+      const outer = this.effectPaint
+      this.effectPaint = null
+      try {
+        return this.renderNodeInner(node, context, forward)
+      } finally {
+        this.effectPaint = outer
+        const skipped = this.effectText(node)
+        while (outer.cursor < outer.text.length && outer.text[outer.cursor] === '\n' && skipped[0] !== '\n') {
+          outer.cursor++
+        }
+        outer.cursor += skipped.length
+      }
+    }
+
     // An element whose closer a box title claimed (see `isClaimedByBoxTitle`):
     // osu! swallowed its opener as plain text, so it shows as written, its
     // content unwrapped, its closer gone.
@@ -937,6 +979,9 @@ export class HTMLRenderer extends Visitor<string> {
         this.osuLinkSwallow = taken === rawText.length && taken < swallowed.length ? swallowed.slice(taken) : ''
         rawText = rawText.slice(taken)
         if (rawText === '') return ''
+      }
+      if (this.effectPaint !== null) {
+        return this.markLeaf(node, this.wrapTextLeaf(node, this.paintEffectHtmlText(rawText)))
       }
       // El `indexOf` va delante: casi ningún texto lleva un `$`, y así ni se
       // arranca el motor de expresiones regulares. El patrón es de módulo
@@ -3379,6 +3424,85 @@ export class HTMLRenderer extends Visitor<string> {
     return out
   }
 
+  /** True when a subtree contains block/media/code nodes that break inline CSS `background-clip: text`. */
+  private hasBlockOrMediaChild(node: RedNode): boolean {
+    for (const c of node.children) {
+      if (HTMLRenderer.BLOCK_OR_MEDIA_KINDS.has(c.kind)) return true
+      if (c.children.length > 0 && this.hasBlockOrMediaChild(c)) return true
+    }
+    return false
+  }
+
+  /** True when a subtree contains any formatting or structural tag rather than plain text + breaks. */
+  private hasStructuredChild(node: RedNode): boolean {
+    for (const c of node.children) {
+      if (c.kind !== 'text' && c.kind !== 'spacing' && c.kind !== 'empty_line') return true
+    }
+    return false
+  }
+
+  /** Paint one text leaf from the active `effectPaint` state. */
+  private paintEffectHtmlText(text: string): string {
+    const p = this.effectPaint!
+    while (p.cursor < p.text.length && p.text[p.cursor] === '\n' && text[0] !== '\n') p.cursor++
+    if (!p.text.startsWith(text, p.cursor)) return this.escapeHtml(text)
+
+    let out = ''
+    let i = 0
+    const ceiling = maxFontSizeFor(this.options.dialect) ?? 400
+    while (i < text.length) {
+      const segIdx = p.segmentOf[p.cursor + i]
+      const seg = p.segments[segIdx]
+      let j = i + 1
+      while (j < text.length && p.segmentOf[p.cursor + j] === segIdx) j++
+      const escaped = this.escapeHtml(text.slice(i, j))
+      if (seg.color) {
+        const safe = sanitizeColor(seg.color, this.tokenResolver)
+        out += safe ? `<span style="color:${safe}">${escaped}</span>` : escaped
+      } else if (seg.size !== undefined) {
+        out += `<span style="font-size:${Math.max(10, Math.min(ceiling, seg.size))}%">${escaped}</span>`
+      } else {
+        out += escaped
+      }
+      i = j
+    }
+    p.cursor += text.length
+    return out
+  }
+
+  /**
+   * Paint an effect across structured BBCode children, preserving every tag
+   * (`[box]`, `[centre]`, `[heading]`, `[list]`, `[b]`, `[url]`, `[img]`, `[code]`)
+   * while colouring every prose leaf with the exact computed segments.
+   */
+  private paintEffectChildren(
+    node: RedNode,
+    kind: EffectKind,
+    text: string,
+    segments: StyledSegment[],
+  ): string | null {
+    const segmentOf = new Uint32Array(text.length)
+    let at = 0
+    for (let i = 0; i < segments.length; i++) {
+      const len = segments[i].text.length
+      if (text.slice(at, at + len) !== segments[i].text) return null
+      segmentOf.fill(i, at, at + len)
+      at += len
+    }
+    if (at !== text.length) return null
+
+    const outer = this.effectPaint
+    this.effectPaint = { text, segments, segmentOf, cursor: 0 }
+    let inner: string
+    try {
+      inner = this.renderChildren(node)
+    } finally {
+      this.effectPaint = outer
+    }
+    const tag = this.hasBlockOrMediaChild(node) ? 'div' : 'span'
+    return `<${tag}${this.idAttr(node)} class="bb-effect bb-effect-${kind}">${inner}</${tag}>`
+  }
+
   /**
    * Paint an effect's computed segments as spans.
    *
@@ -3395,6 +3519,11 @@ export class HTMLRenderer extends Visitor<string> {
       globalOffset: meta.globalOffset as number | undefined,
       documentLength: meta.documentLength as number | undefined,
     })
+
+    if (this.hasStructuredChild(node)) {
+      const painted = this.paintEffectChildren(node, kind, text, segments)
+      if (painted !== null) return painted
+    }
 
     const breaks = text.indexOf('\n') === -1 ? [] : this.effectBreaks(node)
     let nextBreak = 0
@@ -3449,7 +3578,7 @@ export class HTMLRenderer extends Visitor<string> {
   private renderGradient(node: RedNode): string {
     const params = this.effectParams(node)
 
-    if (isPlainGradient(params)) {
+    if (isPlainGradient(params) && !this.hasBlockOrMediaChild(node)) {
       const stops = params.stops && params.stops.length > 0
         ? params.stops.map(st => `${st.color} ${(st.position * 100).toFixed(1)}%`)
         : (params.colors ?? ['#FF0000', '#00FF00'])
