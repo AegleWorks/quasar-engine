@@ -503,6 +503,7 @@ export interface OsuTitleEvent {
  */
 class Decisions {
   readonly forced: Uint8Array
+  readonly tracing: boolean
   private readonly tokens: readonly BBCodeToken[]
   private readonly recorded: (OsuPairingStep | null)[] | null
   /** True once any token has been demoted; lets `materialize` skip the copy. */
@@ -510,6 +511,7 @@ class Decisions {
 
   constructor(tokens: readonly BBCodeToken[], tracing: boolean) {
     this.tokens = tokens
+    this.tracing = tracing
     // `Uint8Array`, not `Array(n).fill(false)`: two zeroed buffers instead of
     // two holey arrays plus a fill pass, and a hundredth of the memory to
     // collect. Both are only ever read as booleans.
@@ -605,53 +607,7 @@ interface TitleTags {
 
 /** Compartido por los tags sin nada en ningún título: no asigna por pasada. */
 const EMPTY_TITLE_TAGS: readonly TitleTag[] = []
-
-/**
- * Índice, por tag, de los tags de bloque escritos dentro de títulos — ver
- * `TITLE_UNIT_TAGS`/`TITLE_OPENER_RE`. Se construye una vez por
- * `applyOsuPairing` y sólo toca los tokens de caja con un `[` en el atributo:
- * en 8.761 páginas del corpus son 9 con un cierre (20 `[/centre]`, 1
- * `[/notice]`) y 7 con una apertura (15 `[centre]`, 1 `[notice]`), así que el
- * coste es anecdótico. Cada lista sale en orden de posición (los tokens de caja
- * vienen en orden de documento y dentro de un título el regex va de izquierda a
- * derecha), que es lo que asume el flujo mezclado.
- */
-function indexTitleTags(tokens: readonly BBCodeToken[], source: string): Map<string, TitleTags> | null {
-  // No `[box=…]` spelling means no title claims can exist. The spelling is
-  // case-sensitive, as osu!'s own box pass is.
-  if (!source.includes('[box=') && !source.includes('[boxw=') && !source.includes('[spoilerbox=')) return null
-  let byTag: Map<string, TitleTags> | null = null
-  const add = (tag: string, closer: boolean, pos: number, ownerIndex: number, ownerStart: number) => {
-    byTag ??= new Map()
-    let entry = byTag.get(tag)
-    if (entry === undefined) {
-      entry = { openers: [], closers: [] }
-      byTag.set(tag, entry)
-    }
-    const list = closer ? entry.closers : entry.openers
-    list.push({ pos, ownerIndex, ownerStart })
-  }
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]
-    if (t.kind !== 'open') continue
-    if (t.tag !== 'box' && t.tag !== 'boxw' && t.tag !== 'spoilerbox') continue
-    const attrs = t.attrs
-    if (!attrs.includes('[')) continue
-    // `attrs` es la cola del token (el `]` cierra el tag), así que el texto del
-    // título empieza `attrs.length` antes del final del propio token.
-    const base = t.end - attrs.length
-    TITLE_CLOSER_RE.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = TITLE_CLOSER_RE.exec(attrs)) !== null) {
-      add(m[1], true, base + m.index, i, t.start)
-    }
-    TITLE_OPENER_RE.lastIndex = 0
-    while ((m = TITLE_OPENER_RE.exec(attrs)) !== null) {
-      add(m[1], false, base + m.index, i, t.start)
-    }
-  }
-  return byTag
-}
+const EMPTY_INDICES: readonly number[] = []
 
 // ─── Filter ───────────────────────────────────────────────────────────────
 
@@ -666,6 +622,42 @@ function indexTitleTags(tokens: readonly BBCodeToken[], source: string): Map<str
  * `options.onDecision` es la traza opt-in: mismas decisiones, mismo orden,
  * cero coste cuando no se pide (ver {@link OsuPairingStep}).
  */
+/** Precomputed entries of OSU_FAMILY so applyOsuPairing never calls Object.keys() per parse. */
+const OSU_FAMILY_ENTRIES = Object.entries(OSU_FAMILY)
+
+/** Inline ASCII hex check for `[color=#rrggbb]` without substring or RegExp allocation. */
+function isHexDigit(c: number): boolean {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+/** Inline validator for osu! `[color=...]` (`#rrggbb` or ASCII letters only), zero-alloc. */
+function isValidOsuColorAttr(source: string, start: number, end: number): boolean {
+  const len = end - start
+  if (len <= 0) return false
+  if (source.charCodeAt(start) === 35 /* # */) {
+    if (len !== 7) return false
+    for (let i = start + 1; i < end; i++) {
+      if (!isHexDigit(source.charCodeAt(i))) return false
+    }
+    return true
+  }
+  for (let i = start; i < end; i++) {
+    const c = source.charCodeAt(i)
+    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return false
+  }
+  return true
+}
+
+/** Inline validator for osu! `[size=...]` (ASCII digits only), zero-alloc. */
+function isValidOsuDigitsAttr(source: string, start: number, end: number): boolean {
+  if (end <= start) return false
+  for (let i = start; i < end; i++) {
+    const c = source.charCodeAt(i)
+    if (c < 48 || c > 57) return false
+  }
+  return true
+}
+
 export function applyOsuPairing(
   tokens: readonly BBCodeToken[],
   source: string,
@@ -674,15 +666,39 @@ export function applyOsuPairing(
   const n = tokens.length
   const d = new Decisions(tokens, options?.onDecision !== undefined)
   const caseOk = new Uint8Array(n)
-  const titleTags = indexTitleTags(tokens, source)
+  const hasBoxAttrs = source.includes('[box=') || source.includes('[boxw=') || source.includes('[spoilerbox=')
+  let titleTags: Map<string, TitleTags> | null = null
 
+  // Single fused pass: compute caseOk, demote neverSeal tags, and collect
+  // box-title block tags without scanning the 45k-token stream twice.
   for (let i = 0; i < n; i++) {
     const t = tokens[i]
-    if (t.kind === 'open' || t.kind === 'close') {
-      const at = t.kind === 'open' ? t.start + 1 : t.start + 2
-      // `startsWith` compares without allocating a substring per tag token.
-      caseOk[i] = source.startsWith(t.tag, at) ? 1 : 0
-      // `center`/`colour`: unconditionally literal, both open and close.
+    if (t.kind === 'open') {
+      caseOk[i] = source.startsWith(t.tag, t.start + 1) ? 1 : 0
+      if (OSU_FAMILY[t.tag]?.kind === 'neverSeal') d.literal(i, 'neverSeal', 'not-osu-syntax')
+      if (hasBoxAttrs && (t.tag === 'box' || t.tag === 'boxw' || t.tag === 'spoilerbox')) {
+        const attrs = t.attrs
+        if (attrs.includes('[')) {
+          const base = t.end - attrs.length
+          TITLE_CLOSER_RE.lastIndex = 0
+          let m: RegExpExecArray | null
+          while ((m = TITLE_CLOSER_RE.exec(attrs)) !== null) {
+            titleTags ??= new Map()
+            let entry = titleTags.get(m[1])
+            if (entry === undefined) titleTags.set(m[1], (entry = { openers: [], closers: [] }))
+            entry.closers.push({ pos: base + m.index, ownerIndex: i, ownerStart: t.start })
+          }
+          TITLE_OPENER_RE.lastIndex = 0
+          while ((m = TITLE_OPENER_RE.exec(attrs)) !== null) {
+            titleTags ??= new Map()
+            let entry = titleTags.get(m[1])
+            if (entry === undefined) titleTags.set(m[1], (entry = { openers: [], closers: [] }))
+            entry.openers.push({ pos: base + m.index, ownerIndex: i, ownerStart: t.start })
+          }
+        }
+      }
+    } else if (t.kind === 'close') {
+      caseOk[i] = source.startsWith(t.tag, t.start + 2) ? 1 : 0
       if (OSU_FAMILY[t.tag]?.kind === 'neverSeal') d.literal(i, 'neverSeal', 'not-osu-syntax')
     }
   }
@@ -692,16 +708,19 @@ export function applyOsuPairing(
   // everything else — code's protection is already free, see module doc).
   const collapsed = sealImagemapProtecting(tokens, source, caseOk, d)
 
+  // Shared byte-array for sealLazy's consumed-close tracking (replaces per-tag
+  // Set<number> allocations; every close token index belongs to one unique tag).
+  const consumedClose = new Uint8Array(n)
   let index: TokenIndex | undefined
-  for (const tag of Object.keys(OSU_FAMILY)) {
-    const family = OSU_FAMILY[tag]
+  for (let e = 0; e < OSU_FAMILY_ENTRIES.length; e++) {
+    const [tag, family] = OSU_FAMILY_ENTRIES[e]
     switch (family.kind) {
       case 'lazy': {
         if (tag === 'imagemap') continue // already handled above
         const title = titleTags?.get(tag)
         sealLazy(
           tag, family, tokens, source, index ??= indexTokens(tokens, collapsed), caseOk, d,
-          title?.closers, title?.openers, options?.titleEvents,
+          consumedClose, title?.closers, title?.openers, options?.titleEvents,
         )
         break
       }
@@ -865,18 +884,27 @@ function indexTokens(tokens: readonly BBCodeToken[], collapsed: Uint8Array): Tok
   const openers = new Map<string, number[]>()
   const closers = new Map<string, number[]>()
   const all = new Map<string, number[]>()
-  const newlinesBefore = new Int32Array(tokens.length + 1)
-  for (let i = 0; i < tokens.length; i++) {
+  const n = tokens.length
+  const newlinesBefore = new Int32Array(n + 1)
+  let nl = 0
+  for (let i = 0; i < n; i++) {
     const t = tokens[i]
-    newlinesBefore[i + 1] = newlinesBefore[i] + (t.kind === 'newline' && !collapsed[i] ? 1 : 0)
+    if (t.kind === 'newline' && !collapsed[i]) nl++
+    newlinesBefore[i + 1] = nl
     if (t.kind !== 'open' && t.kind !== 'close') continue
+    const tag = t.tag
     const by = t.kind === 'open' ? openers : closers
-    let list = by.get(t.tag)
+    let list = by.get(tag)
     if (list) list.push(i)
-    else by.set(t.tag, (list = [i]))
-    const every = all.get(t.tag)
-    if (every) every.push(i)
-    else all.set(t.tag, [i])
+    else by.set(tag, [i])
+    // Only alwaysSeal (`box`, `spoilerbox`) and countLimited (`quote`, `list`)
+    // ever read `index.all` — skipping it for `color`/`b`/`size`/etc. avoids
+    // 10k+ redundant array pushes and Map lookups on gradient-heavy pages.
+    if (tag === 'box' || tag === 'spoilerbox' || tag === 'quote' || tag === 'list') {
+      const every = all.get(tag)
+      if (every) every.push(i)
+      else all.set(tag, [i])
+    }
   }
   return { openers, closers, all, newlinesBefore }
 }
@@ -889,24 +917,19 @@ function sealLazy(
   index: TokenIndex,
   caseOk: Uint8Array,
   d: Decisions,
+  consumedClose: Uint8Array,
   titleClosers?: readonly TitleTag[],
   titleOpeners?: readonly TitleTag[],
   titleSink?: Map<number, OsuTitleEvent[]>,
 ): void {
-  const pass = `lazy:${tag}`
-  const openers = index.openers.get(tag) ?? []
-  const closers = index.closers.get(tag) ?? []
-  // Most documents use a fraction of the family table; do not allocate the
-  // consumed-close Set or sweep for a tag that never appears.
-  if (openers.length === 0 && closers.length === 0) return
+  const openers = index.openers.get(tag)
+  const closers = index.closers.get(tag)
+  // Most documents use a fraction of the family table; skip immediately when absent.
+  if ((!openers || openers.length === 0) && (!closers || closers.length === 0)) return
 
-  /**
-   * El texto entre el nombre y el `]`, tal y como está escrito — no la copia
-   * recortada del token: osu! distingue `[url]` de `[url ]`, y en su `=valor`
-   * los espacios cuentan (el recorte del lexer se los comería).
-   */
-  const rawAttrs = (open: Extract<BBCodeToken, { kind: 'open' }>): string =>
-    source.slice(open.start + 1 + open.tag.length, open.end - 1)
+  const openersList = openers ?? EMPTY_INDICES
+  const closersList = closers ?? EMPTY_INDICES
+  const pass = d.tracing ? `lazy:${tag}` : ''
 
   // Un tag escrito dentro de un TÍTULO entra en el MISMO presupuesto que los
   // reales: osu! corre su pasada sobre el texto, donde el título está en
@@ -916,85 +939,88 @@ function sealLazy(
   if (family.dotall && ((titleClosers !== undefined && titleClosers.length > 0) ||
       (titleOpeners !== undefined && titleOpeners.length > 0))) {
     sealLazyWithTitle(
-      tag, family, tokens, source, caseOk, d, openers, closers,
+      tag, family, tokens, source, caseOk, d, openersList, closersList,
       titleOpeners ?? EMPTY_TITLE_TAGS, titleClosers ?? EMPTY_TITLE_TAGS, titleSink,
     )
     return
   }
 
-  // Indices of close tokens actually consumed as the nearest match of some
-  // opener below — i.e. genuinely part of a `\[tag\](.*?)\[/tag\]` MATCH,
-  // not just left un-visited by the opener-driven scan. `preg_replace` only
-  // ever transforms a matched SPAN; a `[/tag]` that is not part of one is
-  // never touched by this tag's pass at all and stays literal — see the
-  // sweep below.
-  const consumedClose = new Set<number>()
+  const tracing = d.tracing
+  const forced = d.forced
+  const nlBefore = index.newlinesBefore
+  const dotall = family.dotall
+  const allowEmpty = family.allowEmpty
+  const valuePattern = family.valuePattern
+  const bareContentPattern = family.bareContentPattern
+  const isColor = tag === 'color'
+  const isDigits = tag === 'size' || tag === 'profile'
+  const tagNameLen = tag.length
 
-  // Openers are met in document order and nothing below demotes a closer
-  // before the sweep, so "the nearest closer after this opener" is a pointer
-  // that only moves forward. Scanning ahead for it from every opener instead
-  // made n unclosed openers cost n² — 10 s for 64 000 `[b]`.
   let nextOpener = 0
   let nextCloser = 0
-  while (nextOpener < openers.length) {
-    const openIdx = openers[nextOpener++]
-    if (d.forced[openIdx]) continue
+  const openersLen = openersList.length
+  const closersLen = closersList.length
+
+  while (nextOpener < openersLen) {
+    const openIdx = openersList[nextOpener++]
+    if (forced[openIdx]) continue
     const t = tokens[openIdx] as Extract<BBCodeToken, { kind: 'open' }>
     if (!caseOk[openIdx]) { d.literal(openIdx, pass, 'case'); continue }
 
-    // `=valor` o forma desnuda. El valor se prueba sólo cuando hay `=`:
-    // `[url]https://x[/url]` lleva la URL en el CUERPO, y ahí la prueba es
-    // `bareContentPattern` (más abajo, con el cierre ya conocido).
-    const attrs = rawAttrs(t)
-    const valued = attrs.startsWith('=')
-    if (family.valuePattern !== undefined) {
+    // Zero-alloc raw attribute bounds: `[tag` + attrs + `]`.
+    const attrStart = t.start + 1 + tagNameLen
+    const attrEnd = t.end - 1
+    const attrLen = attrEnd - attrStart
+    const valued = attrLen > 0 && source.charCodeAt(attrStart) === 61 /* = */
+
+    if (valuePattern !== undefined) {
       if (valued) {
-        if (!family.valuePattern.test(attrs.slice(1))) { d.literal(openIdx, pass, 'bad-value', { value: attrs.slice(1) }); continue }
-      } else if (family.bareContentPattern === undefined && !family.valuePattern.test(attrs)) {
-        // Sin forma desnuda en osu! (`[color]`, `[size]`): el tag queda escrito.
-        d.literal(openIdx, pass, 'bad-value', { value: attrs }); continue
+        let valid: boolean
+        if (isColor) valid = isValidOsuColorAttr(source, attrStart + 1, attrEnd)
+        else if (isDigits) valid = isValidOsuDigitsAttr(source, attrStart + 1, attrEnd)
+        else valid = valuePattern.test(source.slice(attrStart + 1, attrEnd))
+        if (!valid) {
+          d.literal(openIdx, pass, 'bad-value', tracing ? { value: source.slice(attrStart + 1, attrEnd) } : undefined)
+          continue
+        }
+      } else if (bareContentPattern === undefined) {
+        // Without a bare form (`[color]`, `[size]`), missing `=` is always invalid.
+        if (attrLen === 0 || !valuePattern.test(source.slice(attrStart, attrEnd))) {
+          d.literal(openIdx, pass, 'bad-value', tracing ? { value: source.slice(attrStart, attrEnd) } : undefined)
+          continue
+        }
       }
     }
-    if (family.bareContentPattern !== undefined && !valued && attrs !== '') {
-      // `[url = x]` no es el `[url]` de osu! (ni un `[url=`): queda escrito.
-      d.literal(openIdx, pass, 'bad-value', { value: attrs }); continue
+    if (bareContentPattern !== undefined && !valued && attrLen !== 0) {
+      d.literal(openIdx, pass, 'bad-value', tracing ? { value: source.slice(attrStart, attrEnd) } : undefined)
+      continue
     }
-    if (family.valuePattern === undefined && family.bareContentPattern === undefined && attrs !== '') {
-      // osu! no tiene pase para esta forma: su regex escribe el tag DESNUDO
-      // (`#\[b](.*?)\[/b\]#`), así que `[b=x]a[/b]` no coincide y lo publica
-      // tal cual — igual que `[heading=2]`, `[centre=x]`, `[c ]` o
-      // `[youtube=x]`. Medido caso a caso en `.cache/c-code-attrs`.
-      d.literal(openIdx, pass, 'unexpected-value', { value: attrs }); continue
+    if (valuePattern === undefined && bareContentPattern === undefined && attrLen !== 0) {
+      d.literal(openIdx, pass, 'unexpected-value', tracing ? { value: source.slice(attrStart, attrEnd) } : undefined)
+      continue
     }
 
     while (
-      nextCloser < closers.length &&
-      (closers[nextCloser] <= openIdx || d.forced[closers[nextCloser]] || !caseOk[closers[nextCloser]])
+      nextCloser < closersLen &&
+      (closersList[nextCloser] <= openIdx || forced[closersList[nextCloser]] || !caseOk[closersList[nextCloser]])
     ) nextCloser++
-    let closeIdx = nextCloser < closers.length ? closers[nextCloser] : -1
-    // Without `/s` the lazy `.*?` stops at the first newline: a closer past
-    // one is out of this opener's reach.
+    let closeIdx = nextCloser < closersLen ? closersList[nextCloser] : -1
     let blockedByNewline = false
-    const outOfReach = (): boolean => {
-      if (family.dotall || index.newlinesBefore[closeIdx] <= index.newlinesBefore[openIdx + 1]) return false
+    if (closeIdx !== -1 && !dotall && nlBefore[closeIdx] > nlBefore[openIdx + 1]) {
       closeIdx = -1
       blockedByNewline = true
-      return true
     }
-    if (closeIdx !== -1) outOfReach()
 
-    // Un cierre PEGADO al apertura deja el contenido vacío, y el `.*?`/`.+?`
-    // perezoso de osu! no lo acepta: la búsqueda sigue hacia delante y ese
-    // `[/tag]` acaba DENTRO del tag como texto. Medido (`.cache/url-close`,
-    // C39): `[url=https://x][/url]T[/url]` publica un enlace al `x` cuyo texto
-    // es `[/url]T`, y el cierre descartado sale escrito.
-    while (closeIdx !== -1 && !family.allowEmpty && (tokens[closeIdx] as { start: number }).start === t.end) {
-      d.literal(closeIdx, pass, 'empty-content-closer', { opener: openIdx })
+    while (closeIdx !== -1 && !allowEmpty && tokens[closeIdx].start === t.end) {
+      d.literal(closeIdx, pass, 'empty-content-closer', tracing ? { opener: openIdx } : undefined)
       nextCloser++
-      while (nextCloser < closers.length && (d.forced[closers[nextCloser]] || !caseOk[closers[nextCloser]])) nextCloser++
-      closeIdx = nextCloser < closers.length ? closers[nextCloser] : -1
+      while (nextCloser < closersLen && (forced[closersList[nextCloser]] || !caseOk[closersList[nextCloser]])) nextCloser++
+      closeIdx = nextCloser < closersLen ? closersList[nextCloser] : -1
       blockedByNewline = false
-      if (closeIdx !== -1) outOfReach()
+      if (closeIdx !== -1 && !dotall && nlBefore[closeIdx] > nlBefore[openIdx + 1]) {
+        closeIdx = -1
+        blockedByNewline = true
+      }
     }
 
     if (closeIdx === -1) {
@@ -1002,44 +1028,31 @@ function sealLazy(
       continue
     }
 
-    if (family.bareContentPattern !== undefined && !valued &&
-        !family.bareContentPattern.test(source.slice(t.end, (tokens[closeIdx] as { start: number }).start))) {
-      d.literal(openIdx, pass, 'bad-content', { content: source.slice(t.end, (tokens[closeIdx] as { start: number }).start) })
-      continue
+    if (bareContentPattern !== undefined && !valued) {
+      const content = source.slice(t.end, tokens[closeIdx].start)
+      if (!bareContentPattern.test(content)) {
+        d.literal(openIdx, pass, 'bad-content', tracing ? { content } : undefined)
+        continue
+      }
     }
 
-    // Swallowed as content: a same-tag OPENER strictly inside can never
-    // itself become a tag (osu! non-nesting). A same-tag CLOSER inside is
-    // already an orphan this module now forces to text on its own — see the
-    // sweep below and module doc's `lazy` section.
-    while (nextOpener < openers.length && openers[nextOpener] < closeIdx) {
-      const swallowed = openers[nextOpener++]
-      d.literal(swallowed, pass, 'nested-opener', { swallowedBy: openIdx })
+    while (nextOpener < openersLen && openersList[nextOpener] < closeIdx) {
+      const swallowed = openersList[nextOpener++]
+      d.literal(swallowed, pass, 'nested-opener', tracing ? { swallowedBy: openIdx } : undefined)
     }
-    consumedClose.add(closeIdx)
-    d.sealed(openIdx, pass, 'paired', { closer: closeIdx })
-    d.sealed(closeIdx, pass, 'closer-of', { opener: openIdx })
+    consumedClose[closeIdx] = 1
+    if (tracing) {
+      d.sealed(openIdx, pass, 'paired', { closer: closeIdx })
+      d.sealed(closeIdx, pass, 'closer-of', { opener: openIdx })
+    }
     nextCloser++
   }
 
-  // Sweep: any remaining un-decided close token of this tag — wrong case, OR
-  // (`pairing: 'osu'`'s div-count crossing, `Parser.ts`'s `closeDivUnits`)
-  // never consumed as the nearest match of an opener above. `preg_replace`
-  // only ever transforms a matched `\[tag\](.*?)\[/tag\]` SPAN; a `[/tag]`
-  // outside every such span is literal text in real osu!, full stop —
-  // regardless of whatever ELSE happens to be open at that point in the
-  // document (measured: `docs/ai/NyuPenyu.from-intent.bbcode` has an extra,
-  // unconsumed `[/notice]` sitting where a `[centre]` is still open; osu!
-  // leaves it as literal text and `[centre]` stays open across it, it does
-  // NOT close `centre`'s div). Forcing this here — rather than relying on
-  // whatever the tree builder does with a live, unmatched `close` token —
-  // keeps that decision where the actual sealing contract lives, so every
-  // consumer (div-count crossing, the plain literal-text fallback, …) sees
-  // the same, correct set of real tokens.
-  for (const i of closers) {
-    if (d.forced[i]) continue
+  for (let k = 0; k < closersLen; k++) {
+    const i = closersList[k]
+    if (forced[i]) continue
     if (!caseOk[i]) d.literal(i, pass, 'case')
-    else if (!consumedClose.has(i)) d.literal(i, pass, 'unconsumed-closer')
+    else if (!consumedClose[i]) d.literal(i, pass, 'unconsumed-closer')
   }
 }
 
@@ -1473,34 +1486,42 @@ function findListCarriers(
 // ─── img ────────────────────────────────────────────────────────────────
 
 function sealImg(index: TokenIndex, source: string, caseOk: Uint8Array, d: Decisions, tokens: readonly BBCodeToken[]): void {
+  const openers = index.openers.get('img')
+  if (!openers || openers.length === 0) return
   const pass = 'img'
-  for (const i of index.openers.get('img') ?? []) {
-    if (d.forced[i]) continue
+  const tracing = d.tracing
+  const forced = d.forced
+  const n = tokens.length
+  for (let k = 0; k < openers.length; k++) {
+    const i = openers[k]
+    if (forced[i]) continue
     const t = tokens[i] as Extract<BBCodeToken, { kind: 'open' }>
     if (!caseOk[i]) { d.literal(i, pass, 'case'); continue }
 
-    // `\[img:uid\]`, desnudo: `[img round]` no sella (su URL interior la
-    // enlaza el autolink, como cualquier texto suelto). Medido (a12).
-    const attrs = source.slice(t.start + 1 + t.tag.length, t.end - 1)
-    if (attrs !== '') { d.literal(i, pass, 'unexpected-value', { value: attrs }); continue }
+    // `\[img:uid\]`, desnudo: zero-alloc length check instead of source.slice().
+    const attrStart = t.start + 1 + t.tag.length
+    const attrEnd = t.end - 1
+    if (attrEnd !== attrStart) {
+      d.literal(i, pass, 'unexpected-value', tracing ? { value: source.slice(attrStart, attrEnd) } : undefined)
+      continue
+    }
 
     let j = i + 1
-    while (j < tokens.length && tokens[j].kind !== 'open' && tokens[j].kind !== 'close') j++
-    const next = j < tokens.length ? tokens[j] : null
+    while (j < n && tokens[j].kind !== 'open' && tokens[j].kind !== 'close') j++
+    const next = j < n ? tokens[j] : null
     const isImgClose = next !== null && next.kind === 'close' && next.tag === 'img'
     const nonEmpty = next !== null && next.start > t.end
-    // osu!'s own regex is `\[img:uid\]([^[]+)\[/img:uid\]`: a `[` anywhere
-    // inside means the image is not an image and the page shows the tag as
-    // text. That is how a JSON imagemap pasted into `[img]` publishes — the
-    // whole blob, literally — instead of a broken `<img src="{">`.
-    const hasBracket = next !== null && source.slice(t.end, next.start).includes('[')
+    const bracketPos = next !== null ? source.indexOf('[', t.end) : -1
+    const hasBracket = bracketPos !== -1 && bracketPos < next!.start
 
     if (next === null) { d.literal(i, pass, 'no-closer'); continue }
-    if (!isImgClose) { d.literal(i, pass, 'next-not-closer', { next: j }); continue }
+    if (!isImgClose) { d.literal(i, pass, 'next-not-closer', tracing ? { next: j } : undefined); continue }
     if (!caseOk[j]) { d.literal(i, pass, 'case'); continue }
     if (!nonEmpty) { d.literal(i, pass, 'empty'); continue }
     if (hasBracket) { d.literal(i, pass, 'bracket-inside'); continue }
-    d.sealed(i, pass, 'paired', { closer: j })
-    d.sealed(j, pass, 'closer-of', { opener: i })
+    if (tracing) {
+      d.sealed(i, pass, 'paired', { closer: j })
+      d.sealed(j, pass, 'closer-of', { opener: i })
+    }
   }
 }
