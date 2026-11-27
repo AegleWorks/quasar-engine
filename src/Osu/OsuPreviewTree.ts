@@ -111,12 +111,24 @@ function findChangedSpan(oldSource: string, newSource: string): [number, number,
 }
 
 /**
- * O(log N) prose fast-path for `OsuPreviewTree`: when an edit only inserts or
- * deletes plain prose characters strictly inside a safe `text` leaf (no `[`,
- * `]`, newlines, or autolink delimiters added/removed, leaf stays non-empty,
- * and no ancestor validates its text), osu!'s global pairing cannot possibly
- * change anywhere in the document. Splice just the ancestor spine in O(depth)
- * and let `greenToRedNodeReusing` adopt every untouched subtree by reference.
+ * Additional ancestor kinds that are single-line (non-dotall) in osu! pairing
+ * or where inserting a `\n` changes block/paragraph grouping — inserting `\n`
+ * inside one of these must fall back to the structural path.
+ */
+const UNSAFE_NEWLINE_ANCESTORS: ReadonlySet<string> = new Set([
+  'document', 'paragraph', 'heading', 'audio', 'profile', 'email', 'url', 'youtube', 'inline_code',
+])
+
+/**
+ * O(log N) prose + inline-Enter fast-path for `OsuPreviewTree`:
+ *
+ * 1. Plain prose edit strictly inside a safe `text` leaf (no `[`, `]`,
+ *    newlines, or autolink delimiters added/removed, leaf stays non-empty,
+ *    and no ancestor validates its text): splice just the 1 leaf in O(depth).
+ * 2. Single `\n` insertion strictly inside a safe `text` leaf inside a dotall
+ *    container (e.g. `[centre]`, `[box]`, `[color]`, `[size]`, `[b]` — never
+ *    at root/paragraph or inside single-line tags): split the 1 `text` leaf
+ *    into `[text(before), spacing(1), text(after)]` in O(depth).
  */
 function trySpliceProseGreen(
   oldRoot: RedNode,
@@ -129,7 +141,8 @@ function trySpliceProseGreen(
   const removed = oldSource.slice(start, oldEnd)
   const inserted = newSource.slice(start, newEnd)
 
-  if (SYNTAX_CHAR_RE.test(removed) || SYNTAX_CHAR_RE.test(inserted)) return null
+  const isSingleNewlineInsert = removed.length === 0 && (inserted === '\n' || inserted === '\r\n')
+  if (!isSingleNewlineInsert && (SYNTAX_CHAR_RE.test(removed) || SYNTAX_CHAR_RE.test(inserted))) return null
 
   // Descend from oldRoot to the unique leaf containing `[start, oldEnd]`.
   // Using `findChildAt` / binary search over child ranges stays O(depth * log N).
@@ -164,6 +177,7 @@ function trySpliceProseGreen(
     const child = kids[idx]
     if (start < child.range.start || oldEnd > child.range.end) return null
     if (UNSAFE_PROSE_ANCESTORS.has(child.kind)) return null
+    if (isSingleNewlineInsert && UNSAFE_NEWLINE_ANCESTORS.has(child.kind)) return null
     spine.push({ node: node.green, index: idx })
     node = child
   }
@@ -178,8 +192,9 @@ function trySpliceProseGreen(
   // Guard adjacent siblings: if the previous or next text sibling holds an
   // unclosed `[` / `]` (e.g. `[` followed by `size=150...`), editing next to
   // it could form or break a BBCode tag.
-  const parentKids = spine[spine.length - 1].node.children
-  const leafIdx = spine[spine.length - 1].index
+  const parentStep = spine[spine.length - 1]
+  const parentKids = parentStep.node.children
+  const leafIdx = parentStep.index
   if (leafIdx > 0 && parentKids[leafIdx - 1].kind === 'text' && RISKY_LEAF_RE.test(parentKids[leafIdx - 1].text)) {
     return null
   }
@@ -189,12 +204,39 @@ function trySpliceProseGreen(
 
   const relStart = start - node.range.start
   const relEnd = oldEnd - node.range.start
-  const newText = node.text.slice(0, relStart) + inserted + node.text.slice(relEnd)
-  if (newText.length === 0) return null
-  if (RISKY_LEAF_RE.test(newText)) return null
 
-  const replacement = greenNode('text', newText, [], 0, 0, newText.length)
-  const green = spliceGreen(spine, replacement)
+  let green: GreenNode
+  if (isSingleNewlineInsert) {
+    // Must split strictly inside the text leaf (both halves non-empty) so the
+    // new `spacing` cannot touch any adjacent `spacing`/`empty_line` sibling.
+    if (relStart === 0 || relEnd === node.text.length) return null
+    if (UNSAFE_NEWLINE_ANCESTORS.has(parentStep.node.kind)) return null
+    const beforeText = node.text.slice(0, relStart)
+    const afterText = node.text.slice(relEnd)
+    const beforeNode = greenNode('text', beforeText, [], 0, 0, beforeText.length)
+    const nlNode = greenNode('spacing', '', [], 0, 0, inserted.length)
+    const afterNode = greenNode('text', afterText, [], 0, 0, afterText.length)
+    const newParentKids = new Array<GreenNode>(parentKids.length + 2)
+    for (let i = 0; i < leafIdx; i++) newParentKids[i] = parentKids[i]
+    newParentKids[leafIdx] = beforeNode
+    newParentKids[leafIdx + 1] = nlNode
+    newParentKids[leafIdx + 2] = afterNode
+    for (let i = leafIdx + 1; i < parentKids.length; i++) newParentKids[i + 2] = parentKids[i]
+    const newParent = greenNode(
+      parentStep.node.kind,
+      parentStep.node.text,
+      newParentKids,
+      parentStep.node.leadingWidth,
+      parentStep.node.trailingWidth,
+    )
+    green = spine.length === 1 ? newParent : spliceGreen(spine.slice(0, -1), newParent)
+  } else {
+    const newText = node.text.slice(0, relStart) + inserted + node.text.slice(relEnd)
+    if (newText.length === 0) return null
+    if (RISKY_LEAF_RE.test(newText)) return null
+    const replacement = greenNode('text', newText, [], 0, 0, newText.length)
+    green = spliceGreen(spine, replacement)
+  }
 
   // Block-level change span (matching `churnedSpan`) in O(1) from the single
   // touched top-level child so `BlockPatcher` always takes the windowed path.
@@ -502,27 +544,35 @@ function tryIncrementalGreenFromPaired(
   newSource: string,
   dialect: BBCodeDialect | undefined,
   prevAutoClosedByEnd: ReadonlyMap<number, readonly string[]> | null,
+  knownChangedTokSpan?: readonly [number, number] | null,
 ): { green: GreenNode; autoClosedByEnd: Map<number, readonly string[]> } | null {
   const oldLen = oldPaired.length
   const newLen = newPaired.length
-  const minTok = Math.min(oldLen, newLen)
 
-  // 1. Common prefix & suffix of paired tokens (reference-fast for spliced raw tokens).
-  let tokHead = 0
-  while (tokHead < minTok && sameTokenRelative(oldPaired[tokHead], newPaired[tokHead])) tokHead++
+  // 1. Exact byte spans of unchanged prefix & suffix: O(1) when incremental
+  //    pairing already tracked `[minChangedTok, maxChangedTok)`, else linear scan.
+  let diffStart: number
+  let suffixByteWidth: number
+  if (knownChangedTokSpan != null) {
+    const [minTok, maxTok] = knownChangedTokSpan
+    diffStart = minTok < newLen ? newPaired[minTok].start : newSource.length
+    suffixByteWidth = maxTok < newLen ? newSource.length - newPaired[maxTok].start : 0
+  } else {
+    const minTok = Math.min(oldLen, newLen)
+    let tokHead = 0
+    while (tokHead < minTok && sameTokenRelative(oldPaired[tokHead], newPaired[tokHead])) tokHead++
 
-  let tokTail = 0
-  const maxTail = minTok - tokHead
-  while (
-    tokTail < maxTail &&
-    sameTokenRelative(oldPaired[oldLen - 1 - tokTail], newPaired[newLen - 1 - tokTail])
-  ) {
-    tokTail++
+    let tokTail = 0
+    const maxTail = minTok - tokHead
+    while (
+      tokTail < maxTail &&
+      sameTokenRelative(oldPaired[oldLen - 1 - tokTail], newPaired[newLen - 1 - tokTail])
+    ) {
+      tokTail++
+    }
+    diffStart = tokHead < newLen ? newPaired[tokHead].start : newSource.length
+    suffixByteWidth = tokTail > 0 ? newSource.length - newPaired[newLen - tokTail].start : 0
   }
-
-  // Exact byte spans of unchanged prefix & suffix (identical widths in old and new).
-  const diffStart = tokHead < newLen ? newPaired[tokHead].start : newSource.length
-  const suffixByteWidth = tokTail > 0 ? newSource.length - newPaired[newLen - tokTail].start : 0
 
   // 2. Select untouched top-level blocks from `oldRoot.children`.
   const oldKids = oldRoot.children
@@ -551,7 +601,9 @@ function tryIncrementalGreenFromPaired(
     suffixKeepWidth += oldKids[kidCount - 1 - keepTail].green.width
     keepTail++
   }
-  while (keepTail > 0 && !isSafeBlockBoundary(oldKids[kidCount - keepTail])) {
+  // For suffix boundaries, also exclude `discarded_tag` (which depends on
+  // `autoClosed` populated by the immediately preceding block).
+  while (keepTail > 0 && oldKids[kidCount - keepTail].green.trailingWidth === 0) {
     suffixKeepWidth -= oldKids[kidCount - keepTail].green.width
     keepTail--
   }
@@ -785,14 +837,25 @@ export class OsuPreviewTree {
           )
         : null
 
+    let knownChangedTokSpan: [number, number] | null = null
     if (incPaired !== null) {
       pairedTokens = incPaired.paired
       pairingState = incPaired.state
+      knownChangedTokSpan = [incPaired.minChangedTok, incPaired.maxChangedTok]
     } else {
       titleEvents = new Map<number, OsuTitleEvent[]>()
       listCarriers = new Map<number, OsuListCarrier>()
       listHeadItems = new Map<number, OsuListCarrier>()
-      pairingState = { forced: new Uint8Array(0), collapsed: new Uint8Array(0), imagemapRanges: [], hasTitleTags: false }
+      pairingState = {
+        forced: new Uint8Array(0),
+        collapsed: new Uint8Array(0),
+        caseOk: new Uint8Array(0),
+        tagCodes: new Uint8Array(0),
+        consumedCloseScratch: new Uint8Array(0),
+        imagemapRanges: [],
+        imgRanges: [],
+        hasTitleTags: false,
+      }
       pairedTokens = applyOsuPairing(rawTokens, source, {
         titleEvents,
         listCarriers,
@@ -824,6 +887,7 @@ export class OsuPreviewTree {
             source,
             this._dialect,
             this._autoClosedByEnd,
+            knownChangedTokSpan,
           )
         : null
 
@@ -859,8 +923,10 @@ export class OsuPreviewTree {
       if (prev !== null) {
         // When `tryIncrementalGreenFromPaired` stitched unchanged GreenNode
         // references, reference-mode adoption (`structural = false`) adopts
-        // every untouched block in O(blocks) without walking any subtree.
-        root = greenToRedNodeReusing(green, prev, 0, reuse, !usedRefReuse)
+        // every untouched top-level block in O(blocks), while
+        // `structuralOnMismatch = true` reuses unchanged children INSIDE the
+        // single reparsed block (e.g. 79 untouched lines of a 5 KB `[box]`).
+        root = greenToRedNodeReusing(green, prev, 0, reuse, !usedRefReuse, usedRefReuse)
         // With nothing adopted every block is new: no window to point at.
         if (reuse.adopted > 0) change = churnedSpan(prev, root)
       } else {

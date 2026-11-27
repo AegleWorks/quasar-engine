@@ -858,6 +858,10 @@ export function parseTokensToGreen(
         // The first newline is soft spacing (ignored in block context); any
         // subsequent one is a hard empty line (rendered as `<br>` everywhere).
         addToParent(createLeaf(first ? 'spacing' : 'empty_line', '', nl.end - nl.start))
+        if (recordAutoClosed && stack.length === 0 && autoClosed.size > 0) {
+          const snap = getAutoClosedSnapshot()
+          if (snap) recordAutoClosed.set(nl.end, snap)
+        }
         first = false
         nl = next()
       }
@@ -869,6 +873,10 @@ export function parseTokensToGreen(
     // ── Plain text ───────────────────────────────────────────
     if (tok.kind === 'text') {
       addToParent(createLeaf('text', tok.value))
+      if (recordAutoClosed && stack.length === 0 && autoClosed.size > 0) {
+        const snap = getAutoClosedSnapshot()
+        if (snap) recordAutoClosed.set(tok.end, snap)
+      }
       tok = next()
       continue
     }

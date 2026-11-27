@@ -822,6 +822,7 @@ export function greenToRedNodeReusing(
   start: number = 0,
   stats?: { adopted: number },
   structural: boolean = false,
+  structuralOnMismatch: boolean = false,
 ): RedNode {
   if (green === oldRed.green) {
     // `setStart` records the shift lazily (no subtree walk) and no-ops when the
@@ -928,7 +929,7 @@ export function greenToRedNodeReusing(
     if (gHi >= lo) {
       let midOffset = start + green.leadingWidth + green.childStartOffset(lo)
       if (gHi === lo && oHi === lo) {
-        const c = greenToRedNodeReusing(greenKids[lo], oldKids[lo], midOffset, stats, false)
+        const c = greenToRedNodeReusing(greenKids[lo], oldKids[lo], midOffset, stats, structuralOnMismatch, false)
         c.parent = red
         c.setIdxCache(lo)
         kids[lo] = c
