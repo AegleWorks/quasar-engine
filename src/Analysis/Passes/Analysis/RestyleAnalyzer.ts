@@ -35,6 +35,7 @@ import type { PipelineContext } from '../../Contracts/PipelineContext'
 import type { Contribution } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
 import { childOffsets } from '../../../Syntax/GreenNode'
+import { parseBBCode } from '../../../BBCode/Parser'
 import { colorUsageContributionAt } from './ColorUsageAnalyzer'
 import { GradientAnalyzer } from './GradientAnalyzer'
 import { gradientTagContributionAt } from './GradientTagAnalyzer'
@@ -46,6 +47,7 @@ import { scanSymbolText } from './SymbolAnalyzer'
  * colours inside an inline-code pill are decoration like any other.
  */
 const OPAQUE_KINDS: ReadonlySet<string> = new Set(['code', 'image'])
+const BOX_KINDS: ReadonlySet<string> = new Set(['box', 'boxw', 'spoilerbox'])
 
 /** A gradient needs at least three adjacent colour children. */
 const MIN_COLOR_RUN = 3
@@ -90,6 +92,23 @@ export class RestyleAnalyzer implements AnalyzerPass {
     }
 
     if (OPAQUE_KINDS.has(node.kind)) return
+
+    // Box titles live in the opening delimiter (`[box=TITLE]`), not in
+    // `node.children`, so parse and walk the title slice at its exact source
+    // offset to detect colours, gradients, and symbols inside box headers.
+    if (BOX_KINDS.has(node.kind) && node.leadingWidth > 0) {
+      const openerEnd = start + node.leadingWidth
+      const eq = this.source.indexOf('=', start)
+      if (eq !== -1 && eq < openerEnd - 1) {
+        const titleStart = eq + 1
+        const titleEnd = openerEnd - 1
+        if (titleEnd > titleStart) {
+          const titleRaw = this.source.slice(titleStart, titleEnd)
+          const titleGreen = parseBBCode(titleRaw)
+          this.walk(titleGreen, sink, titleStart)
+        }
+      }
+    }
 
     const children = node.children as readonly GreenNode[]
     if (children.length === 0) return
