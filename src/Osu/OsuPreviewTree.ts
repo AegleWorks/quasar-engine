@@ -40,6 +40,9 @@
 
 import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { greenToRedNode, greenToRedNodeReusing, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
+import { parseTokensToGreen } from '../BBCode/Parser'
+import { scanBBCode, type BBCodeToken } from '../Lexer/BBCodeLexer'
+import { applyOsuPairing, type OsuListCarrier, type OsuTitleEvent } from './osuPairing'
 import { greenNode, type GreenNode } from '../Syntax/GreenNode'
 import { spliceGreen, type SpineStep } from '../Syntax/greenEdit'
 import type { RedNode } from '../Syntax/RedNode'
@@ -68,25 +71,15 @@ const SYNTAX_CHAR_RE = /[\[\]\r\n@\\<>]/
 const RISKY_LEAF_RE = /:\/\/|www\.|@|\[|\]/i
 
 /**
- * O(log N) prose fast-path for `OsuPreviewTree`: when an edit only inserts or
- * deletes plain prose characters strictly inside a safe `text` leaf (no `[`,
- * `]`, newlines, or autolink delimiters added/removed, leaf stays non-empty,
- * and no ancestor validates its text), osu!'s global pairing cannot possibly
- * change anywhere in the document. Splice just the ancestor spine in O(depth)
- * and let `greenToRedNodeReusing` adopt every untouched subtree by reference.
+ * 4 KB SIMD-backed common prefix / suffix diff between two strings.
+ * Returns `[start, oldEnd, newEnd]` of the minimal changed span.
  */
-function trySpliceProseGreen(
-  oldRoot: RedNode,
-  oldSource: string,
-  newSource: string,
-): { green: GreenNode; change: TextChangeRange } | null {
+function findChangedSpan(oldSource: string, newSource: string): [number, number, number] {
   const oldLen = oldSource.length
   const newLen = newSource.length
   const minLen = Math.min(oldLen, newLen)
-
-  // Single-span common prefix / suffix diff using 4 KB SIMD-backed slice
-  // comparisons before narrowing byte-by-byte (~50x faster on 400 KB+ docs).
   const CHUNK = 4096
+
   let start = 0
   while (start + CHUNK <= minLen && oldSource.slice(start, start + CHUNK) === newSource.slice(start, start + CHUNK)) {
     start += CHUNK
@@ -108,8 +101,25 @@ function trySpliceProseGreen(
     suffix++
   }
 
-  const oldEnd = oldLen - suffix
-  const newEnd = newLen - suffix
+  return [start, oldLen - suffix, newLen - suffix]
+}
+
+/**
+ * O(log N) prose fast-path for `OsuPreviewTree`: when an edit only inserts or
+ * deletes plain prose characters strictly inside a safe `text` leaf (no `[`,
+ * `]`, newlines, or autolink delimiters added/removed, leaf stays non-empty,
+ * and no ancestor validates its text), osu!'s global pairing cannot possibly
+ * change anywhere in the document. Splice just the ancestor spine in O(depth)
+ * and let `greenToRedNodeReusing` adopt every untouched subtree by reference.
+ */
+function trySpliceProseGreen(
+  oldRoot: RedNode,
+  oldSource: string,
+  newSource: string,
+): { green: GreenNode; change: TextChangeRange } | null {
+  const oldLen = oldSource.length
+  const newLen = newSource.length
+  const [start, oldEnd, newEnd] = findChangedSpan(oldSource, newSource)
   const removed = oldSource.slice(start, oldEnd)
   const inserted = newSource.slice(start, newEnd)
 
@@ -220,10 +230,349 @@ class OsuGreenParser extends BBCodeDocumentModel {
   }
 }
 
+const CODE_WORD_RE = /code/i
+
+/** Check whether a raw token array contains `[code]`/`[/code]` or unmatched `[` text tokens. */
+function analyzeRawTokens(tokens: readonly BBCodeToken[]): { hasCode: boolean; hasUnmatchedBracket: boolean } {
+  let hasCode = false
+  let hasUnmatchedBracket = false
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if ((t.kind === 'open' || t.kind === 'close') && t.tag === 'code') {
+      hasCode = true
+    } else if (t.kind === 'text' && t.value.includes('[')) {
+      hasUnmatchedBracket = true
+    }
+    if (hasCode && hasUnmatchedBracket) break
+  }
+  return { hasCode, hasUnmatchedBracket }
+}
+
+/**
+ * Binary-search the first token whose `end > byteOffset` (or `tokens.length`).
+ */
+function findFirstTokenAfter(tokens: readonly BBCodeToken[], byteOffset: number): number {
+  let lo = 0
+  let hi = tokens.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (tokens[mid].end <= byteOffset) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+/**
+ * Binary-search the first token whose `start >= byteOffset` (or `tokens.length`).
+ */
+function findTokenAtStart(tokens: readonly BBCodeToken[], byteOffset: number): number {
+  let lo = 0
+  let hi = tokens.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (tokens[mid].start < byteOffset) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+/** True when `[` and `]` are strictly balanced inside `s` (depth never < 0 and ends at 0). */
+function hasBalancedBrackets(s: string): boolean {
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c === 91 /* [ */) depth++
+    else if (c === 93 /* ] */) {
+      if (--depth < 0) return false
+    }
+  }
+  return depth === 0
+}
+
+/**
+ * Incremental line-window lexer splice for `OsuPreviewTree`.
+ *
+ * BBCode lexing is strictly local across top-level newline boundaries whenever
+ * neither the document nor the edited window has raw `[code]` blocks and both
+ * old and new edited windows have balanced `[`/`]` brackets (so no earlier
+ * unmatched `[` can change its match and no `[` in the window can escape it).
+ */
+function trySpliceRawTokens(
+  oldTokens: BBCodeToken[],
+  oldSource: string,
+  newSource: string,
+  hasCode: boolean,
+): { tokens: BBCodeToken[]; hasCode: boolean } | null {
+  if (hasCode || oldTokens.length === 0) return null
+
+  const [start, oldEnd] = findChangedSpan(oldSource, newSource)
+  const delta = newSource.length - oldSource.length
+
+  // Locate token span covering [start, oldEnd] and expand to top-level newline boundaries.
+  let tokStart = findFirstTokenAfter(oldTokens, start)
+  if (tokStart > 0 && oldTokens[tokStart - 1].end === start) {
+    // Pure insertion right at a token boundary: include the preceding token if not a newline.
+    if (oldTokens[tokStart - 1].kind !== 'newline') tokStart--
+  }
+  while (tokStart > 0 && oldTokens[tokStart - 1].kind !== 'newline') tokStart--
+  // Guard against `\r` + inserted `\n` merging into a single `\r\n` token across boundary.
+  const prevTok = tokStart > 0 ? oldTokens[tokStart - 1] : null
+  if (prevTok !== null && prevTok.kind === 'newline' && prevTok.value === '\r') {
+    tokStart--
+    while (tokStart > 0 && oldTokens[tokStart - 1].kind !== 'newline') tokStart--
+  }
+
+  let tokEnd = findTokenAtStart(oldTokens, oldEnd)
+  while (tokEnd < oldTokens.length && oldTokens[tokEnd].kind !== 'newline') tokEnd++
+
+  const winStart = tokStart < oldTokens.length ? oldTokens[tokStart].start : oldSource.length
+  const winOldEnd = tokEnd < oldTokens.length ? oldTokens[tokEnd].start : oldSource.length
+  const winNewEnd = winOldEnd + delta
+  if (winNewEnd < winStart) return null
+
+  // If the edited window covers more than half the document, a full lex is cleaner.
+  if (winNewEnd - winStart > (newSource.length >>> 1) && newSource.length > 4096) return null
+
+  const oldWin = oldSource.slice(winStart, winOldEnd)
+  const newWin = newSource.slice(winStart, winNewEnd)
+  if (CODE_WORD_RE.test(newWin)) return null
+  if (!hasBalancedBrackets(oldWin) || !hasBalancedBrackets(newWin)) return null
+
+  const midTokens = scanBBCode(newWin, { pairing: 'osu' })
+  let midHasCode = false
+  for (let i = 0; i < midTokens.length; i++) {
+    const t = midTokens[i]
+    t.start += winStart
+    t.end += winStart
+    if ((t.kind === 'open' || t.kind === 'close') && t.tag === 'code') midHasCode = true
+  }
+
+  const suffixCount = oldTokens.length - tokEnd
+  const next = new Array<BBCodeToken>(tokStart + midTokens.length + suffixCount)
+  for (let i = 0; i < tokStart; i++) next[i] = oldTokens[i]
+  for (let i = 0; i < midTokens.length; i++) next[tokStart + i] = midTokens[i]
+  const outBase = tokStart + midTokens.length
+  if (delta === 0) {
+    for (let i = 0; i < suffixCount; i++) next[outBase + i] = oldTokens[tokEnd + i]
+  } else {
+    for (let i = 0; i < suffixCount; i++) {
+      const t = oldTokens[tokEnd + i]
+      t.start += delta
+      t.end += delta
+      next[outBase + i] = t
+    }
+  }
+
+  return { tokens: next, hasCode: midHasCode }
+}
+
+/** True when two tokens have identical kind, length, and payload (ignoring absolute offset). */
+function sameTokenRelative(a: BBCodeToken, b: BBCodeToken): boolean {
+  if (a === b) return true
+  if (a.kind !== b.kind || (a.end - a.start) !== (b.end - b.start)) return false
+  switch (a.kind) {
+    case 'open':
+      return a.tag === (b as typeof a).tag && a.attrs === (b as typeof a).attrs
+    case 'close':
+      return a.tag === (b as typeof a).tag
+    case 'text':
+    case 'newline':
+      return a.value === (b as typeof a).value
+  }
+}
+
+/**
+ * A top-level child is a safe incremental boundary ONLY if it is a self-closed
+ * block (explicit closing delimiter `trailingWidth > 0`, so nothing after it
+ * could have caused it to close or merge) or a standalone `discarded_tag`.
+ * Paragraphs, spacing/empty_line runs, `list_item`, and auto-closed blocks all
+ * have `trailingWidth === 0` and are excluded from boundaries.
+ */
+function isSafeBlockBoundary(node: RedNode): boolean {
+  return node.green.trailingWidth > 0 || node.kind === 'discarded_tag'
+}
+
+function sameAutoClosed(a: readonly string[] | null | undefined, b: readonly string[] | null | undefined): boolean {
+  const aLen = a?.length ?? 0
+  const bLen = b?.length ?? 0
+  if (aLen !== bLen) return false
+  if (aLen === 0) return true
+  if (a === b) return true
+  for (let i = 0; i < aLen; i++) {
+    if (!b!.includes(a![i])) return false
+  }
+  return true
+}
+
+/**
+ * Block-level GreenNode reuse after `applyOsuPairing`.
+ *
+ * Even when a structural edit forces a global `applyOsuPairing` pass, usually
+ * only 1–2 top-level blocks have changed paired tokens. Reusing the exact old
+ * `GreenNode` references for every untouched prefix & suffix top-level block
+ * lets `parseTokensToGreen` parse only the changed slice AND lets
+ * `greenToRedNodeReusing` adopt 99% of the RedNode tree by reference (`===`)
+ * with zero `greenSubtreeEquals` traversal.
+ */
+function tryIncrementalGreenFromPaired(
+  oldRoot: RedNode,
+  oldPaired: readonly BBCodeToken[],
+  newPaired: readonly BBCodeToken[],
+  oldSourceLen: number,
+  newSource: string,
+  dialect: BBCodeDialect | undefined,
+  prevAutoClosedByEnd: ReadonlyMap<number, readonly string[]> | null,
+): { green: GreenNode; autoClosedByEnd: Map<number, readonly string[]> } | null {
+  const oldLen = oldPaired.length
+  const newLen = newPaired.length
+  const minTok = Math.min(oldLen, newLen)
+
+  // 1. Common prefix & suffix of paired tokens (reference-fast for spliced raw tokens).
+  let tokHead = 0
+  while (tokHead < minTok && sameTokenRelative(oldPaired[tokHead], newPaired[tokHead])) tokHead++
+
+  let tokTail = 0
+  const maxTail = minTok - tokHead
+  while (
+    tokTail < maxTail &&
+    sameTokenRelative(oldPaired[oldLen - 1 - tokTail], newPaired[newLen - 1 - tokTail])
+  ) {
+    tokTail++
+  }
+
+  // Exact byte spans of unchanged prefix & suffix (identical widths in old and new).
+  const diffStart = tokHead < newLen ? newPaired[tokHead].start : newSource.length
+  const suffixByteWidth = tokTail > 0 ? newSource.length - newPaired[newLen - tokTail].start : 0
+
+  // 2. Select untouched top-level blocks from `oldRoot.children`.
+  const oldKids = oldRoot.children
+  const kidCount = oldKids.length
+  if (kidCount < 3) return null
+
+  let keepHead = 0
+  let prefixByteEnd = 0
+  while (keepHead < kidCount && prefixByteEnd + oldKids[keepHead].green.width <= diffStart) {
+    prefixByteEnd += oldKids[keepHead].green.width
+    keepHead++
+  }
+  // Never end the kept prefix on a non-self-closed node (paragraph, spacing,
+  // empty_line, list_item, or auto-closed block).
+  while (keepHead > 0 && !isSafeBlockBoundary(oldKids[keepHead - 1])) {
+    keepHead--
+    prefixByteEnd -= oldKids[keepHead].green.width
+  }
+
+  let keepTail = 0
+  let suffixKeepWidth = 0
+  while (
+    keepHead + keepTail < kidCount &&
+    suffixKeepWidth + oldKids[kidCount - 1 - keepTail].green.width <= suffixByteWidth
+  ) {
+    suffixKeepWidth += oldKids[kidCount - 1 - keepTail].green.width
+    keepTail++
+  }
+  while (keepTail > 0 && !isSafeBlockBoundary(oldKids[kidCount - keepTail])) {
+    suffixKeepWidth -= oldKids[kidCount - keepTail].green.width
+    keepTail--
+  }
+
+  if (keepHead === 0 && keepTail === 0) return null
+
+  // 3. Map kept byte boundaries to exact token slice `[midTokStart, midTokEnd)`.
+  const midByteStart = prefixByteEnd
+  const midByteEnd = newSource.length - suffixKeepWidth
+  if (midByteEnd < midByteStart) return null
+
+  const midTokStart = midByteStart === 0 ? 0 : findTokenAtStart(newPaired, midByteStart)
+  const midTokEnd = midByteEnd === newSource.length ? newLen : findTokenAtStart(newPaired, midByteEnd)
+
+  // Verify exact byte alignment (no token straddles the kept block boundary).
+  const actualStart = midTokStart < newLen ? newPaired[midTokStart].start : newSource.length
+  const actualEnd = midTokEnd > 0 ? newPaired[midTokEnd - 1].end : 0
+  if (midTokStart < midTokEnd && (actualStart !== midByteStart || actualEnd !== midByteEnd)) return null
+  if (midTokStart === midTokEnd && midByteStart !== midByteEnd) return null
+
+  // Exact `autoClosed` state entering the middle slice (at `midByteStart`) and
+  // expected leaving the middle slice (at old `midByteEnd - delta`, before suffix).
+  const delta = newSource.length - oldSourceLen
+  const initialAutoClosed = keepHead > 0 ? prevAutoClosedByEnd?.get(midByteStart) : undefined
+  const expectedExitAutoClosed = keepTail > 0 ? prevAutoClosedByEnd?.get(midByteEnd - delta) : undefined
+
+  // 4. Parse ONLY the changed middle slice with full `'osu'` tree semantics.
+  let midChildren: readonly GreenNode[] = []
+  const midAutoClosedMap = new Map<number, readonly string[]>()
+  let actualExitAutoClosed: readonly string[] | null = initialAutoClosed ?? null
+
+  if (midTokStart < midTokEnd) {
+    const parseStateOut: {
+      stackDepthAtEnd: number
+      endAutoClosed: readonly string[] | null
+      autoClosedAtRootEnd: Map<number, readonly string[]>
+    } = {
+      stackDepthAtEnd: 0,
+      endAutoClosed: null,
+      autoClosedAtRootEnd: midAutoClosedMap,
+    }
+    const midGreen = parseTokensToGreen(newPaired.slice(midTokStart, midTokEnd), newSource, {
+      dialect,
+      pairing: 'osu',
+      osuPrePaired: {},
+      initialAutoClosed,
+      parseStateOut,
+    })
+    // An unclosed tag at the end of the middle slice would swallow suffix blocks;
+    // bail out to a full parse in that case.
+    if (parseStateOut.stackDepthAtEnd > 0) return null
+    if (midGreen.width !== midByteEnd - midByteStart) return null
+    midChildren = midGreen.children
+    actualExitAutoClosed = parseStateOut.endAutoClosed
+  }
+
+  // If suffix blocks are kept, the `autoClosed` state leaving the middle slice
+  // MUST match what the suffix blocks originally saw.
+  if (keepTail > 0 && !sameAutoClosed(actualExitAutoClosed, expectedExitAutoClosed)) return null
+
+  // 5. Merge `autoClosedByEnd` map for the next edit (usually 0–5 entries).
+  const nextAutoClosedByEnd = new Map<number, readonly string[]>()
+  if (prevAutoClosedByEnd && prevAutoClosedByEnd.size > 0) {
+    const oldSuffixStart = midByteEnd - delta
+    for (const [endByte, snap] of prevAutoClosedByEnd) {
+      if (endByte <= midByteStart) {
+        nextAutoClosedByEnd.set(endByte, snap)
+      } else if (endByte > oldSuffixStart) {
+        nextAutoClosedByEnd.set(endByte + delta, snap)
+      }
+    }
+  }
+  for (const [endByte, snap] of midAutoClosedMap) {
+    nextAutoClosedByEnd.set(endByte, snap)
+  }
+
+  // 6. Stitch untouched prefix/suffix GreenNode references around the reparsed middle.
+  const outChildren = new Array<GreenNode>(keepHead + midChildren.length + keepTail)
+  for (let i = 0; i < keepHead; i++) outChildren[i] = oldKids[i].green
+  for (let i = 0; i < midChildren.length; i++) outChildren[keepHead + i] = midChildren[i]
+  const tailOutBase = keepHead + midChildren.length
+  const tailOldBase = kidCount - keepTail
+  for (let i = 0; i < keepTail; i++) outChildren[tailOutBase + i] = oldKids[tailOldBase + i].green
+
+  return { green: greenNode('document', '', outChildren), autoClosedByEnd: nextAutoClosedByEnd }
+}
+
 export class OsuPreviewTree {
   private readonly parser: OsuGreenParser
+  private readonly _dialect: BBCodeDialect | undefined
   private _source: string | null = null
   private _root: RedNode | null = null
+  /** Cached raw (pre-pairing) tokens and the exact source they came from. */
+  private _rawTokens: BBCodeToken[] | null = null
+  private _rawTokensSource: string | null = null
+  private _hasCodeToken = false
+  /** Cached paired tokens and parse invariants for block-level green reuse. */
+  private _pairedTokens: BBCodeToken[] | null = null
+  private _pairedTokensSource: string | null = null
+  private _hadSpecialOsuEvents = false
+  private _autoClosedByEnd: Map<number, readonly string[]> | null = null
   /** Staged fast-path splice from `canFastUpdate(source)` so `update(source)` reuses it with zero duplicate work. */
   private _stagedFast: {
     source: string
@@ -234,6 +583,7 @@ export class OsuPreviewTree {
   lastStats: OsuPreviewUpdateStats | null = null
 
   constructor(options: OsuPreviewTreeOptions = {}) {
+    this._dialect = options.dialect
     this.parser = new OsuGreenParser(options.dialect)
   }
 
@@ -303,16 +653,98 @@ export class OsuPreviewTree {
       }
     }
 
-    const green = this.parser.parse(source)
+    // Structural path:
+    // 1. Lex incrementally via line-window token splicing when safe, else full scan.
+    let rawTokens: BBCodeToken[]
+    let hasCode: boolean
+    const spliced =
+      this._rawTokens !== null && this._rawTokensSource !== null
+        ? trySpliceRawTokens(
+            this._rawTokens,
+            this._rawTokensSource,
+            source,
+            this._hasCodeToken,
+          )
+        : null
+
+    if (spliced !== null) {
+      rawTokens = spliced.tokens
+      hasCode = spliced.hasCode
+    } else {
+      rawTokens = scanBBCode(source, { pairing: 'osu' })
+      hasCode = analyzeRawTokens(rawTokens).hasCode
+    }
+
+    // 2. Run full document-global osu! pairing over the raw token stream.
+    const titleEvents = new Map<number, OsuTitleEvent[]>()
+    const listCarriers = new Map<number, OsuListCarrier>()
+    const listHeadItems = new Map<number, OsuListCarrier>()
+    const pairedTokens = applyOsuPairing(rawTokens, source, {
+      titleEvents,
+      listCarriers,
+      listHeadItems,
+    })
+    const hasSpecialEvents = titleEvents.size > 0 || listCarriers.size > 0 || listHeadItems.size > 0
+
+    // 3. Build green tree — reusing untouched top-level block GreenNodes by
+    //    reference when paired tokens only changed in a local span.
+    const prev = this._root
+    let green: GreenNode
+    let usedRefReuse = false
+    let autoClosedByEnd: Map<number, readonly string[]> | null = null
+
+    const inc =
+      prev !== null &&
+      oldSource !== null &&
+      this._pairedTokens !== null &&
+      this._pairedTokensSource === oldSource &&
+      !this._hadSpecialOsuEvents &&
+      !hasSpecialEvents
+        ? tryIncrementalGreenFromPaired(
+            prev,
+            this._pairedTokens,
+            pairedTokens,
+            oldSource.length,
+            source,
+            this._dialect,
+            this._autoClosedByEnd,
+          )
+        : null
+
+    if (inc !== null) {
+      green = inc.green
+      autoClosedByEnd = inc.autoClosedByEnd
+      usedRefReuse = true
+    } else {
+      const autoClosedAtRootEnd = new Map<number, readonly string[]>()
+      const parseStateOut: {
+        stackDepthAtEnd: number
+        endAutoClosed: readonly string[] | null
+        autoClosedAtRootEnd: Map<number, readonly string[]>
+      } = {
+        stackDepthAtEnd: 0,
+        endAutoClosed: null,
+        autoClosedAtRootEnd,
+      }
+      green = parseTokensToGreen(pairedTokens, source, {
+        dialect: this._dialect,
+        pairing: 'osu',
+        osuPrePaired: { titleEvents, listCarriers, listHeadItems },
+        parseStateOut,
+      })
+      autoClosedByEnd = autoClosedAtRootEnd
+    }
     const t1 = performance.now()
 
-    const prev = this._root
     const reuse = { adopted: 0 }
     let root: RedNode
     let change: TextChangeRange | null = null
     try {
       if (prev !== null) {
-        root = greenToRedNodeReusing(green, prev, 0, reuse, true)
+        // When `tryIncrementalGreenFromPaired` stitched unchanged GreenNode
+        // references, reference-mode adoption (`structural = false`) adopts
+        // every untouched block in O(blocks) without walking any subtree.
+        root = greenToRedNodeReusing(green, prev, 0, reuse, !usedRefReuse)
         // With nothing adopted every block is new: no window to point at.
         if (reuse.adopted > 0) change = churnedSpan(prev, root)
       } else {
@@ -331,6 +763,13 @@ export class OsuPreviewTree {
 
     this._root = root
     this._source = source
+    this._rawTokens = rawTokens
+    this._rawTokensSource = source
+    this._hasCodeToken = hasCode
+    this._pairedTokens = pairedTokens
+    this._pairedTokensSource = source
+    this._hadSpecialOsuEvents = hasSpecialEvents
+    this._autoClosedByEnd = autoClosedByEnd
     this.lastStats = { parseMs: t1 - t0, buildMs: t2 - t1, adopted: reuse.adopted, change }
     return root
   }
@@ -339,6 +778,13 @@ export class OsuPreviewTree {
   dispose(): void {
     this._root = null
     this._source = null
+    this._rawTokens = null
+    this._rawTokensSource = null
+    this._hasCodeToken = false
+    this._pairedTokens = null
+    this._pairedTokensSource = null
+    this._hadSpecialOsuEvents = false
+    this._autoClosedByEnd = null
     this._stagedFast = null
     this.lastStats = null
   }

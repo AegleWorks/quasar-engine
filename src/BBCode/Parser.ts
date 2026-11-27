@@ -87,6 +87,25 @@ export interface ParseOptions {
    * The nesting limit counts from the document, not from the window.
    */
   depth?: number;
+  /**
+   * Pre-computed output of `applyOsuPairing` when the caller already ran it
+   * (e.g. `OsuPreviewTree` diffing paired tokens to re-parse only the changed
+   * top-level block slice while preserving full `'osu'` tree semantics).
+   */
+  osuPrePaired?: {
+    titleEvents?: Map<number, OsuTitleEvent[]>;
+    listCarriers?: Map<number, OsuListCarrier>;
+    listHeadItems?: Map<number, OsuListCarrier>;
+  };
+  /** Optional initial `autoClosed` tag set when re-parsing a middle block slice. */
+  initialAutoClosed?: readonly string[];
+  /** Optional sink populated with end-of-parse stack/auto-close state. */
+  parseStateOut?: {
+    stackDepthAtEnd: number;
+    endAutoClosed: readonly string[] | null;
+    /** Byte end offset → non-empty `autoClosed` snapshot at `stack.length === 0`. */
+    autoClosedAtRootEnd?: Map<number, readonly string[]>;
+  };
 }
 
 /**
@@ -163,17 +182,24 @@ export function parseTokensToGreen(
   /** Cabezas sin portadora: el `[*]` que abre su cuerpo sintético. */
   let listHeadItems: Map<number, OsuListCarrier> | undefined
   if (options.pairing === 'osu') {
-    const sink = new Map<number, OsuTitleEvent[]>()
-    const carriers = new Map<number, OsuListCarrier>()
-    const headItems = new Map<number, OsuListCarrier>()
-    next = arrayCursor(applyOsuPairing(Array.isArray(input) ? input : drain(input), source, {
-      titleEvents: sink,
-      listCarriers: carriers,
-      listHeadItems: headItems,
-    }))
-    titleEvents = sink.size > 0 ? sink : undefined
-    listCarriers = carriers.size > 0 ? carriers : undefined
-    listHeadItems = headItems.size > 0 ? headItems : undefined
+    if (options.osuPrePaired) {
+      next = Array.isArray(input) ? arrayCursor(input) : () => input.next()
+      titleEvents = options.osuPrePaired.titleEvents?.size ? options.osuPrePaired.titleEvents : undefined
+      listCarriers = options.osuPrePaired.listCarriers?.size ? options.osuPrePaired.listCarriers : undefined
+      listHeadItems = options.osuPrePaired.listHeadItems?.size ? options.osuPrePaired.listHeadItems : undefined
+    } else {
+      const sink = new Map<number, OsuTitleEvent[]>()
+      const carriers = new Map<number, OsuListCarrier>()
+      const headItems = new Map<number, OsuListCarrier>()
+      next = arrayCursor(applyOsuPairing(Array.isArray(input) ? input : drain(input), source, {
+        titleEvents: sink,
+        listCarriers: carriers,
+        listHeadItems: headItems,
+      }))
+      titleEvents = sink.size > 0 ? sink : undefined
+      listCarriers = carriers.size > 0 ? carriers : undefined
+      listHeadItems = headItems.size > 0 ? headItems : undefined
+    }
   } else {
     next = Array.isArray(input) ? arrayCursor(input) : () => input.next();
   }
@@ -191,7 +217,18 @@ export function parseTokensToGreen(
    * La marca se consume al usarla y se borra si la etiqueta se vuelve a abrir,
    * porque entonces el cierre sí es suyo.
    */
-  const autoClosed = new Set<string>()
+  const autoClosed = new Set<string>(options.initialAutoClosed)
+  const recordAutoClosed = options.parseStateOut?.autoClosedAtRootEnd
+  let autoClosedSnapshot: readonly string[] | null = autoClosed.size > 0 ? Array.from(autoClosed) : null
+  let autoClosedDirty = false
+  const getAutoClosedSnapshot = (): readonly string[] | null => {
+    if (autoClosed.size === 0) return (autoClosedSnapshot = null)
+    if (autoClosedDirty || autoClosedSnapshot === null) {
+      autoClosedSnapshot = Array.from(autoClosed)
+      autoClosedDirty = false
+    }
+    return autoClosedSnapshot
+  }
 
   /** Openers left open from here on would nest past `MAX_NESTING_DEPTH`. */
   const depthLimit = MAX_NESTING_DEPTH - (options.depth ?? 0)
@@ -465,6 +502,7 @@ export function parseTokensToGreen(
         const inner = stack.pop()!
         currentBucket().push(closeFrame(inner, 0))
         autoClosed.add(inner.tag)
+        autoClosedDirty = true
         continue
       }
 
@@ -543,7 +581,7 @@ export function parseTokensToGreen(
         keepTooDeep(tok)
         return
       }
-      autoClosed.delete(tok.tag)
+      if (autoClosed.delete(tok.tag)) autoClosedDirty = true
       const parent = stack[stack.length - 1]
       // Cabeza SIN portadora: el cuerpo sintético no cabe en una lista previa,
       // así que este mismo `[*]` lo abre (la lista lo envuelve) y el primer
@@ -554,7 +592,7 @@ export function parseTokensToGreen(
       // bajo el tope de anidamiento, se deja el ítem solo (mismo aspecto que
       // antes del cruce, sin desbordar la pila).
       if (headBody !== undefined && stack.length + 1 < depthLimit) {
-        autoClosed.delete('list')
+        if (autoClosed.delete('list')) autoClosedDirty = true
         // El `\s*` de `[\*]` en `parseList` come el espacio/salto que queda
         // DELANTE del ítem. Cuando el cuerpo sintético nace aquí, esos nodos
         // ya están en el bucket del padre —fuera de la lista—, así que la
@@ -636,7 +674,7 @@ export function parseTokensToGreen(
     }
 
     // Push onto the stack — children will be added later.
-    autoClosed.delete(tok.tag)
+    if (autoClosed.delete(tok.tag)) autoClosedDirty = true
     stack.push({
       tag: tok.tag,
       kind: openKind,
@@ -716,7 +754,7 @@ export function parseTokensToGreen(
       // se ve ni se exporta. Como texto volvía a salir del exportador
       // convertido en etiqueta viva, y el documento dejaba de ser estable al
       // reexportarlo (lo cazó `Fuzzer`).
-      autoClosed.delete(tok.tag)
+      if (autoClosed.delete(tok.tag)) autoClosedDirty = true
       addToParent(createLeaf('discarded_tag', source.slice(tok.start, tok.end)))
     } else {
       // LEGACY MODE: Walk backwards, auto-close inner tags, ignore orphaned closing tags.
@@ -768,6 +806,7 @@ export function parseTokensToGreen(
         // Las etiquetas que se cerraron solas quedan pendientes en el nivel
         // que ha quedado abierto tras cerrar esta.
         for (const tag of autoClosedHere) autoClosed.add(tag)
+        if (autoClosedHere.length > 0) autoClosedDirty = true
       } else if (options.pairing === 'osu' && (tok.tag === 'list' || tok.tag === 'quote')) {
         // A sealed `[/list]`/`[/quote]` with no opener left to close.
         //
@@ -836,15 +875,28 @@ export function parseTokensToGreen(
 
     if (tok.kind === 'open') {
       onOpen(tok)
+      if (recordAutoClosed && stack.length === 0 && autoClosed.size > 0) {
+        const snap = getAutoClosedSnapshot()
+        if (snap) recordAutoClosed.set(tok.end, snap)
+      }
       tok = next()
       continue
     }
 
     if (tok.kind === 'close') {
       onClose(tok)
+      if (recordAutoClosed && stack.length === 0 && autoClosed.size > 0) {
+        const snap = getAutoClosedSnapshot()
+        if (snap) recordAutoClosed.set(tok.end, snap)
+      }
       tok = next()
       continue
     }
+  }
+
+  if (options.parseStateOut) {
+    options.parseStateOut.stackDepthAtEnd = stack.length
+    options.parseStateOut.endAutoClosed = getAutoClosedSnapshot()
   }
 
   // ── Close any remaining unclosed tags ────────────────────────

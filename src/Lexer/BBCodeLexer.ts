@@ -214,7 +214,10 @@ function attributeMayNest(source: string, attrStart: number, closeBracket: numbe
  * el conjunto acaba siendo texto plano — donde decide el autolink de dentro.
  */
 function osuFlatAttrStart(source: string, pos: number): boolean {
-  return source.startsWith('[url=', pos) || source.startsWith('[email=', pos)
+  const c = source.charCodeAt(pos + 1)
+  if (c === 117 /* u */) return source.startsWith('[url=', pos)
+  if (c === 101 /* e */) return source.startsWith('[email=', pos)
+  return false
 }
 
 export function scanBBCode(source: string, options?: ScanBBCodeOptions): BBCodeToken[] {
