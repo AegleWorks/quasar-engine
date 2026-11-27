@@ -286,3 +286,55 @@ describe('every Aura theme glyph is recognised', () => {
     })
   }
 })
+
+// ── Emojis, ASCII dividers, and space-bridged dividers ────────────
+
+describe('emoji clusters, ASCII dividers, and space-bridged dividers', () => {
+  it('keeps VS16, skin-tone, ZWJ, and flag emoji sequences as single atomic glyphs', () => {
+    const found = analyze('⚙️ setup 🇨🇴 gamer 👨‍💻 dev 🩷 heart')
+
+    expect(found.map(f => f.slice)).toEqual(['⚙️', '🇨🇴', '👨‍💻', '🩷'])
+    for (const f of found) {
+      expect(f.label).toBe('Symbol')
+      expect(f.model.length).toBe(1)
+      expect(f.confidence).toBeGreaterThanOrEqual(0.8)
+    }
+  })
+
+  it('recognises transport and extended-A emojis plus osu! ornaments like ⟡ and ꧁꧂', () => {
+    const found = analyze('🚀 launch 🫰 pose ⟡ gem ꧁Name꧂')
+
+    expect(found.map(f => f.slice)).toEqual(['🚀', '🫰', '⟡', '꧁', '꧂'])
+  })
+
+  it('recognises ASCII dividers (>= 4 chars) without false-positiving on prose or ellipsis', () => {
+    expect(analyze('wait... really? foo---bar a-b')).toEqual([])
+
+    const found = analyze('----------\n==========\n~~~~~~~~~~\n__________')
+    expect(found).toHaveLength(4)
+    for (const f of found) {
+      expect(f.label).toBe('Separator')
+      expect(f.confidence).toBeGreaterThanOrEqual(0.85)
+    }
+  })
+
+  it('recognises repeated Unicode dashes as dividers while ignoring a lone em-dash in prose', () => {
+    expect(analyze('made out of boredom — just trying')).toEqual([])
+
+    const found = analyze('━━━━━━━━ ⟡ ━━━━━━━━\n—————\n⸻')
+    expect(found).toHaveLength(3)
+    expect(found.map(f => f.label)).toEqual(['Separator', 'Separator', 'Separator'])
+    expect(found[0].slice).toBe('━━━━━━━━ ⟡ ━━━━━━━━')
+  })
+
+  it('merges space-bridged ornament lines into one Separator without merging prose lines', () => {
+    const div = analyze('✦ ◇ ✦')
+    expect(div).toHaveLength(1)
+    expect(div[0].label).toBe('Separator')
+    expect(div[0].slice).toBe('✦ ◇ ✦')
+
+    const prose = analyze('✧ airi ✧')
+    expect(prose).toHaveLength(2)
+    expect(prose.map(f => f.label)).toEqual(['Symbol', 'Symbol'])
+  })
+})
