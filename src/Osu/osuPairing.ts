@@ -471,6 +471,22 @@ export interface OsuPairingOptions {
    * El colector se rellena sólo si el llamante lo pasa.
    */
   titleEvents?: Map<number, OsuTitleEvent[]>
+  /**
+   * Optional reusable pairing snapshot populated on full `applyOsuPairing` so
+   * `applyOsuPairingIncremental` can re-seal only the tag families touched by
+   * a local edit without re-scanning untouched families (e.g. 20k `[color]`
+   * tokens when only `[b]` changed).
+   */
+  stateOut?: OsuPairingState
+}
+
+/** Snapshot of a full or incremental `applyOsuPairing` pass. */
+export interface OsuPairingState {
+  forced: Uint8Array
+  collapsed: Uint8Array
+  /** Flat pairs `[openIdx, closeIdx, ...]` of sealed `imagemap` blocks in order. */
+  imagemapRanges: number[]
+  hasTitleTags: boolean
 }
 
 /**
@@ -509,13 +525,13 @@ class Decisions {
   /** True once any token has been demoted; lets `materialize` skip the copy. */
   anyForced = false
 
-  constructor(tokens: readonly BBCodeToken[], tracing: boolean) {
+  constructor(tokens: readonly BBCodeToken[], tracing: boolean, forced?: Uint8Array) {
     this.tokens = tokens
     this.tracing = tracing
     // `Uint8Array`, not `Array(n).fill(false)`: two zeroed buffers instead of
     // two holey arrays plus a fill pass, and a hundredth of the memory to
     // collect. Both are only ever read as booleans.
-    this.forced = new Uint8Array(tokens.length)
+    this.forced = forced ?? new Uint8Array(tokens.length)
     this.recorded = tracing ? new Array<OsuPairingStep | null>(tokens.length).fill(null) : null
   }
 
@@ -706,7 +722,8 @@ export function applyOsuPairing(
   // `imagemap` MUST run first: it protects its own interior from every other
   // family, exactly mirroring osu!'s pass order (imagemap, then code, then
   // everything else — code's protection is already free, see module doc).
-  const collapsed = sealImagemapProtecting(tokens, source, caseOk, d)
+  const imagemapRanges: number[] | undefined = options?.stateOut ? [] : undefined
+  const collapsed = sealImagemapProtecting(tokens, source, caseOk, d, imagemapRanges)
 
   // Shared byte-array for sealLazy's consumed-close tracking (replaces per-tag
   // Set<number> allocations; every close token index belongs to one unique tag).
@@ -754,9 +771,230 @@ export function applyOsuPairing(
   }
 
   if (options?.onDecision) d.flush(options.onDecision)
+  if (options?.stateOut) {
+    options.stateOut.forced = d.forced
+    options.stateOut.collapsed = collapsed
+    options.stateOut.imagemapRanges = imagemapRanges!
+    options.stateOut.hasTitleTags = titleTags !== null
+  }
   // A clean document keeps its token objects; only the array has to be new
   // (the public contract promised a new array, not fresh tokens).
   return d.anyForced ? materialize(tokens, source, d.forced) : tokens.slice()
+}
+
+/** Tags whose pairing is global/cross-family or produces parser side-tables; fall back to full pairing. */
+const INCREMENTAL_UNSAFE_TAGS: ReadonlySet<string> = new Set([
+  'imagemap', 'code', 'box', 'boxw', 'spoilerbox', 'list', 'quote',
+])
+
+/** Non-dotall lazy tags whose pairing depends on newline positions. */
+const NON_DOTALL_LAZY_TAGS: readonly string[] = [
+  'heading', 'audio', 'profile', 'email', 'url', 'youtube',
+]
+
+const TITLE_UNIT_TAG_SET: ReadonlySet<string> = new Set(TITLE_UNIT_TAGS)
+const EMPTY_INT32 = new Int32Array(0)
+const EMPTY_ALL_MAP: ReadonlyMap<string, readonly number[]> = new Map()
+
+/**
+ * Tag-family-incremental `applyOsuPairing`:
+ *
+ * osu! runs an independent sealing pass per tag family (`b`, `i`, `color`,
+ * `size`, `url`, …). When a local token splice only adds/removes tokens from
+ * safe independent families (and does not overlap any sealed `imagemap`),
+ * every untouched family's `forced` bits are 100% invariant! We splice the
+ * previous `forced`/`collapsed` bitmaps with native `TypedArray.set`, re-run
+ * ONLY the dirty tag families (skipping e.g. 20k `[color]` tokens when `[b]`
+ * changed), and splice `prevPaired` in O(N) pointer copies + O(dirty) updates.
+ */
+export function applyOsuPairingIncremental(
+  tokens: readonly BBCodeToken[],
+  source: string,
+  prevPaired: readonly BBCodeToken[],
+  prevState: OsuPairingState,
+  tokStart: number,
+  tokEnd: number,
+  midLen: number,
+  deltaByte: number,
+  dirtyTags: ReadonlySet<string>,
+  newlineChanged: boolean,
+): { paired: BBCodeToken[]; state: OsuPairingState } | null {
+  // 1. Bail out if any dirty tag is cross-family / global / title-bearing.
+  for (const tag of dirtyTags) {
+    if (INCREMENTAL_UNSAFE_TAGS.has(tag)) return null
+    if (prevState.hasTitleTags && TITLE_UNIT_TAG_SET.has(tag)) return null
+  }
+
+  // 2. Bail out if the edited token span overlaps any sealed `imagemap`.
+  const prevIm = prevState.imagemapRanges
+  for (let k = 0; k < prevIm.length; k += 2) {
+    const openIdx = prevIm[k]
+    const closeIdx = prevIm[k + 1]
+    if (openIdx <= tokEnd && closeIdx >= tokStart) return null
+  }
+
+  const n = tokens.length
+  const oldN = prevState.forced.length
+  const deltaTok = n - oldN
+  const midEnd = tokStart + midLen
+
+  // 3. Splice `forced`, `collapsed`, and `imagemapRanges`.
+  const forced = new Uint8Array(n)
+  if (tokStart > 0) forced.set(prevState.forced.subarray(0, tokStart), 0)
+  if (tokEnd < oldN) forced.set(prevState.forced.subarray(tokEnd), midEnd)
+
+  const collapsed = new Uint8Array(n)
+  if (tokStart > 0) collapsed.set(prevState.collapsed.subarray(0, tokStart), 0)
+  if (tokEnd < oldN) collapsed.set(prevState.collapsed.subarray(tokEnd), midEnd)
+
+  const imagemapRanges = new Array<number>(prevIm.length)
+  for (let k = 0; k < prevIm.length; k += 2) {
+    const o = prevIm[k]
+    const c = prevIm[k + 1]
+    if (o >= tokEnd) {
+      imagemapRanges[k] = o + deltaTok
+      imagemapRanges[k + 1] = c + deltaTok
+    } else {
+      imagemapRanges[k] = o
+      imagemapRanges[k + 1] = c
+    }
+  }
+
+  // 4. Build the exact set of osu! families to re-run.
+  const tagsToRun = new Set<string>()
+  let needNewlines = false
+  for (const tag of dirtyTags) {
+    const fam = OSU_FAMILY[tag]
+    if (!fam) continue
+    if (fam.kind === 'neverSeal') continue // handled in mid loop below
+    tagsToRun.add(tag)
+    if (fam.kind === 'lazy' && !fam.dotall) needNewlines = true
+  }
+  if (newlineChanged) {
+    for (let i = 0; i < NON_DOTALL_LAZY_TAGS.length; i++) tagsToRun.add(NON_DOTALL_LAZY_TAGS[i])
+    needNewlines = true
+  }
+  // `[img]` allows multi-line bodies (`[^[]+`) and rejects `[` inside; re-check
+  // `img` cheaply (~140 tokens on 408 KB) whenever any edit occurs.
+  tagsToRun.add('img')
+
+  // Demote any `neverSeal` tokens (`center`, `colour`) newly introduced in `mid`.
+  for (let i = tokStart; i < midEnd; i++) {
+    const t = tokens[i]
+    if ((t.kind === 'open' || t.kind === 'close') && OSU_FAMILY[t.tag]?.kind === 'neverSeal') {
+      forced[i] = 1
+    }
+  }
+
+  // 5. Single tight pass over `tokens` collecting ONLY `tagsToRun` + optional newlines.
+  const openers = new Map<string, number[]>()
+  const closers = new Map<string, number[]>()
+  const caseOk = new Uint8Array(n)
+  const newlinesBefore = needNewlines ? new Int32Array(n + 1) : EMPTY_INT32
+  let nl = 0
+  let imCur = 0
+  const imLen = imagemapRanges.length
+
+  for (let i = 0; i < n; i++) {
+    const t = tokens[i]
+    if (needNewlines) {
+      if (t.kind === 'newline' && !collapsed[i]) nl++
+      newlinesBefore[i + 1] = nl
+    }
+    if (t.kind !== 'open' && t.kind !== 'close') continue
+    const tag = t.tag
+    if (!tagsToRun.has(tag)) continue
+
+    // Advance imagemap cursor: tokens strictly inside a sealed imagemap STAY forced=1.
+    while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
+    if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
+      forced[i] = 1
+      continue
+    }
+
+    forced[i] = 0
+    if (t.kind === 'open') {
+      caseOk[i] = source.startsWith(tag, t.start + 1) ? 1 : 0
+      const list = openers.get(tag)
+      if (list) list.push(i)
+      else openers.set(tag, [i])
+    } else {
+      caseOk[i] = source.startsWith(tag, t.start + 2) ? 1 : 0
+      const list = closers.get(tag)
+      if (list) list.push(i)
+      else closers.set(tag, [i])
+    }
+  }
+
+  // 6. Re-seal ONLY `tagsToRun` using the exact same `sealLazy` / `sealImg` passes.
+  const d = new Decisions(tokens, false, forced)
+  const consumedClose = new Uint8Array(n)
+  const partialIndex: TokenIndex = { openers, closers, all: EMPTY_ALL_MAP, newlinesBefore }
+  for (const tag of tagsToRun) {
+    const family = OSU_FAMILY[tag]
+    if (!family) continue
+    if (family.kind === 'lazy') {
+      sealLazy(tag, family, tokens, source, partialIndex, caseOk, d, consumedClose)
+    } else if (family.kind === 'img') {
+      sealImg(partialIndex, source, caseOk, d, tokens)
+    }
+  }
+
+  // 7. Splice `prevPaired` → `nextPaired` and update ONLY `mid` + `tagsToRun` indices.
+  const nextPaired = new Array<BBCodeToken>(n)
+  for (let i = 0; i < tokStart; i++) nextPaired[i] = prevPaired[i]
+  const suffixCount = oldN - tokEnd
+  if (deltaByte === 0) {
+    for (let i = 0; i < suffixCount; i++) nextPaired[midEnd + i] = prevPaired[tokEnd + i]
+  } else {
+    for (let i = 0; i < suffixCount; i++) {
+      const p = prevPaired[tokEnd + i]
+      const r = tokens[midEnd + i]
+      if (p !== r) {
+        // Demoted text token (separate object from raw token): sync offsets in-place.
+        p.start = r.start
+        p.end = r.end
+      }
+      nextPaired[midEnd + i] = p
+    }
+  }
+  for (let i = tokStart; i < midEnd; i++) {
+    const t = tokens[i]
+    nextPaired[i] = forced[i]
+      ? { kind: 'text', value: source.slice(t.start, t.end), start: t.start, end: t.end }
+      : t
+  }
+  for (const list of openers.values()) {
+    for (let k = 0; k < list.length; k++) {
+      const i = list[k]
+      const t = tokens[i]
+      if (forced[i]) {
+        if (nextPaired[i].kind !== 'text') {
+          nextPaired[i] = { kind: 'text', value: source.slice(t.start, t.end), start: t.start, end: t.end }
+        }
+      } else {
+        nextPaired[i] = t
+      }
+    }
+  }
+  for (const list of closers.values()) {
+    for (let k = 0; k < list.length; k++) {
+      const i = list[k]
+      const t = tokens[i]
+      if (forced[i]) {
+        if (nextPaired[i].kind !== 'text') {
+          nextPaired[i] = { kind: 'text', value: source.slice(t.start, t.end), start: t.start, end: t.end }
+        }
+      } else {
+        nextPaired[i] = t
+      }
+    }
+  }
+
+  return {
+    paired: nextPaired,
+    state: { forced, collapsed, imagemapRanges, hasTitleTags: prevState.hasTitleTags },
+  }
 }
 
 /**
@@ -814,6 +1052,7 @@ function sealImagemapProtecting(
   source: string,
   caseOk: Uint8Array,
   d: Decisions,
+  rangesOut?: number[],
 ): Uint8Array {
   const collapsed = new Uint8Array(tokens.length)
   // Most pages have no imagemap at all; the two full scans below are pure
@@ -852,6 +1091,7 @@ function sealImagemapProtecting(
       if (tokens[k].kind === 'open' || tokens[k].kind === 'close') d.literal(k, 'imagemap', 'imagemap-body', { opener: openIdx, closer: closeIdx })
       else if (tokens[k].kind === 'newline') collapsed[k] = 1
     }
+    if (rangesOut) rangesOut.push(openIdx, closeIdx)
     d.sealed(openIdx, 'imagemap', 'paired', { closer: closeIdx })
     d.sealed(closeIdx, 'imagemap', 'closer-of', { opener: openIdx })
     cursor = closeIdx + 1

@@ -42,7 +42,13 @@ import { BBCodeDocumentModel } from '../BBCode/BBCodeDocumentModel'
 import { greenToRedNode, greenToRedNodeReusing, type BBCodeDialect } from '../BBCode/BBCodeToGreenNode'
 import { parseTokensToGreen } from '../BBCode/Parser'
 import { scanBBCode, type BBCodeToken } from '../Lexer/BBCodeLexer'
-import { applyOsuPairing, type OsuListCarrier, type OsuTitleEvent } from './osuPairing'
+import {
+  applyOsuPairing,
+  applyOsuPairingIncremental,
+  type OsuListCarrier,
+  type OsuPairingState,
+  type OsuTitleEvent,
+} from './osuPairing'
 import { greenNode, type GreenNode } from '../Syntax/GreenNode'
 import { spliceGreen, type SpineStep } from '../Syntax/greenEdit'
 import type { RedNode } from '../Syntax/RedNode'
@@ -289,6 +295,21 @@ function hasBalancedBrackets(s: string): boolean {
   return depth === 0
 }
 
+const BODY_SENSITIVE_LINE_TAGS: ReadonlySet<string> = new Set([
+  'url', 'email', 'profile', 'youtube', 'heading', 'audio', 'img', 'imagemap',
+])
+
+interface RawTokenSpliceResult {
+  tokens: BBCodeToken[]
+  hasCode: boolean
+  tokStart: number
+  tokEnd: number
+  midLen: number
+  deltaByte: number
+  dirtyTags: Set<string>
+  newlineChanged: boolean
+}
+
 /**
  * Incremental line-window lexer splice for `OsuPreviewTree`.
  *
@@ -302,7 +323,7 @@ function trySpliceRawTokens(
   oldSource: string,
   newSource: string,
   hasCode: boolean,
-): { tokens: BBCodeToken[]; hasCode: boolean } | null {
+): RawTokenSpliceResult | null {
   if (hasCode || oldTokens.length === 0) return null
 
   const [start, oldEnd] = findChangedSpan(oldSource, newSource)
@@ -347,23 +368,82 @@ function trySpliceRawTokens(
     if ((t.kind === 'open' || t.kind === 'close') && t.tag === 'code') midHasCode = true
   }
 
-  const suffixCount = oldTokens.length - tokEnd
-  const next = new Array<BBCodeToken>(tokStart + midTokens.length + suffixCount)
-  for (let i = 0; i < tokStart; i++) next[i] = oldTokens[i]
-  for (let i = 0; i < midTokens.length; i++) next[tokStart + i] = midTokens[i]
-  const outBase = tokStart + midTokens.length
+  // Narrow the diff within the line window so untouched wrapper tags on the
+  // same line (e.g. `[color=#...]` around a newly typed `[b]`) are NOT marked
+  // dirty and don't force re-scanning 20k `[color]` tokens.
+  const oldSliceLen = tokEnd - tokStart
+  const midLen = midTokens.length
+  const minSlice = Math.min(oldSliceLen, midLen)
+  let lineHead = 0
+  while (lineHead < minSlice && sameTokenRelative(oldTokens[tokStart + lineHead], midTokens[lineHead])) {
+    lineHead++
+  }
+  let lineTail = 0
+  const maxLineTail = minSlice - lineHead
+  while (
+    lineTail < maxLineTail &&
+    sameTokenRelative(oldTokens[tokEnd - 1 - lineTail], midTokens[midLen - 1 - lineTail])
+  ) {
+    lineTail++
+  }
+
+  const dirtyTags = new Set<string>()
+  let newlineChanged = false
+  for (let i = tokStart + lineHead; i < tokEnd - lineTail; i++) {
+    const t = oldTokens[i]
+    if (t.kind === 'open' || t.kind === 'close') dirtyTags.add(t.tag)
+    else if (t.kind === 'newline') newlineChanged = true
+  }
+  for (let i = lineHead; i < midLen - lineTail; i++) {
+    const t = midTokens[i]
+    if (t.kind === 'open' || t.kind === 'close') dirtyTags.add(t.tag)
+    else if (t.kind === 'newline') newlineChanged = true
+  }
+  // If any body-sensitive single-line tag (url/email/profile/youtube/img) wraps
+  // the edited text on the same line, mark it dirty so its content check re-runs.
+  for (let i = tokStart; i < tokStart + lineHead; i++) {
+    const t = oldTokens[i]
+    if ((t.kind === 'open' || t.kind === 'close') && BODY_SENSITIVE_LINE_TAGS.has(t.tag)) dirtyTags.add(t.tag)
+  }
+  for (let i = tokEnd - lineTail; i < tokEnd; i++) {
+    const t = oldTokens[i]
+    if ((t.kind === 'open' || t.kind === 'close') && BODY_SENSITIVE_LINE_TAGS.has(t.tag)) dirtyTags.add(t.tag)
+  }
+
+  // Narrow the splice range by the unchanged prefix/suffix tokens on the edited
+  // line so untouched wrapper tags (e.g. `[color=#...]` around a newly typed
+  // `[b]`) keep their existing `forced` bits AND aren't marked dirty.
+  const effTokStart = tokStart + lineHead
+  const effTokEnd = tokEnd - lineTail
+  const effMidStart = lineHead
+  const effMidLen = midLen - lineHead - lineTail
+
+  const suffixCount = oldTokens.length - effTokEnd
+  const next = new Array<BBCodeToken>(effTokStart + effMidLen + suffixCount)
+  for (let i = 0; i < effTokStart; i++) next[i] = oldTokens[i]
+  for (let i = 0; i < effMidLen; i++) next[effTokStart + i] = midTokens[effMidStart + i]
+  const outBase = effTokStart + effMidLen
   if (delta === 0) {
-    for (let i = 0; i < suffixCount; i++) next[outBase + i] = oldTokens[tokEnd + i]
+    for (let i = 0; i < suffixCount; i++) next[outBase + i] = oldTokens[effTokEnd + i]
   } else {
     for (let i = 0; i < suffixCount; i++) {
-      const t = oldTokens[tokEnd + i]
+      const t = oldTokens[effTokEnd + i]
       t.start += delta
       t.end += delta
       next[outBase + i] = t
     }
   }
 
-  return { tokens: next, hasCode: midHasCode }
+  return {
+    tokens: next,
+    hasCode: midHasCode,
+    tokStart: effTokStart,
+    tokEnd: effTokEnd,
+    midLen: effMidLen,
+    deltaByte: delta,
+    dirtyTags,
+    newlineChanged,
+  }
 }
 
 /** True when two tokens have identical kind, length, and payload (ignoring absolute offset). */
@@ -571,6 +651,7 @@ export class OsuPreviewTree {
   /** Cached paired tokens and parse invariants for block-level green reuse. */
   private _pairedTokens: BBCodeToken[] | null = null
   private _pairedTokensSource: string | null = null
+  private _pairingState: OsuPairingState | null = null
   private _hadSpecialOsuEvents = false
   private _autoClosedByEnd: Map<number, readonly string[]> | null = null
   /** Staged fast-path splice from `canFastUpdate(source)` so `update(source)` reuses it with zero duplicate work. */
@@ -675,16 +756,51 @@ export class OsuPreviewTree {
       hasCode = analyzeRawTokens(rawTokens).hasCode
     }
 
-    // 2. Run full document-global osu! pairing over the raw token stream.
-    const titleEvents = new Map<number, OsuTitleEvent[]>()
-    const listCarriers = new Map<number, OsuListCarrier>()
-    const listHeadItems = new Map<number, OsuListCarrier>()
-    const pairedTokens = applyOsuPairing(rawTokens, source, {
-      titleEvents,
-      listCarriers,
-      listHeadItems,
-    })
-    const hasSpecialEvents = titleEvents.size > 0 || listCarriers.size > 0 || listHeadItems.size > 0
+    // 2. Run osu! pairing — tag-family-incremental when `spliced` succeeded and
+    //    no cross-family/imagemap/global tag was touched, else full global pass.
+    let pairedTokens: BBCodeToken[]
+    let pairingState: OsuPairingState
+    let hasSpecialEvents = false
+    let titleEvents: Map<number, OsuTitleEvent[]> | undefined
+    let listCarriers: Map<number, OsuListCarrier> | undefined
+    let listHeadItems: Map<number, OsuListCarrier> | undefined
+
+    const incPaired =
+      spliced !== null &&
+      this._pairedTokens !== null &&
+      this._pairingState !== null &&
+      this._pairedTokensSource === this._rawTokensSource &&
+      !this._hadSpecialOsuEvents
+        ? applyOsuPairingIncremental(
+            rawTokens,
+            source,
+            this._pairedTokens,
+            this._pairingState,
+            spliced.tokStart,
+            spliced.tokEnd,
+            spliced.midLen,
+            spliced.deltaByte,
+            spliced.dirtyTags,
+            spliced.newlineChanged,
+          )
+        : null
+
+    if (incPaired !== null) {
+      pairedTokens = incPaired.paired
+      pairingState = incPaired.state
+    } else {
+      titleEvents = new Map<number, OsuTitleEvent[]>()
+      listCarriers = new Map<number, OsuListCarrier>()
+      listHeadItems = new Map<number, OsuListCarrier>()
+      pairingState = { forced: new Uint8Array(0), collapsed: new Uint8Array(0), imagemapRanges: [], hasTitleTags: false }
+      pairedTokens = applyOsuPairing(rawTokens, source, {
+        titleEvents,
+        listCarriers,
+        listHeadItems,
+        stateOut: pairingState,
+      })
+      hasSpecialEvents = titleEvents.size > 0 || listCarriers.size > 0 || listHeadItems.size > 0
+    }
 
     // 3. Build green tree — reusing untouched top-level block GreenNodes by
     //    reference when paired tokens only changed in a local span.
@@ -768,6 +884,7 @@ export class OsuPreviewTree {
     this._hasCodeToken = hasCode
     this._pairedTokens = pairedTokens
     this._pairedTokensSource = source
+    this._pairingState = pairingState
     this._hadSpecialOsuEvents = hasSpecialEvents
     this._autoClosedByEnd = autoClosedByEnd
     this.lastStats = { parseMs: t1 - t0, buildMs: t2 - t1, adopted: reuse.adopted, change }
@@ -783,6 +900,7 @@ export class OsuPreviewTree {
     this._hasCodeToken = false
     this._pairedTokens = null
     this._pairedTokensSource = null
+    this._pairingState = null
     this._hadSpecialOsuEvents = false
     this._autoClosedByEnd = null
     this._stagedFast = null
