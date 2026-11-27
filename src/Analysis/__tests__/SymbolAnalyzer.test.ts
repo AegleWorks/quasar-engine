@@ -297,8 +297,10 @@ describe('emoji clusters, ASCII dividers, and space-bridged dividers', () => {
     for (const f of found) {
       expect(f.label).toBe('Symbol')
       expect(f.model.length).toBe(1)
-      expect(f.confidence).toBeGreaterThanOrEqual(0.8)
     }
+    // Country flags carry identity meaning and stay below the auto-recommend threshold.
+    expect(found[1].confidence).toBeLessThan(0.7)
+    expect(found[0].confidence).toBeGreaterThanOrEqual(0.8)
   })
 
   it('recognises transport and extended-A emojis plus osu! ornaments like ⟡ and ꧁꧂', () => {

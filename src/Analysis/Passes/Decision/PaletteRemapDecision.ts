@@ -433,6 +433,18 @@ export class PaletteRemapDecision implements DecisionPass {
 
   // ── Glyphs ──────────────────────────────────────────────────────
 
+  /**
+   * Line/box-drawing geometry (`─`, `━`, `═`, `╔`, `╝`, `│`, `▓`) must never be
+   * substituted with ornamental symbols (`✿`, `✦`, `🌸`) when seen as 1–2 char
+   * `Symbol` runs (e.g. a per-character `[color]─[/color]` gradient divider or
+   * ASCII box corners). Whole divider lines still map to `palette.separators`
+   * in `planSeparators`.
+   */
+  private static readonly STRUCTURAL_GLYPH_BLOCKS: ReadonlySet<string> = new Set([
+    'box-drawing',
+    'block-elements',
+  ])
+
   private planSymbols(symbols: readonly SemanticContribution[], actions: RemapAction[]): void {
     const replacements = this.palette.symbols
     if (replacements.length === 0 || symbols.length === 0) return
@@ -441,6 +453,7 @@ export class PaletteRemapDecision implements DecisionPass {
     for (let i = 0; i < symbols.length; i++) {
       const glyphs = (symbols[i].metadata.model as SymbolRunModel).glyphs
       for (let j = 0; j < glyphs.length; j++) {
+        if (PaletteRemapDecision.STRUCTURAL_GLYPH_BLOCKS.has(glyphs[j].block)) continue
         const ch = glyphs[j].char
         if (!this.symbolMap.has(ch) && repSet.has(ch)) {
           this.symbolMap.set(ch, ch)
@@ -455,6 +468,10 @@ export class PaletteRemapDecision implements DecisionPass {
       let replacement = ''
       const glyphs = model.glyphs
       for (let j = 0; j < glyphs.length; j++) {
+        if (PaletteRemapDecision.STRUCTURAL_GLYPH_BLOCKS.has(glyphs[j].block)) {
+          replacement += glyphs[j].char
+          continue
+        }
         replacement += this.substitute(this.symbolMap, this.symbolTaken, glyphs[j].char, replacements)
       }
 

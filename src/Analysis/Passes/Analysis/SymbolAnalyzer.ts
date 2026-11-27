@@ -116,7 +116,8 @@ const EMOJI_FLAG_BLOCK: SymbolBlock = {
   name: 'emoji-flag',
   first: 0x1f1e6,
   last: 0x1f1ff,
-  confidence: 0.80,
+  // Flags carry geographic/identity meaning, so keep below 0.7 (opt-in review).
+  confidence: 0.55,
 }
 
 const ASCII_DIVIDER_BLOCK: SymbolBlock = {
