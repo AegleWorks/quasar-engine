@@ -56,10 +56,15 @@ const UNSAFE_PROSE_ANCESTORS: ReadonlySet<string> = new Set([
   'divider', 'composition', 'pane', 'error', 'discarded_tag',
 ])
 
-/** Characters that could open/close tags, cross lines, or form/split autolinks. */
-const SYNTAX_CHAR_RE = /[\[\]\r\n:.@\/\\<>(&]/
+/** Characters that could open/close tags, cross lines, or form emails/escapes. */
+const SYNTAX_CHAR_RE = /[\[\]\r\n@\\<>]/
 
-/** Existing text that may border an autolink or tag — fall back to full parse. */
+/**
+ * Existing or resulting text that may form/border an autolink or tag — fall
+ * back to full parse. Keeping `.`, `:`, `(`, `&`, `/` out of `SYNTAX_CHAR_RE`
+ * means normal prose punctuation stays on the O(log N) fast-path while real
+ * URLs (`://`, `www.`) and emails (`@`) still get a full osu parse.
+ */
 const RISKY_LEAF_RE = /:\/\/|www\.|@|\[|\]/i
 
 /**
@@ -219,6 +224,12 @@ export class OsuPreviewTree {
   private readonly parser: OsuGreenParser
   private _source: string | null = null
   private _root: RedNode | null = null
+  /** Staged fast-path splice from `canFastUpdate(source)` so `update(source)` reuses it with zero duplicate work. */
+  private _stagedFast: {
+    source: string
+    fast: { green: GreenNode; change: TextChangeRange }
+    parseMs: number
+  } | null = null
   /** What the last `update` that did work cost; for benches and diagnostics. */
   lastStats: OsuPreviewUpdateStats | null = null
 
@@ -235,6 +246,26 @@ export class OsuPreviewTree {
   }
 
   /**
+   * Cheaply tests whether updating to `source` can take the O(log N) prose
+   * fast-path, staging the spliced green tree so an immediate `update(source)`
+   * consumes it without repeating the diff. Lets callers break out of a
+   * post-structural-edit debounce on the very first prose keystroke.
+   */
+  canFastUpdate(source: string): boolean {
+    if (this._root === null || this._source === null) return false
+    if (source === this._source) return true
+    if (this._stagedFast && this._stagedFast.source === source) return true
+    const t0 = performance.now()
+    const fast = trySpliceProseGreen(this._root, this._source, source)
+    if (fast === null) {
+      this._stagedFast = null
+      return false
+    }
+    this._stagedFast = { source, fast, parseMs: performance.now() - t0 }
+    return true
+  }
+
+  /**
    * The osu tree of `source`. Same source as last time → the same root, so a
    * caller may ask twice (React's double render) without consuming anything.
    */
@@ -243,13 +274,17 @@ export class OsuPreviewTree {
 
     const old = this._root
     const oldSource = this._source
+    const staged = this._stagedFast && this._stagedFast.source === source ? this._stagedFast : null
+    this._stagedFast = null
+
     const t0 = performance.now()
 
     // Fast path: pure prose edit strictly inside a safe text leaf.
     // O(depth * log N) instead of a full document lex + osuPairing + parse.
     if (old !== null && oldSource !== null) {
-      const fast = trySpliceProseGreen(old, oldSource, source)
+      const fast = staged ? staged.fast : trySpliceProseGreen(old, oldSource, source)
       if (fast !== null) {
+        const parseMs = staged ? staged.parseMs : performance.now() - t0
         const t1 = performance.now()
         const reuse = { adopted: 0 }
         try {
@@ -258,7 +293,7 @@ export class OsuPreviewTree {
           const t2 = performance.now()
           this._root = root
           this._source = source
-          this.lastStats = { parseMs: t1 - t0, buildMs: t2 - t1, adopted: reuse.adopted, change: fast.change }
+          this.lastStats = { parseMs, buildMs: t2 - t1, adopted: reuse.adopted, change: fast.change }
           return root
         } catch {
           // If anything unexpected happens during adoption, drop the old tree
@@ -304,6 +339,7 @@ export class OsuPreviewTree {
   dispose(): void {
     this._root = null
     this._source = null
+    this._stagedFast = null
     this.lastStats = null
   }
 }
