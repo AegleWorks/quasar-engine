@@ -105,6 +105,8 @@ export interface ParseOptions {
     endAutoClosed: readonly string[] | null;
     /** Byte end offset → non-empty `autoClosed` snapshot at `stack.length === 0`. */
     autoClosedAtRootEnd?: Map<number, readonly string[]>;
+    /** Flat `[startByte, endByte, ...]` spans where `autoClosed.size > 0` (enables O(1) sub-block safety check). */
+    autoClosedActiveSpans?: number[];
   };
 }
 
@@ -219,6 +221,21 @@ export function parseTokensToGreen(
    */
   const autoClosed = new Set<string>(options.initialAutoClosed)
   const recordAutoClosed = options.parseStateOut?.autoClosedAtRootEnd
+  const recordAutoClosedSpans = options.parseStateOut?.autoClosedActiveSpans
+  let autoClosedSpanStart = autoClosed.size > 0 ? 0 : -1
+  const markAutoClosedAdd = (byteStart: number) => {
+    autoClosedDirty = true
+    if (recordAutoClosedSpans && autoClosedSpanStart === -1) autoClosedSpanStart = byteStart
+  }
+  const markAutoClosedDelete = (tag: string, byteEnd: number) => {
+    if (autoClosed.delete(tag)) {
+      autoClosedDirty = true
+      if (recordAutoClosedSpans && autoClosed.size === 0 && autoClosedSpanStart !== -1) {
+        recordAutoClosedSpans.push(autoClosedSpanStart, byteEnd)
+        autoClosedSpanStart = -1
+      }
+    }
+  }
   let autoClosedSnapshot: readonly string[] | null = autoClosed.size > 0 ? Array.from(autoClosed) : null
   let autoClosedDirty = false
   const getAutoClosedSnapshot = (): readonly string[] | null => {
@@ -502,7 +519,7 @@ export function parseTokensToGreen(
         const inner = stack.pop()!
         currentBucket().push(closeFrame(inner, 0))
         autoClosed.add(inner.tag)
-        autoClosedDirty = true
+        markAutoClosedAdd(tok ? tok.start : 0)
         continue
       }
 
@@ -581,7 +598,7 @@ export function parseTokensToGreen(
         keepTooDeep(tok)
         return
       }
-      if (autoClosed.delete(tok.tag)) autoClosedDirty = true
+      markAutoClosedDelete(tok.tag, tok.end)
       const parent = stack[stack.length - 1]
       // Cabeza SIN portadora: el cuerpo sintético no cabe en una lista previa,
       // así que este mismo `[*]` lo abre (la lista lo envuelve) y el primer
@@ -592,7 +609,7 @@ export function parseTokensToGreen(
       // bajo el tope de anidamiento, se deja el ítem solo (mismo aspecto que
       // antes del cruce, sin desbordar la pila).
       if (headBody !== undefined && stack.length + 1 < depthLimit) {
-        if (autoClosed.delete('list')) autoClosedDirty = true
+        markAutoClosedDelete('list', tok.end)
         // El `\s*` de `[\*]` en `parseList` come el espacio/salto que queda
         // DELANTE del ítem. Cuando el cuerpo sintético nace aquí, esos nodos
         // ya están en el bucket del padre —fuera de la lista—, así que la
@@ -674,7 +691,7 @@ export function parseTokensToGreen(
     }
 
     // Push onto the stack — children will be added later.
-    if (autoClosed.delete(tok.tag)) autoClosedDirty = true
+    markAutoClosedDelete(tok.tag, tok.end)
     stack.push({
       tag: tok.tag,
       kind: openKind,
@@ -754,7 +771,7 @@ export function parseTokensToGreen(
       // se ve ni se exporta. Como texto volvía a salir del exportador
       // convertido en etiqueta viva, y el documento dejaba de ser estable al
       // reexportarlo (lo cazó `Fuzzer`).
-      if (autoClosed.delete(tok.tag)) autoClosedDirty = true
+      markAutoClosedDelete(tok.tag, tok.end)
       addToParent(createLeaf('discarded_tag', source.slice(tok.start, tok.end)))
     } else {
       // LEGACY MODE: Walk backwards, auto-close inner tags, ignore orphaned closing tags.
@@ -806,7 +823,7 @@ export function parseTokensToGreen(
         // Las etiquetas que se cerraron solas quedan pendientes en el nivel
         // que ha quedado abierto tras cerrar esta.
         for (const tag of autoClosedHere) autoClosed.add(tag)
-        if (autoClosedHere.length > 0) autoClosedDirty = true
+        if (autoClosedHere.length > 0) markAutoClosedAdd(tok.start)
       } else if (options.pairing === 'osu' && (tok.tag === 'list' || tok.tag === 'quote')) {
         // A sealed `[/list]`/`[/quote]` with no opener left to close.
         //
@@ -903,6 +920,9 @@ export function parseTokensToGreen(
   }
 
   if (options.parseStateOut) {
+    if (recordAutoClosedSpans && autoClosedSpanStart !== -1) {
+      recordAutoClosedSpans.push(autoClosedSpanStart, source.length)
+    }
     options.parseStateOut.stackDepthAtEnd = stack.length
     options.parseStateOut.endAutoClosed = getAutoClosedSnapshot()
   }

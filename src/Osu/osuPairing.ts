@@ -487,6 +487,10 @@ export interface OsuPairingState {
   caseOk: Uint8Array
   /** Compact 1-byte-per-token tag/kind code (`0`=other, `1`=newline, `2..`=osu tag open/close) for L1-cache scans. */
   tagCodes: Uint8Array
+  /** Hierarchical 128-token chunk start offsets (`length = chunkMasks.length + 1`). */
+  chunkStarts: number[]
+  /** Per-chunk 31-bit tag presence bitmask (1 bit per osu! tag) to skip empty 128-token regions in O(1). */
+  chunkMasks: number[]
   /** Reused scratch buffer for `sealLazy` consumed-close tracking (avoids 45 KB alloc per keystroke). */
   consumedCloseScratch: Uint8Array
   /** Flat pairs `[openIdx, closeIdx, ...]` of sealed `imagemap` blocks in order. */
@@ -673,6 +677,111 @@ function encodeTokenTagCode(t: BBCodeToken): number {
   return 0
 }
 
+const PAIRING_CHUNK_SIZE = 128
+const PAIRING_CHUNK_MAX = 256
+
+/** Compute the 31-bit tag presence bitmask over `tagCodes[start..end)`. */
+function computeChunkMask(tagCodes: Uint8Array, start: number, end: number): number {
+  let mask = 0
+  for (let i = start; i < end; i++) {
+    const c = tagCodes[i]
+    if (c >= 2) mask |= 1 << ((c >>> 1) - 1)
+  }
+  return mask
+}
+
+/** Build initial 128-token chunk bitmask summary index from `tagCodes`. */
+function buildChunkIndex(tagCodes: Uint8Array): { chunkStarts: number[]; chunkMasks: number[] } {
+  const n = tagCodes.length
+  if (n === 0) return { chunkStarts: [0], chunkMasks: [] }
+  const numChunks = Math.ceil(n / PAIRING_CHUNK_SIZE)
+  const chunkStarts = new Array<number>(numChunks + 1)
+  const chunkMasks = new Array<number>(numChunks)
+  for (let c = 0; c < numChunks; c++) {
+    const s = c * PAIRING_CHUNK_SIZE
+    const e = s + PAIRING_CHUNK_SIZE < n ? s + PAIRING_CHUNK_SIZE : n
+    chunkStarts[c] = s
+    chunkMasks[c] = computeChunkMask(tagCodes, s, e)
+  }
+  chunkStarts[numChunks] = n
+  return { chunkStarts, chunkMasks }
+}
+
+/**
+ * Incrementally update the chunk bitmask index after replacing `[tokStart, tokEnd)`
+ * with `midLen` tokens (`deltaTok = midLen - (tokEnd - tokStart)`).
+ * Recomputes ONLY the 1–2 touched chunks (~128 bytes) and shifts suffix start
+ * offsets (~180 ints), leaving all untouched chunk masks invariant in O(chunks).
+ */
+function spliceChunkIndex(
+  prevStarts: readonly number[],
+  prevMasks: readonly number[],
+  tagCodes: Uint8Array,
+  tokStart: number,
+  tokEnd: number,
+  deltaTok: number,
+): { chunkStarts: number[]; chunkMasks: number[] } {
+  const n = tagCodes.length
+  const prevCount = prevMasks.length
+  if (n === 0) return { chunkStarts: [0], chunkMasks: [] }
+  if (prevCount === 0) return buildChunkIndex(tagCodes)
+
+  // Binary search chunk c0 containing `tokStart` (clamped to last chunk).
+  let lo = 0
+  let hi = prevCount - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (prevStarts[mid + 1] <= tokStart) lo = mid + 1
+    else hi = mid
+  }
+  const c0 = lo
+
+  // Advance c1 to the last chunk overlapping `[tokStart, tokEnd)`.
+  let c1 = c0
+  while (c1 + 1 < prevCount && prevStarts[c1 + 1] < tokEnd) c1++
+
+  const regionStart = prevStarts[c0]
+  const regionEnd = prevStarts[c1 + 1] + deltaTok
+  const regionLen = regionEnd - regionStart
+
+  // Split the updated region into 128-token chunks if it grew past PAIRING_CHUNK_MAX.
+  const midStarts: number[] = []
+  const midMasks: number[] = []
+  if (regionLen > 0) {
+    if (regionLen <= PAIRING_CHUNK_MAX) {
+      midStarts.push(regionStart)
+      midMasks.push(computeChunkMask(tagCodes, regionStart, regionEnd))
+    } else {
+      for (let s = regionStart; s < regionEnd; s += PAIRING_CHUNK_SIZE) {
+        const e = s + PAIRING_CHUNK_SIZE < regionEnd ? s + PAIRING_CHUNK_SIZE : regionEnd
+        midStarts.push(s)
+        midMasks.push(computeChunkMask(tagCodes, s, e))
+      }
+    }
+  }
+
+  const tailChunks = prevCount - 1 - c1
+  const outCount = c0 + midMasks.length + tailChunks
+  const chunkStarts = new Array<number>(outCount + 1)
+  const chunkMasks = new Array<number>(outCount)
+
+  for (let c = 0; c < c0; c++) {
+    chunkStarts[c] = prevStarts[c]
+    chunkMasks[c] = prevMasks[c]
+  }
+  for (let k = 0; k < midMasks.length; k++) {
+    chunkStarts[c0 + k] = midStarts[k]
+    chunkMasks[c0 + k] = midMasks[k]
+  }
+  const tailOutBase = c0 + midMasks.length
+  for (let k = 0; k < tailChunks; k++) {
+    chunkStarts[tailOutBase + k] = prevStarts[c1 + 1 + k] + deltaTok
+    chunkMasks[tailOutBase + k] = prevMasks[c1 + 1 + k]
+  }
+  chunkStarts[outCount] = n
+  return { chunkStarts, chunkMasks }
+}
+
 /** Inline ASCII hex check for `[color=#rrggbb]` without substring or RegExp allocation. */
 function isHexDigit(c: number): boolean {
   return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
@@ -816,10 +925,13 @@ export function applyOsuPairing(
 
   if (options?.onDecision) d.flush(options.onDecision)
   if (options?.stateOut) {
+    const { chunkStarts, chunkMasks } = buildChunkIndex(tagCodes!)
     options.stateOut.forced = d.forced
     options.stateOut.collapsed = collapsed
     options.stateOut.caseOk = caseOk
     options.stateOut.tagCodes = tagCodes!
+    options.stateOut.chunkStarts = chunkStarts
+    options.stateOut.chunkMasks = chunkMasks
     consumedClose.fill(0)
     options.stateOut.consumedCloseScratch = consumedClose
     options.stateOut.imagemapRanges = imagemapRanges!
@@ -965,37 +1077,54 @@ export function applyOsuPairingIncremental(
   }
   if (needImg) tagsToRun.push('img')
 
-  // 5. L1/L2-cache linear byte scan over `tagCodes` (zero heap pointer chasing!).
+  // Update hierarchical 128-token chunk bitmasks in O(chunks) (~1 µs).
+  const { chunkStarts, chunkMasks } = spliceChunkIndex(
+    prevState.chunkStarts,
+    prevState.chunkMasks,
+    tagCodes,
+    tokStart,
+    tokEnd,
+    deltaTok,
+  )
+
+  // 5. Hierarchical chunk-bitmask scan over `tagCodes`: skips every 128-token
+  //    chunk whose bitmask does not contain any dirty tag in 1 CPU cycle.
   const openers = new Map<string, number[]>()
   const closers = new Map<string, number[]>()
   const newlinesBefore = needNewlines ? new Int32Array(n + 1) : EMPTY_INT32
   const imLen = imagemapRanges.length
+  const numChunks = chunkMasks.length
 
   if (tagsToRun.length === 1 && !needNewlines) {
-    // Ultra-fast single-tag path (99% of edits: `[b]`, `[i]`, `[u]`, `[color]`, `[size]`, …).
+    // Ultra-fast single-tag chunk-skipping path (99% of edits: `[b]`, `[i]`, `[u]`, `[size]`, …).
     const singleTag = tagsToRun[0]
     const openCode = TAG_TO_OPEN_CODE[singleTag]
     const closeCode = openCode | 1
+    const tagBit = 1 << ((openCode >>> 1) - 1)
     const opList: number[] = []
     const clList: number[] = []
     let imCur = 0
-    for (let i = 0; i < n; i++) {
-      const c = tagCodes[i]
-      if (c === openCode) {
-        while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
-        if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
-          forced[i] = 1
-        } else {
-          forced[i] = 0
-          opList.push(i)
-        }
-      } else if (c === closeCode) {
-        while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
-        if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
-          forced[i] = 1
-        } else {
-          forced[i] = 0
-          clList.push(i)
+    for (let ch = 0; ch < numChunks; ch++) {
+      if ((chunkMasks[ch] & tagBit) === 0) continue
+      const end = chunkStarts[ch + 1]
+      for (let i = chunkStarts[ch]; i < end; i++) {
+        const c = tagCodes[i]
+        if (c === openCode) {
+          while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
+          if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
+            forced[i] = 1
+          } else {
+            forced[i] = 0
+            opList.push(i)
+          }
+        } else if (c === closeCode) {
+          while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
+          if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
+            forced[i] = 1
+          } else {
+            forced[i] = 0
+            clList.push(i)
+          }
         }
       }
     }
@@ -1004,10 +1133,12 @@ export function applyOsuPairingIncremental(
   } else if (tagsToRun.length > 0) {
     // Multi-tag / newline path: lookup table of 64 bytes maps code → list directly.
     const codeToList = new Array<number[] | undefined>(64)
+    let wantedMask = 0
     for (let k = 0; k < tagsToRun.length; k++) {
       const tag = tagsToRun[k]
       const oc = TAG_TO_OPEN_CODE[tag]
       if (oc === undefined) continue
+      wantedMask |= 1 << ((oc >>> 1) - 1)
       const opList: number[] = []
       const clList: number[] = []
       openers.set(tag, opList)
@@ -1015,23 +1146,41 @@ export function applyOsuPairingIncremental(
       codeToList[oc] = opList
       codeToList[oc | 1] = clList
     }
-    let nl = 0
     let imCur = 0
-    for (let i = 0; i < n; i++) {
-      const c = tagCodes[i]
-      if (needNewlines) {
+    if (!needNewlines) {
+      for (let ch = 0; ch < numChunks; ch++) {
+        if ((chunkMasks[ch] & wantedMask) === 0) continue
+        const end = chunkStarts[ch + 1]
+        for (let i = chunkStarts[ch]; i < end; i++) {
+          const c = tagCodes[i]
+          if (c < 2) continue
+          const list = codeToList[c]
+          if (list === undefined) continue
+          while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
+          if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
+            forced[i] = 1
+          } else {
+            forced[i] = 0
+            list.push(i)
+          }
+        }
+      }
+    } else {
+      let nl = 0
+      for (let i = 0; i < n; i++) {
+        const c = tagCodes[i]
         if (c === TAG_CODE_NEWLINE && !collapsed[i]) nl++
         newlinesBefore[i + 1] = nl
-      }
-      if (c < 2) continue
-      const list = codeToList[c]
-      if (list === undefined) continue
-      while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
-      if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
-        forced[i] = 1
-      } else {
-        forced[i] = 0
-        list.push(i)
+        if (c < 2) continue
+        const list = codeToList[c]
+        if (list === undefined) continue
+        while (imCur < imLen && imagemapRanges[imCur + 1] <= i) imCur += 2
+        if (imCur < imLen && i > imagemapRanges[imCur] && i < imagemapRanges[imCur + 1]) {
+          forced[i] = 1
+        } else {
+          forced[i] = 0
+          list.push(i)
+        }
       }
     }
   }
@@ -1144,6 +1293,8 @@ export function applyOsuPairingIncremental(
       collapsed,
       caseOk,
       tagCodes,
+      chunkStarts,
+      chunkMasks,
       consumedCloseScratch: consumedClose,
       imagemapRanges,
       imgRanges,

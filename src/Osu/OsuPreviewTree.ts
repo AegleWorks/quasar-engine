@@ -526,15 +526,44 @@ function sameAutoClosed(a: readonly string[] | null | undefined, b: readonly str
   return true
 }
 
+const SUB_BLOCK_CONTAINERS: ReadonlySet<string> = new Set([
+  'center', 'notice', 'box', 'spoilerbox', 'quote', 'left', 'right',
+  'font_size', 'color', 'bold', 'italic', 'underline', 'strikethrough', 'spoiler',
+])
+
+const DIV_OR_CONTAINER_CLOSE_TAGS: ReadonlySet<string> = new Set([
+  'box', 'spoilerbox', 'notice', 'centre', 'left', 'right', 'quote', 'list',
+])
+
+/** Map NodeKind → BBCode tag name(s) that could close an ancestor on the spine. */
+const KIND_TO_CLOSE_TAG: Readonly<Record<string, string>> = {
+  font_size: 'size',
+  color: 'color',
+  bold: 'b',
+  italic: 'i',
+  underline: 'u',
+  strikethrough: 's',
+  spoiler: 'spoiler',
+}
+
+/** True when `[start, end)` overlaps any `[s, e)` span where `autoClosed.size > 0`. */
+function overlapsAutoClosedSpan(spans: readonly number[] | null, start: number, end: number): boolean {
+  if (!spans || spans.length === 0) return false
+  for (let i = 0; i < spans.length; i += 2) {
+    if (spans[i] < end && spans[i + 1] > start) return true
+  }
+  return false
+}
+
 /**
- * Block-level GreenNode reuse after `applyOsuPairing`.
+ * Block-level (and sub-block!) GreenNode reuse after `applyOsuPairing`.
  *
  * Even when a structural edit forces a global `applyOsuPairing` pass, usually
- * only 1–2 top-level blocks have changed paired tokens. Reusing the exact old
- * `GreenNode` references for every untouched prefix & suffix top-level block
- * lets `parseTokensToGreen` parse only the changed slice AND lets
- * `greenToRedNodeReusing` adopt 99% of the RedNode tree by reference (`===`)
- * with zero `greenSubtreeEquals` traversal.
+ * only 1 top-level block has changed paired tokens — and inside a 5 KB container
+ * block (`[centre]`, `[box]`, …), only 1 of its ~80 inner lines changed.
+ * Reusing untouched top-level blocks AND untouched inner children by reference
+ * (`===`) lets `parseTokensToGreen` parse ~6 tokens instead of 500–45,000, and
+ * lets `greenToRedNodeReusing` adopt 99.9% of the RedNode tree by `===`.
  */
 function tryIncrementalGreenFromPaired(
   oldRoot: RedNode,
@@ -544,8 +573,14 @@ function tryIncrementalGreenFromPaired(
   newSource: string,
   dialect: BBCodeDialect | undefined,
   prevAutoClosedByEnd: ReadonlyMap<number, readonly string[]> | null,
+  prevAutoClosedEvents: readonly number[] | null,
   knownChangedTokSpan?: readonly [number, number] | null,
-): { green: GreenNode; autoClosedByEnd: Map<number, readonly string[]> } | null {
+): {
+  green: GreenNode
+  autoClosedByEnd: Map<number, readonly string[]>
+  autoClosedEvents: number[]
+  usedSubBlock: boolean
+} | null {
   const oldLen = oldPaired.length
   const newLen = newPaired.length
 
@@ -574,11 +609,203 @@ function tryIncrementalGreenFromPaired(
     suffixByteWidth = tokTail > 0 ? newSource.length - newPaired[newLen - tokTail].start : 0
   }
 
-  // 2. Select untouched top-level blocks from `oldRoot.children`.
+  // 1b. Deep Sub-block incremental fast-path (Lezer-style spine-descent subtree reuse):
+  //     Descend all the way down the ancestor spine (`document → center → notice
+  //     → box → box → font_size → italic → color`) to the DEEPEST self-closed
+  //     container strictly enclosing `[diffStart, diffOldEnd]`. Reuse ALL
+  //     untouched siblings at EVERY level by reference (`===`) via `spliceGreen`
+  //     and parse ONLY the ~5–10 tokens of the edited line!
+  const delta = newSource.length - oldSourceLen
+  const diffNewEnd = newSource.length - suffixByteWidth
+  const diffOldEnd = oldSourceLen - suffixByteWidth
   const oldKids = oldRoot.children
   const kidCount = oldKids.length
   if (kidCount < 3) return null
 
+  {
+    const spine: SpineStep[] = []
+    const ancestorCloseTags = new Set<string>()
+    let cur: RedNode = oldRoot
+    let topBlock: RedNode | null = null
+
+    while (cur.children.length > 0) {
+      const kids = cur.children
+      let lo = 0
+      let hi = kids.length - 1
+      let idx = -1
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1
+        const c = kids[mid]
+        if (diffStart < c.range.start) hi = mid - 1
+        else if (diffStart >= c.range.end) lo = mid + 1
+        else { idx = mid; break }
+      }
+      if (idx === -1) break
+      const child = kids[idx]
+      const cg = child.green
+      const innerBase = child.range.start + cg.leadingWidth
+      const innerOldEnd = child.range.end - cg.trailingWidth
+      if (
+        !SUB_BLOCK_CONTAINERS.has(child.kind) ||
+        cg.leadingWidth === 0 ||
+        cg.trailingWidth === 0 ||
+        diffStart < innerBase ||
+        diffOldEnd > innerOldEnd ||
+        (child.children.length > 0 && child.children[child.children.length - 1].kind === 'box_tail')
+      ) {
+        break
+      }
+      if (topBlock === null) topBlock = child
+      spine.push({ node: cur.green, index: idx })
+      const closeTag = KIND_TO_CLOSE_TAG[child.kind]
+      if (closeTag) ancestorCloseTags.add(closeTag)
+      cur = child
+    }
+
+    if (
+      spine.length > 0 &&
+      topBlock !== null &&
+      !overlapsAutoClosedSpan(prevAutoClosedEvents, cur.range.start, cur.range.end)
+    ) {
+      const curGreen = cur.green
+      const innerKids = cur.children
+      const innerBase = cur.range.start + curGreen.leadingWidth
+      const innerNewEnd = cur.range.end + delta - curGreen.trailingWidth
+
+      let inHead = 0
+      let inPrefixWidth = 0
+      let inTail = 0
+      let inSuffixWidth = 0
+      if (innerKids.length >= 4) {
+        while (inHead < innerKids.length && innerBase + inPrefixWidth + innerKids[inHead].green.width <= diffStart) {
+          inPrefixWidth += innerKids[inHead].green.width
+          inHead++
+        }
+        while (inHead > 0 && innerKids[inHead - 1].green.trailingWidth === 0) {
+          inHead--
+          inPrefixWidth -= innerKids[inHead].green.width
+        }
+
+        const innerSuffixAvail = innerNewEnd - diffNewEnd
+        while (
+          inHead + inTail < innerKids.length &&
+          inSuffixWidth + innerKids[innerKids.length - 1 - inTail].green.width <= innerSuffixAvail
+        ) {
+          inSuffixWidth += innerKids[innerKids.length - 1 - inTail].green.width
+          inTail++
+        }
+        while (inTail > 0 && innerKids[innerKids.length - inTail].green.trailingWidth === 0) {
+          inSuffixWidth -= innerKids[innerKids.length - inTail].green.width
+          inTail--
+        }
+      }
+
+      const inMidByteStart = innerBase + inPrefixWidth
+      const inMidByteEnd = innerNewEnd - inSuffixWidth
+      if (inMidByteEnd >= inMidByteStart) {
+        const inTokStart = findTokenAtStart(newPaired, inMidByteStart)
+        const inTokEnd = findTokenAtStart(newPaired, inMidByteEnd)
+        const inActualStart = inTokStart < newLen ? newPaired[inTokStart].start : newSource.length
+        const inActualEnd = inTokEnd > 0 ? newPaired[inTokEnd - 1].end : 0
+        const aligned =
+          inTokStart < inTokEnd
+            ? inActualStart === inMidByteStart && inActualEnd === inMidByteEnd
+            : inMidByteStart === inMidByteEnd
+
+        if (aligned) {
+          // Ensure no token in the tiny inner slice can close any ancestor on `spine`
+          // (via DIV_UNITS, same-tag close, or `[*]`).
+          let subSafe = true
+          for (let i = inTokStart; i < inTokEnd; i++) {
+            const t = newPaired[i]
+            if (t.kind === 'close') {
+              if (DIV_OR_CONTAINER_CLOSE_TAGS.has(t.tag) || ancestorCloseTags.has(t.tag) || t.tag === 'strike') {
+                subSafe = false
+                break
+              }
+            } else if (t.kind === 'open' && t.tag === '*') {
+              subSafe = false
+              break
+            }
+          }
+          if (subSafe) {
+            let subChildren: readonly GreenNode[] = []
+            let subOk = true
+            if (inTokStart < inTokEnd) {
+              const subState: { stackDepthAtEnd: number; endAutoClosed: readonly string[] | null } = {
+                stackDepthAtEnd: 0,
+                endAutoClosed: null,
+              }
+              const subGreen = parseTokensToGreen(newPaired.slice(inTokStart, inTokEnd), newSource, {
+                dialect,
+                pairing: 'osu',
+                osuPrePaired: {},
+                normalizeParagraphs: false,
+                depth: spine.length,
+                parseStateOut: subState,
+              })
+              if (subState.stackDepthAtEnd > 0 || subState.endAutoClosed !== null || subGreen.width !== inMidByteEnd - inMidByteStart) {
+                subOk = false
+              } else {
+                subChildren = subGreen.children
+              }
+            }
+            if (subOk) {
+              let newInner: GreenNode[]
+              if (inHead === 0 && inTail === 0) {
+                newInner = subChildren as GreenNode[]
+              } else {
+                newInner = new Array<GreenNode>(inHead + subChildren.length + inTail)
+                for (let i = 0; i < inHead; i++) newInner[i] = innerKids[i].green
+                for (let i = 0; i < subChildren.length; i++) newInner[inHead + i] = subChildren[i]
+                const inTailOut = inHead + subChildren.length
+                const inTailOld = innerKids.length - inTail
+                for (let i = 0; i < inTail; i++) newInner[inTailOut + i] = innerKids[inTailOld + i].green
+              }
+
+              const newCurGreen = greenNode(
+                curGreen.kind,
+                curGreen.text,
+                newInner,
+                curGreen.leadingWidth,
+                curGreen.trailingWidth,
+              )
+              const splicedRoot = spliceGreen(spine, newCurGreen)
+
+              const blockStart = topBlock.range.start
+              const blockOldEnd = topBlock.range.end
+              const nextAutoClosedByEnd = new Map<number, readonly string[]>()
+              if (prevAutoClosedByEnd && prevAutoClosedByEnd.size > 0) {
+                for (const [endByte, snap] of prevAutoClosedByEnd) {
+                  if (endByte <= blockStart) nextAutoClosedByEnd.set(endByte, snap)
+                  else if (endByte >= blockOldEnd) nextAutoClosedByEnd.set(endByte + delta, snap)
+                }
+              }
+              const nextEvents: number[] = []
+              if (prevAutoClosedEvents) {
+                const curStart = cur.range.start
+                const curOldEnd = cur.range.end
+                for (let i = 0; i < prevAutoClosedEvents.length; i += 2) {
+                  const s = prevAutoClosedEvents[i]
+                  const e = prevAutoClosedEvents[i + 1]
+                  if (e <= curStart) nextEvents.push(s, e)
+                  else if (s >= curOldEnd) nextEvents.push(s + delta, e + delta)
+                }
+              }
+              return {
+                green: splicedRoot,
+                autoClosedByEnd: nextAutoClosedByEnd,
+                autoClosedEvents: nextEvents,
+                usedSubBlock: true,
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Select untouched top-level blocks from `oldRoot.children`.
   let keepHead = 0
   let prefixByteEnd = 0
   while (keepHead < kidCount && prefixByteEnd + oldKids[keepHead].green.width <= diffStart) {
@@ -626,13 +853,13 @@ function tryIncrementalGreenFromPaired(
 
   // Exact `autoClosed` state entering the middle slice (at `midByteStart`) and
   // expected leaving the middle slice (at old `midByteEnd - delta`, before suffix).
-  const delta = newSource.length - oldSourceLen
   const initialAutoClosed = keepHead > 0 ? prevAutoClosedByEnd?.get(midByteStart) : undefined
   const expectedExitAutoClosed = keepTail > 0 ? prevAutoClosedByEnd?.get(midByteEnd - delta) : undefined
 
   // 4. Parse ONLY the changed middle slice with full `'osu'` tree semantics.
   let midChildren: readonly GreenNode[] = []
   const midAutoClosedMap = new Map<number, readonly string[]>()
+  const midAutoClosedSpans: number[] = []
   let actualExitAutoClosed: readonly string[] | null = initialAutoClosed ?? null
 
   if (midTokStart < midTokEnd) {
@@ -640,10 +867,12 @@ function tryIncrementalGreenFromPaired(
       stackDepthAtEnd: number
       endAutoClosed: readonly string[] | null
       autoClosedAtRootEnd: Map<number, readonly string[]>
+      autoClosedActiveSpans: number[]
     } = {
       stackDepthAtEnd: 0,
       endAutoClosed: null,
       autoClosedAtRootEnd: midAutoClosedMap,
+      autoClosedActiveSpans: midAutoClosedSpans,
     }
     const midGreen = parseTokensToGreen(newPaired.slice(midTokStart, midTokEnd), newSource, {
       dialect,
@@ -664,10 +893,10 @@ function tryIncrementalGreenFromPaired(
   // MUST match what the suffix blocks originally saw.
   if (keepTail > 0 && !sameAutoClosed(actualExitAutoClosed, expectedExitAutoClosed)) return null
 
-  // 5. Merge `autoClosedByEnd` map for the next edit (usually 0–5 entries).
+  // 5. Merge `autoClosedByEnd` map & `autoClosedActiveSpans` for the next edit.
   const nextAutoClosedByEnd = new Map<number, readonly string[]>()
+  const oldSuffixStart = midByteEnd - delta
   if (prevAutoClosedByEnd && prevAutoClosedByEnd.size > 0) {
-    const oldSuffixStart = midByteEnd - delta
     for (const [endByte, snap] of prevAutoClosedByEnd) {
       if (endByte <= midByteStart) {
         nextAutoClosedByEnd.set(endByte, snap)
@@ -680,6 +909,23 @@ function tryIncrementalGreenFromPaired(
     nextAutoClosedByEnd.set(endByte, snap)
   }
 
+  const nextEvents: number[] = []
+  if (prevAutoClosedEvents) {
+    for (let i = 0; i < prevAutoClosedEvents.length; i += 2) {
+      const s = prevAutoClosedEvents[i]
+      const e = prevAutoClosedEvents[i + 1]
+      if (e <= midByteStart) nextEvents.push(s, e)
+    }
+  }
+  for (let i = 0; i < midAutoClosedSpans.length; i++) nextEvents.push(midAutoClosedSpans[i])
+  if (prevAutoClosedEvents) {
+    for (let i = 0; i < prevAutoClosedEvents.length; i += 2) {
+      const s = prevAutoClosedEvents[i]
+      const e = prevAutoClosedEvents[i + 1]
+      if (s >= oldSuffixStart) nextEvents.push(s + delta, e + delta)
+    }
+  }
+
   // 6. Stitch untouched prefix/suffix GreenNode references around the reparsed middle.
   const outChildren = new Array<GreenNode>(keepHead + midChildren.length + keepTail)
   for (let i = 0; i < keepHead; i++) outChildren[i] = oldKids[i].green
@@ -688,7 +934,12 @@ function tryIncrementalGreenFromPaired(
   const tailOldBase = kidCount - keepTail
   for (let i = 0; i < keepTail; i++) outChildren[tailOutBase + i] = oldKids[tailOldBase + i].green
 
-  return { green: greenNode('document', '', outChildren), autoClosedByEnd: nextAutoClosedByEnd }
+  return {
+    green: greenNode('document', '', outChildren),
+    autoClosedByEnd: nextAutoClosedByEnd,
+    autoClosedEvents: nextEvents,
+    usedSubBlock: false,
+  }
 }
 
 export class OsuPreviewTree {
@@ -706,6 +957,7 @@ export class OsuPreviewTree {
   private _pairingState: OsuPairingState | null = null
   private _hadSpecialOsuEvents = false
   private _autoClosedByEnd: Map<number, readonly string[]> | null = null
+  private _autoClosedEvents: number[] | null = null
   /** Staged fast-path splice from `canFastUpdate(source)` so `update(source)` reuses it with zero duplicate work. */
   private _stagedFast: {
     source: string
@@ -851,6 +1103,8 @@ export class OsuPreviewTree {
         collapsed: new Uint8Array(0),
         caseOk: new Uint8Array(0),
         tagCodes: new Uint8Array(0),
+        chunkStarts: [0],
+        chunkMasks: [],
         consumedCloseScratch: new Uint8Array(0),
         imagemapRanges: [],
         imgRanges: [],
@@ -865,12 +1119,14 @@ export class OsuPreviewTree {
       hasSpecialEvents = titleEvents.size > 0 || listCarriers.size > 0 || listHeadItems.size > 0
     }
 
-    // 3. Build green tree — reusing untouched top-level block GreenNodes by
-    //    reference when paired tokens only changed in a local span.
+    // 3. Build green tree — reusing untouched top-level block GreenNodes (and
+    //    untouched inner children on single-container edits!) by reference.
     const prev = this._root
     let green: GreenNode
     let usedRefReuse = false
+    let usedSubBlock = false
     let autoClosedByEnd: Map<number, readonly string[]> | null = null
+    let autoClosedEvents: number[] | null = null
 
     const inc =
       prev !== null &&
@@ -887,6 +1143,7 @@ export class OsuPreviewTree {
             source,
             this._dialect,
             this._autoClosedByEnd,
+            this._autoClosedEvents,
             knownChangedTokSpan,
           )
         : null
@@ -894,17 +1151,22 @@ export class OsuPreviewTree {
     if (inc !== null) {
       green = inc.green
       autoClosedByEnd = inc.autoClosedByEnd
+      autoClosedEvents = inc.autoClosedEvents
       usedRefReuse = true
+      usedSubBlock = inc.usedSubBlock
     } else {
       const autoClosedAtRootEnd = new Map<number, readonly string[]>()
+      const autoClosedActiveSpans: number[] = []
       const parseStateOut: {
         stackDepthAtEnd: number
         endAutoClosed: readonly string[] | null
         autoClosedAtRootEnd: Map<number, readonly string[]>
+        autoClosedActiveSpans: number[]
       } = {
         stackDepthAtEnd: 0,
         endAutoClosed: null,
         autoClosedAtRootEnd,
+        autoClosedActiveSpans,
       }
       green = parseTokensToGreen(pairedTokens, source, {
         dialect: this._dialect,
@@ -913,6 +1175,7 @@ export class OsuPreviewTree {
         parseStateOut,
       })
       autoClosedByEnd = autoClosedAtRootEnd
+      autoClosedEvents = autoClosedActiveSpans
     }
     const t1 = performance.now()
 
@@ -921,12 +1184,10 @@ export class OsuPreviewTree {
     let change: TextChangeRange | null = null
     try {
       if (prev !== null) {
-        // When `tryIncrementalGreenFromPaired` stitched unchanged GreenNode
-        // references, reference-mode adoption (`structural = false`) adopts
-        // every untouched top-level block in O(blocks), while
-        // `structuralOnMismatch = true` reuses unchanged children INSIDE the
-        // single reparsed block (e.g. 79 untouched lines of a 5 KB `[box]`).
-        root = greenToRedNodeReusing(green, prev, 0, reuse, !usedRefReuse, usedRefReuse)
+        // When sub-block parsing reused inner children by `===`, pure reference
+        // adoption (`structural = false, structuralOnMismatch = false`) adopts
+        // BOTH untouched top-level blocks AND untouched inner lines in O(siblings).
+        root = greenToRedNodeReusing(green, prev, 0, reuse, !usedRefReuse, usedRefReuse && !usedSubBlock)
         // With nothing adopted every block is new: no window to point at.
         if (reuse.adopted > 0) change = churnedSpan(prev, root)
       } else {
@@ -953,6 +1214,7 @@ export class OsuPreviewTree {
     this._pairingState = pairingState
     this._hadSpecialOsuEvents = hasSpecialEvents
     this._autoClosedByEnd = autoClosedByEnd
+    this._autoClosedEvents = autoClosedEvents
     this.lastStats = { parseMs: t1 - t0, buildMs: t2 - t1, adopted: reuse.adopted, change }
     return root
   }
@@ -969,6 +1231,7 @@ export class OsuPreviewTree {
     this._pairingState = null
     this._hadSpecialOsuEvents = false
     this._autoClosedByEnd = null
+    this._autoClosedEvents = null
     this._stagedFast = null
     this.lastStats = null
   }
