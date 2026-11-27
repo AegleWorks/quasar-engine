@@ -404,6 +404,10 @@ function pendingAutoClosePreserved(
   region: GreenNode,
   pending: PendingSpans,
   windowStart: number,
+  windowEndOld: number,
+  ancestorKinds: ReadonlySet<string>,
+  relaxedAddsOut?: Array<{ kind: string; end: number }>,
+  relaxedRemovalsOut?: string[],
 ): boolean {
   const after = profileSiblings(region.children as readonly GreenNode[], emptyProfile())
   const before = profileSiblings(oldChildren.slice(from, to), emptyProfile())
@@ -419,6 +423,20 @@ function pendingAutoClosePreserved(
     if (b === a) continue
     // `del` and `none` are the same function on a name that was not pending.
     if (b !== 'add' && a !== 'add' && !pending.covers(kind, windowStart)) continue
+    // `autoClosed` is read in two places: (1) an ancestor of the same `kind`
+    // closing later (`Parser.ts` checks `autoClosed` before popping outer
+    // ancestors), and (2) an orphan `[/tag]` before the next `[tag]` retires it.
+    // When `kind` is NOT an ancestor AND no orphan closer precedes the next
+    // opener after `windowEndOld`, changing `kind`'s pending state is
+    // unobservable anywhere after the window!
+    if (!ancestorKinds.has(kind)) {
+      const retiredAt = pending.safeRetirementBeforeOrphan(kind, windowEndOld)
+      if (retiredAt !== null) {
+        if (a === 'add' && relaxedAddsOut) relaxedAddsOut.push({ kind, end: retiredAt })
+        else if (b === 'add' && relaxedRemovalsOut) relaxedRemovalsOut.push(kind)
+        continue
+      }
+    }
     return false
   }
   return true
@@ -448,8 +466,62 @@ interface PendingSpan {
  * passes edits that leave the crossings OUTSIDE the window where they were,
  * and the crossings inside it are re-measured from the re-parsed window.
  */
+/** Binary-search first value `>= target` in a sorted ascending array, or `-1`. */
+function firstAtOrAfter(sorted: readonly number[] | undefined, target: number): number {
+  if (!sorted || sorted.length === 0) return -1
+  let lo = 0
+  let hi = sorted.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (sorted[mid] < target) lo = mid + 1
+    else hi = mid
+  }
+  return lo < sorted.length ? sorted[lo] : -1
+}
+
+function shiftOffsetMap(
+  prev: ReadonlyMap<string, readonly number[]>,
+  born: ReadonlyMap<string, readonly number[]> | undefined,
+  windowStart: number,
+  windowEndOld: number,
+  delta: number,
+): Map<string, number[]> {
+  const next = new Map<string, number[]>()
+  for (const [kind, list] of prev) {
+    const merged: number[] = []
+    const bornList = born?.get(kind)
+    let insertedBorn = false
+    for (let i = 0; i < list.length; i++) {
+      const off = list[i]
+      if (off < windowStart) {
+        merged.push(off)
+      } else if (off >= windowEndOld) {
+        if (!insertedBorn && bornList) {
+          for (let j = 0; j < bornList.length; j++) merged.push(bornList[j])
+          insertedBorn = true
+        }
+        merged.push(off + delta)
+      }
+    }
+    if (!insertedBorn && bornList) {
+      for (let j = 0; j < bornList.length; j++) merged.push(bornList[j])
+    }
+    if (merged.length > 0) next.set(kind, merged)
+  }
+  if (born) {
+    for (const [kind, bornList] of born) {
+      if (!next.has(kind) && bornList.length > 0) next.set(kind, bornList.slice())
+    }
+  }
+  return next
+}
+
 class PendingSpans {
-  constructor(private readonly spans: readonly PendingSpan[]) {}
+  constructor(
+    private readonly spans: readonly PendingSpan[],
+    private readonly orphanClosers: ReadonlyMap<string, readonly number[]> = new Map(),
+    private readonly openers: ReadonlyMap<string, readonly number[]> = new Map(),
+  ) {}
 
   /**
    * Whether `kind` is pending when the parser reaches `offset`. The end is
@@ -469,6 +541,19 @@ class PendingSpans {
   }
 
   /**
+   * If NO orphan closer of `kind` appears at or after `offset` before the next
+   * opener of `kind` retires it, returns the retirement offset (the next opener
+   * offset, or `Infinity` if neither exists). Otherwise returns `null`.
+   */
+  safeRetirementBeforeOrphan(kind: string, offset: number): number | null {
+    const firstOrphan = firstAtOrAfter(this.orphanClosers.get(kind), offset)
+    const firstOpener = firstAtOrAfter(this.openers.get(kind), offset)
+    if (firstOrphan === -1) return firstOpener === -1 ? Number.POSITIVE_INFINITY : firstOpener
+    if (firstOpener !== -1 && firstOpener < firstOrphan) return firstOpener
+    return null
+  }
+
+  /**
    * The same spans over the text an edit produced.
    *
    * Anything wholly before the window is untouched and anything wholly after
@@ -478,7 +563,16 @@ class PendingSpans {
    * not exactly where, and a span that claims to be pending for slightly
    * longer than it is can only cost a rebuild, never correctness.
    */
-  shifted(windowStart: number, windowEndOld: number, delta: number, born: readonly PendingSpan[] = []): PendingSpans {
+  shifted(
+    windowStart: number,
+    windowEndOld: number,
+    delta: number,
+    born: readonly PendingSpan[] = [],
+    bornOrphans?: ReadonlyMap<string, readonly number[]>,
+    bornOpeners?: ReadonlyMap<string, readonly number[]>,
+    relaxedAdds?: ReadonlyArray<{ kind: string; end: number }>,
+    relaxedRemovals?: readonly string[],
+  ): PendingSpans {
     const windowEndNew = windowEndOld + delta
     const move = (at: number): number => {
       if (at === Number.POSITIVE_INFINITY || at >= windowEndOld) return at + delta
@@ -486,23 +580,37 @@ class PendingSpans {
     }
     const spans: PendingSpan[] = []
     for (const span of this.spans) {
+      if (
+        relaxedRemovals !== undefined &&
+        relaxedRemovals.length > 0 &&
+        span.start === windowEndOld &&
+        relaxedRemovals.includes(span.kind)
+      ) {
+        continue
+      }
       const start = span.start < windowStart ? span.start : Math.max(windowStart, move(span.start))
       const end = span.end <= windowStart ? span.end : Math.max(windowEndNew, move(span.end))
       spans.push({ kind: span.kind, start, end })
     }
-    // Crossings the new window both opens and retires are invisible to the
-    // guard (their net effect on the text after it is nil) but not to a later
-    // window that starts BETWEEN the two: without them it believed the name
-    // was not pending and kept a stray `[/list]` visible where the full parse
-    // discards it. Found by the differential fuzz once wider windows (the
-    // candidate ladder) made such windows common.
     for (const span of born) spans.push(span)
-    return new PendingSpans(spans)
+    if (relaxedAdds !== undefined) {
+      for (let i = 0; i < relaxedAdds.length; i++) {
+        const { kind, end } = relaxedAdds[i]
+        spans.push({ kind, start: windowEndNew, end: move(end) })
+      }
+    }
+
+    const nextOrphans = shiftOffsetMap(this.orphanClosers, bornOrphans, windowStart, windowEndOld, delta)
+    const nextOpeners = shiftOffsetMap(this.openers, bornOpeners, windowStart, windowEndOld, delta)
+    return new PendingSpans(spans, nextOrphans, nextOpeners)
   }
 }
 
 function collectPendingSpans(root: GreenNode): PendingSpans {
-  return new PendingSpans(pendingSpansOf(root, 0, Number.POSITIVE_INFINITY))
+  const orphans = new Map<string, number[]>()
+  const openers = new Map<string, number[]>()
+  const spans = pendingSpansOf(root, 0, Number.POSITIVE_INFINITY, orphans, openers)
+  return new PendingSpans(spans, orphans, openers)
 }
 
 /**
@@ -512,7 +620,13 @@ function collectPendingSpans(root: GreenNode): PendingSpans {
  * guard has already matched whatever leaves the window pending with a span
  * the old tree had.
  */
-function pendingSpansOf(root: GreenNode, base: number, openEnd: number): PendingSpan[] {
+function pendingSpansOf(
+  root: GreenNode,
+  base: number,
+  openEnd: number,
+  orphansOut?: Map<string, number[]>,
+  openersOut?: Map<string, number[]>,
+): PendingSpan[] {
   const spans: PendingSpan[] = []
   const open = new Map<string, number>()
   const retire = (kind: string, at: number): void => {
@@ -521,14 +635,38 @@ function pendingSpansOf(root: GreenNode, base: number, openEnd: number): Pending
     open.delete(kind)
     spans.push({ kind, start, end: at })
   }
+  const recordAt = (map: Map<string, number[]> | undefined, kind: string, at: number): void => {
+    if (!map) return
+    const list = map.get(kind)
+    if (list) list.push(at)
+    else map.set(kind, [at])
+  }
 
   const visit = (node: GreenNode, start: number): void => {
     if (node.kind === 'discarded_tag') {
       const match = ORPHAN_CLOSE_RE.exec(node.text)
-      if (match !== null) retire(tagToNodeKind(match[1]), start)
+      if (match !== null) {
+        const kind = tagToNodeKind(match[1])
+        retire(kind, start)
+        recordAt(orphansOut, kind, start)
+      }
       return
     }
-    if (wasStackFrame(node)) retire(node.kind, start)
+    if (
+      orphansOut !== undefined &&
+      node.kind === 'text' &&
+      node.text.length >= 4 &&
+      node.text.charCodeAt(0) === 91 /* [ */ &&
+      node.text.charCodeAt(1) === 47 /* / */
+    ) {
+      const match = ORPHAN_CLOSE_RE.exec(node.text)
+      if (match !== null) recordAt(orphansOut, tagToNodeKind(match[1]), start)
+      return
+    }
+    if (wasStackFrame(node)) {
+      retire(node.kind, start)
+      recordAt(openersOut, node.kind, start)
+    }
 
     const children = node.children as readonly GreenNode[]
     let offset = start + node.leadingWidth
@@ -1212,16 +1350,24 @@ export class IncrementalParser {
       // text — a tag its edit left open simply stays open to the end, which is
       // what the full parse does too.
       const nothingAfter = reachesEnd && spine.length === 0
+      const relaxedAdds: Array<{ kind: string; end: number }> = []
+      const relaxedRemovals: string[] = []
       if (!nothingAfter && !pendingAutoClosePreserved(
-        parent.sliceChildren(from, to), 0, to - from, parsedRegion, spans, windowStart,
+        parent.sliceChildren(from, to), 0, to - from, parsedRegion, spans, windowStart, windowEnd,
+        ancestorKinds, relaxedAdds, relaxedRemovals,
       )) {
         failure ??= { reason: 'pending-auto-close' }
         escalations++
         wasted += region.length
         continue
       }
+      const bornOrphans = new Map<string, number[]>()
+      const bornOpeners = new Map<string, number[]>()
+      const bornSpans = pendingSpansOf(parsedRegion, windowStart, windowEnd + delta, bornOrphans, bornOpeners)
       carriedSpans = this.pendingSpans.shifted(
-        windowStart, windowEnd, delta, pendingSpansOf(parsedRegion, windowStart, windowEnd + delta),
+        windowStart, windowEnd, delta, bornSpans, bornOrphans, bornOpeners,
+        relaxedAdds.length > 0 ? relaxedAdds : undefined,
+        relaxedRemovals.length > 0 ? relaxedRemovals : undefined,
       )
 
       // No rebasing step: the parsed region has widths, not offsets, so it is
