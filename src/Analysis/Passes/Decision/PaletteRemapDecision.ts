@@ -100,6 +100,42 @@ const DEFAULT_MIN_CONFIDENCE = 0.7
 const EMPTY: readonly SemanticContribution[] = Object.freeze([])
 
 /**
+ * Pre-bucketed, range-sorted semantic contributions per immutable AnalysisReport.
+ *
+ * `PaletteRemapPlanner` caches the report across theme switches; indexing it
+ * once here means every subsequent theme click skips the full contribution
+ * scan and all four label sorts.
+ */
+const REPORT_BUCKETS = new WeakMap<AnalysisReport, ReadonlyMap<string, readonly SemanticContribution[]>>()
+
+function bucketsForReport(report: AnalysisReport): ReadonlyMap<string, readonly SemanticContribution[]> {
+  const cached = REPORT_BUCKETS.get(report)
+  if (cached !== undefined) return cached
+
+  const byLabel = new Map<string, SemanticContribution[]>()
+  const list = report.contributions
+  for (let i = 0; i < list.length; i++) {
+    const contribution = list[i]
+    if (contribution.kind !== ContributionKind.Semantic) continue
+    const bucket = byLabel.get(contribution.label)
+    if (bucket === undefined) byLabel.set(contribution.label, [contribution])
+    else bucket.push(contribution)
+  }
+  for (const bucket of byLabel.values()) {
+    let sorted = true
+    for (let i = 1; i < bucket.length; i++) {
+      if (bucket[i].range.start < bucket[i - 1].range.start) {
+        sorted = false
+        break
+      }
+    }
+    if (!sorted) bucket.sort((a, b) => a.range.start - b.range.start)
+  }
+  REPORT_BUCKETS.set(report, byLabel)
+  return byLabel
+}
+
+/**
  * One spelling for every hex this pass emits.
  *
  * `mixHexOklab` builds its result lowercase while palette entries are written
@@ -174,7 +210,9 @@ export class PaletteRemapDecision implements DecisionPass {
    * every run over the same report produces the same plan.
    */
   private symbolMap = new Map<string, string>()
+  private symbolTaken = new Set<string>()
   private separatorMap = new Map<string, string>()
+  private separatorTaken = new Set<string>()
 
   constructor(palette: Palette, options: PaletteRemapOptions = {}) {
     this.palette = palette
@@ -184,32 +222,29 @@ export class PaletteRemapDecision implements DecisionPass {
 
   run(report: AnalysisReport, _context: PipelineContext): TransformationPlan {
     this.symbolMap = new Map()
+    this.symbolTaken = new Set()
     this.separatorMap = new Map()
+    this.separatorTaken = new Set()
     this.nearestCache = new Map()
 
-    // One bucket per label and one sort each, instead of four `filter` passes
-    // over every contribution plus four sorts of the whole semantic array.
-    const byLabel = new Map<string, SemanticContribution[]>()
-    for (const contribution of report.contributions) {
-      if (contribution.kind !== ContributionKind.Semantic) continue
-      const bucket = byLabel.get(contribution.label)
-      if (bucket === undefined) byLabel.set(contribution.label, [contribution])
-      else bucket.push(contribution)
-    }
-    for (const bucket of byLabel.values()) {
-      bucket.sort((a, b) => a.range.start - b.range.start)
-    }
+    const byLabel = bucketsForReport(report)
     const labelled = (label: string): readonly SemanticContribution[] => byLabel.get(label) ?? EMPTY
 
-    const actions: RemapAction[] = [
-      ...this.planColors(labelled('Color'), labelled('Gradient')),
-      ...this.planGradientTags(labelled('GradientTag')),
-      ...this.planSymbols(labelled('Symbol')),
-      ...this.planSeparators(labelled('Separator')),
-    ]
+    const actions: RemapAction[] = []
+    this.planColors(labelled('Color'), labelled('Gradient'), actions)
+    this.planGradientTags(labelled('GradientTag'), actions)
+    this.planSymbols(labelled('Symbol'), actions)
+    this.planSeparators(labelled('Separator'), actions)
 
     // Source order, so a caller can apply them back to front by reversing.
-    actions.sort((a, b) => a.payload.range.start - b.payload.range.start)
+    let sorted = true
+    for (let i = 1; i < actions.length; i++) {
+      if (actions[i].payload.range.start < actions[i - 1].payload.range.start) {
+        sorted = false
+        break
+      }
+    }
+    if (!sorted) actions.sort((a, b) => a.payload.range.start - b.payload.range.start)
 
     return { actions: Object.freeze(actions) }
   }
@@ -219,30 +254,21 @@ export class PaletteRemapDecision implements DecisionPass {
   private planColors(
     colors: readonly SemanticContribution[],
     gradients: readonly SemanticContribution[],
-  ): RemapAction[] {
-    if (this.palette.colors.length === 0) return []
+    actions: RemapAction[],
+  ): void {
+    if (this.palette.colors.length === 0 || colors.length === 0) return
 
-    // Which gradient, if any, each colour tag belongs to. Membership is by
-    // containment: GradientAnalyzer reports the span its member tags cover.
-    //
-    // Both lists arrive in source order, so a binary search finds the first
-    // colour at or after a gradient's start and the walk stops at its end.
-    // The old `colors.filter` per gradient was O(gradients × colours): on a
-    // page with a gradient per line that is millions of comparisons before a
-    // single action is produced.
-    const memberOf = new Map<SemanticContribution, SemanticContribution>()
-    const members = new Map<SemanticContribution, SemanticContribution[]>()
-    const colorsByStart = colors as readonly SemanticContribution[]
+    // Which gradient, if any, each colour tag belongs to, plus its exact
+    // ordinal and run length so sampling is O(1) instead of `indexOf` O(M²).
+    const memberInfo = new Map<
+      SemanticContribution,
+      { readonly gradient: SemanticContribution; readonly index: number; readonly count: number }
+    >()
+    const colorsByStart = colors
 
-    for (const gradient of gradients) {
+    for (let g = 0; g < gradients.length; g++) {
+      const gradient = gradients[g]
       // A doubtful gradient must not drive ramp sampling.
-      //
-      // GradientAnalyzer reports every colour run it *considers*, scoring the
-      // ones that are not ramps down rather than discarding them — a lone
-      // `#111111` sitting against a real gradient yields one six-colour
-      // candidate at 0.13 confidence. Sampling a palette across that would
-      // impose a ramp the document never had, so anything under the threshold
-      // falls through and its colours are matched individually instead.
       if (gradient.confidence < this.minConfidence) continue
 
       let lo = 0
@@ -261,21 +287,30 @@ export class PaletteRemapDecision implements DecisionPass {
       }
       // A gradient needs at least two members before "position along it" means
       // anything; a degenerate one is treated as standalone colours.
-      if (inside.length < 2) continue
+      const count = inside.length
+      if (count < 2) continue
 
-      members.set(gradient, inside)
-      for (const color of inside) memberOf.set(color, gradient)
+      for (let i = 0; i < count; i++) {
+        memberInfo.set(inside[i], { gradient, index: i, count })
+      }
     }
 
-    const actions: RemapAction[] = []
-
-    for (const color of colors) {
+    for (let i = 0; i < colors.length; i++) {
+      const color = colors[i]
       const model = color.metadata.model as ColorUsageModel
-      const gradient = memberOf.get(color)
+      const membership = memberInfo.get(color)
 
-      const to = gradient
-        ? this.gradientColorFor(color, gradient, members.get(gradient)!)
-        : this.nearestPaletteColor(model.hex)
+      let to: string
+      let confidence: number
+      if (membership !== undefined) {
+        const gModel = membership.gradient.metadata.model as GradientModel
+        const t = membership.index / (membership.count - 1)
+        to = this.samplePalette(ease(t, gModel.easing))
+        confidence = membership.gradient.confidence
+      } else {
+        to = this.nearestPaletteColor(model.hex)
+        confidence = color.confidence
+      }
 
       // A tag already wearing its target colour is not a change. Both sides
       // are canonical here: `extractHex` uppercases, and so does `to`.
@@ -288,34 +323,12 @@ export class PaletteRemapDecision implements DecisionPass {
           replacement: `[color=${to}]`,
           from: model.hex,
           to,
-          confidence: gradient ? gradient.confidence : color.confidence,
-          recommended: (gradient ? gradient.confidence : color.confidence) >= this.minConfidence,
-          gradient: gradient !== undefined,
+          confidence,
+          recommended: confidence >= this.minConfidence,
+          gradient: membership !== undefined,
         },
       })
     }
-
-    return actions
-  }
-
-  /**
-   * Where this tag sits along its gradient, resampled onto the new palette.
-   *
-   * Position comes from the tag's ordinal among the gradient's members rather
-   * than from its offset, because the members are evenly spaced *as tags* — a
-   * gradient over `Hello` has five of them regardless of how wide each tag's
-   * text is.
-   */
-  private gradientColorFor(
-    color: SemanticContribution,
-    gradient: SemanticContribution,
-    members: readonly SemanticContribution[],
-  ): string {
-    const model = gradient.metadata.model as GradientModel
-    const index = members.indexOf(color)
-    const t = members.length > 1 ? index / (members.length - 1) : 0
-
-    return this.samplePalette(ease(t, model.easing))
   }
 
   /**
@@ -327,10 +340,8 @@ export class PaletteRemapDecision implements DecisionPass {
    * replacement is the attribute with only its colour tokens spliced, so the
    * action can never touch a parameter.
    */
-  private planGradientTags(tags: readonly SemanticContribution[]): RemapAction[] {
-    if (this.palette.colors.length === 0) return []
-
-    const actions: RemapAction[] = []
+  private planGradientTags(tags: readonly SemanticContribution[], actions: RemapAction[]): void {
+    if (this.palette.colors.length === 0 || tags.length === 0) return
 
     for (const tag of tags) {
       const model = tag.metadata.model as GradientTagModel
@@ -363,8 +374,6 @@ export class PaletteRemapDecision implements DecisionPass {
         },
       })
     }
-
-    return actions
   }
 
   /**
@@ -424,22 +433,30 @@ export class PaletteRemapDecision implements DecisionPass {
 
   // ── Glyphs ──────────────────────────────────────────────────────
 
-  private planSymbols(symbols: readonly SemanticContribution[]): RemapAction[] {
-    if (this.palette.symbols.length === 0) return []
+  private planSymbols(symbols: readonly SemanticContribution[], actions: RemapAction[]): void {
+    const replacements = this.palette.symbols
+    if (replacements.length === 0 || symbols.length === 0) return
 
-    const actions: RemapAction[] = []
+    const repSet = new Set(replacements)
+    for (let i = 0; i < symbols.length; i++) {
+      const glyphs = (symbols[i].metadata.model as SymbolRunModel).glyphs
+      for (let j = 0; j < glyphs.length; j++) {
+        const ch = glyphs[j].char
+        if (!this.symbolMap.has(ch) && repSet.has(ch)) {
+          this.symbolMap.set(ch, ch)
+          this.symbolTaken.add(ch)
+        }
+      }
+    }
 
-    this.reserveIdentities(
-      this.symbolMap,
-      symbols.flatMap(run => (run.metadata.model as SymbolRunModel).glyphs.map(g => g.char)),
-      this.palette.symbols,
-    )
-
-    for (const run of symbols) {
+    for (let i = 0; i < symbols.length; i++) {
+      const run = symbols[i]
       const model = run.metadata.model as SymbolRunModel
-      const replacement = model.glyphs
-        .map(glyph => this.substitute(this.symbolMap, glyph.char, this.palette.symbols))
-        .join('')
+      let replacement = ''
+      const glyphs = model.glyphs
+      for (let j = 0; j < glyphs.length; j++) {
+        replacement += this.substitute(this.symbolMap, this.symbolTaken, glyphs[j].char, replacements)
+      }
 
       if (replacement === model.text) continue
 
@@ -455,24 +472,25 @@ export class PaletteRemapDecision implements DecisionPass {
         },
       })
     }
-
-    return actions
   }
 
-  private planSeparators(separators: readonly SemanticContribution[]): RemapAction[] {
-    if (this.palette.separators.length === 0) return []
+  private planSeparators(separators: readonly SemanticContribution[], actions: RemapAction[]): void {
+    const replacements = this.palette.separators
+    if (replacements.length === 0 || separators.length === 0) return
 
-    const actions: RemapAction[] = []
+    const repSet = new Set(replacements)
+    for (let i = 0; i < separators.length; i++) {
+      const text = (separators[i].metadata.model as SymbolRunModel).text
+      if (!this.separatorMap.has(text) && repSet.has(text)) {
+        this.separatorMap.set(text, text)
+        this.separatorTaken.add(text)
+      }
+    }
 
-    this.reserveIdentities(
-      this.separatorMap,
-      separators.map(run => (run.metadata.model as SymbolRunModel).text),
-      this.palette.separators,
-    )
-
-    for (const run of separators) {
+    for (let i = 0; i < separators.length; i++) {
+      const run = separators[i]
       const model = run.metadata.model as SymbolRunModel
-      const replacement = this.substitute(this.separatorMap, model.text, this.palette.separators)
+      const replacement = this.substitute(this.separatorMap, this.separatorTaken, model.text, replacements)
 
       if (replacement === model.text) continue
 
@@ -488,61 +506,32 @@ export class PaletteRemapDecision implements DecisionPass {
         },
       })
     }
-
-    return actions
   }
 
   /**
    * Assign a replacement for `source`, remembering it.
-   *
-   * Distinct sources are handed palette entries in first-seen order.
-   * Recording the choice is what keeps the document coherent: every later `✧`
-   * gets the same replacement as the first one, so a motif stays a motif.
-   *
-   * Entries already spoken for are skipped — including the identities
-   * `reserveIdentities` claimed before this ran — so distinct sources keep
-   * distinct replacements for as long as the palette has them. Once it runs
-   * out the assignment wraps, and glyphs begin to share.
    */
   private substitute(
     table: Map<string, string>,
+    taken: Set<string>,
     source: string,
     replacements: readonly string[],
   ): string {
     const existing = table.get(source)
     if (existing !== undefined) return existing
 
-    const taken = new Set(table.values())
-    const free = replacements.find(r => !taken.has(r))
-    const chosen = free ?? replacements[table.size % replacements.length]
-
-    table.set(source, chosen)
-    return chosen
-  }
-
-  /**
-   * Let everything the palette already contains keep its own place, before
-   * anything else is handed out.
-   *
-   * This has to happen up front rather than as each source is reached.
-   * Assignment follows document order, so in `✧ then ✿` the unowned `✧` would
-   * otherwise claim `✿` first and the real `✿` would arrive to find its own
-   * identity taken — displacing it onto a glyph the document never used.
-   *
-   * Holding identities fixed is what makes restyling idempotent: a second pass
-   * with the same theme finds every glyph already in place and changes
-   * nothing.
-   */
-  private reserveIdentities(
-    table: Map<string, string>,
-    sources: readonly string[],
-    replacements: readonly string[],
-  ): void {
-    for (const source of sources) {
-      if (!table.has(source) && replacements.includes(source)) {
-        table.set(source, source)
+    let chosen: string | undefined
+    for (let i = 0; i < replacements.length; i++) {
+      if (!taken.has(replacements[i])) {
+        chosen = replacements[i]
+        break
       }
     }
+    if (chosen === undefined) chosen = replacements[table.size % replacements.length]
+
+    table.set(source, chosen)
+    taken.add(chosen)
+    return chosen
   }
 }
 
