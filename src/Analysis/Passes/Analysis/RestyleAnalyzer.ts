@@ -32,13 +32,13 @@
 
 import type { AnalyzerPass } from '../../Contracts/Pass'
 import type { PipelineContext } from '../../Contracts/PipelineContext'
-import type { Contribution } from '../../Contracts/Contribution'
+import { ContributionKind, type Contribution } from '../../Contracts/Contribution'
 import type { GreenNode } from '../../../Syntax/GreenNode'
 import { childOffsets } from '../../../Syntax/GreenNode'
 import { parseBBCode } from '../../../BBCode/Parser'
 import { colorUsageContributionAt } from './ColorUsageAnalyzer'
 import { GradientAnalyzer } from './GradientAnalyzer'
-import { gradientTagContributionAt } from './GradientTagAnalyzer'
+import { canonicalStopHex, gradientTagContributionAt } from './GradientTagAnalyzer'
 import { scanSymbolText } from './SymbolAnalyzer'
 
 /**
@@ -51,6 +51,15 @@ const BOX_KINDS: ReadonlySet<string> = new Set(['box', 'boxw', 'spoilerbox'])
 
 /** A gradient needs at least three adjacent colour children. */
 const MIN_COLOR_RUN = 3
+
+/** Where a box's accent sits in its title attribute: the `:#hex` suffix. */
+export interface BoxAccentModel {
+  /** Canonical uppercase `#RRGGBB`. */
+  readonly hex: string
+  /** Source offsets of the hex token alone. */
+  readonly start: number
+  readonly end: number
+}
 
 function countColorChildren(children: readonly GreenNode[]): number {
   let count = 0
@@ -104,6 +113,26 @@ export class RestyleAnalyzer implements AnalyzerPass {
         const titleEnd = openerEnd - 1
         if (titleEnd > titleStart) {
           const titleRaw = this.source.slice(titleStart, titleEnd)
+
+          // `[box=Título:#hex]` keeps its accent in the title attribute. It is a
+          // colour the author chose, so a restyle must reach it too; without
+          // this, boxes painted through Canvas's inspector kept the old theme.
+          const accent = /:(#[0-9A-Fa-f]{6}|#[0-9A-Fa-f]{3})$/.exec(titleRaw)
+          if (accent !== null) {
+            const start = titleStart + accent.index + 1
+            const end = start + accent[1].length
+            const model: BoxAccentModel = { hex: canonicalStopHex(accent[1]), start, end }
+            sink.push({
+              kind: ContributionKind.Semantic,
+              label: 'BoxAccent',
+              // The author wrote this hex; there is nothing to infer.
+              confidence: 1,
+              range: { start, end },
+              metadata: { model },
+              description: `Box accent ${model.hex}`,
+            })
+          }
+
           const titleGreen = parseBBCode(titleRaw)
           this.walk(titleGreen, sink, titleStart)
         }

@@ -62,6 +62,7 @@ import type { ColorUsageModel } from '../Analysis/ColorUsageAnalyzer'
 import type { GradientModel } from '../Analysis/GradientAnalyzer'
 import type { GradientTagModel } from '../Analysis/GradientTagAnalyzer'
 import type { SymbolRunModel } from '../Analysis/SymbolAnalyzer'
+import type { BoxAccentModel } from '../Analysis/RestyleAnalyzer'
 
 // ── Configuration ─────────────────────────────────────────────────
 
@@ -233,6 +234,7 @@ export class PaletteRemapDecision implements DecisionPass {
     const actions: RemapAction[] = []
     this.planColors(labelled('Color'), labelled('Gradient'), actions)
     this.planGradientTags(labelled('GradientTag'), actions)
+    this.planBoxAccents(labelled('BoxAccent'), actions)
     this.planSymbols(labelled('Symbol'), actions)
     this.planSeparators(labelled('Separator'), actions)
 
@@ -371,6 +373,36 @@ export class PaletteRemapDecision implements DecisionPass {
           recommended: tag.confidence >= this.minConfidence,
           gradient: true,
           stops: { from, to, positions: model.stops.map(stop => stop.position) },
+        },
+      })
+    }
+  }
+
+  /**
+   * Recolour the accent a box carries in its title (`[box=Título:#hex]`).
+   *
+   * The accent is not a `[color]` wrapper, so the colour scan never saw it:
+   * a page restyled with a new theme kept the old accent on every box whose
+   * colour had been picked in the inspector. Only the hex token is replaced,
+   * so the title, its formatting and every other parameter stay as written.
+   */
+  private planBoxAccents(accents: readonly SemanticContribution[], actions: RemapAction[]): void {
+    if (this.palette.colors.length === 0 || accents.length === 0) return
+
+    for (const accent of accents) {
+      const model = accent.metadata.model as BoxAccentModel
+      const to = this.nearestPaletteColor(model.hex)
+      if (to === model.hex) continue
+
+      actions.push({
+        kind: 'recolor',
+        payload: {
+          range: { start: model.start, end: model.end },
+          replacement: to,
+          from: model.hex,
+          to,
+          confidence: accent.confidence,
+          recommended: accent.confidence >= this.minConfidence,
         },
       })
     }
